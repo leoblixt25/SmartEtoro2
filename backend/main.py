@@ -574,12 +574,17 @@ def get_settings(db: Session = Depends(get_db)):
 def update_settings(settings: dict, db: Session = Depends(get_db)):
     """Update application settings stored in the database."""
 
-    required_fields = ["etoro_api_key", "etoro_api_secret",
-                       "telegram_bot_token", "telegram_chat_id"]
+    # Required fields for eToro integration
+    required_fields = ["etoro_api_key", "etoro_api_secret"]
+    
+    # Telegram settings are optional if you don't use notifications
+    optional_fields = ["telegram_bot_token", "telegram_chat_id"]
+
     for field in required_fields:
         if field not in settings or not isinstance(settings[field], str) or not settings[field].strip():
             raise HTTPException(
-                status_code=400, detail=f"Missing or empty required field: {field}")
+                status_code=400, detail=f"Required field missing or empty: {field}")
+
 
     for field, value in settings.items():
         setting = db.query(AppSetting).filter(AppSetting.key == field).first()
