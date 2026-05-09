@@ -64,6 +64,7 @@ class Portfolio(Base):
     weekly_pnl = Column(Float, default=0.0)
     monthly_pnl = Column(Float, default=0.0)
     health_score = Column(Float, default=0.0)   # 0–100
+    currency = Column(String, default="USD")
     is_simulation = Column(Boolean, default=False)
     last_updated = Column(DateTime, default=datetime.utcnow)
     created_at = Column(DateTime, default=datetime.utcnow)

@@ -161,15 +161,12 @@ class EToroSyncService:
             portfolio.available_cash = summary.get("available_cash", 0.0)
             portfolio.invested_amount = summary.get("invested", 0.0)
             portfolio.unrealized_pnl = summary.get("unrealized_pnl", 0.0)
-            portfolio.realized_pnl = summary.get("realized_pnl", 0.0)
-            portfolio.daily_pnl = summary.get("daily_pnl", 0.0)
-            portfolio.weekly_pnl = summary.get("weekly_pnl", 0.0)
-            portfolio.monthly_pnl = summary.get("monthly_pnl", 0.0)
+            portfolio.currency = summary.get("currency", "USD")
             portfolio.last_updated = datetime.utcnow()
             db.commit()
 
             if traders:
-                self._sync_traders(db, portfolio_id, traders)
+                self._sync_traders(db, portfolio_id, traders, portfolio.total_value)
 
             snapshot = PortfolioSnapshot(
                 portfolio_id=portfolio_id,
@@ -189,11 +186,22 @@ class EToroSyncService:
     def _extract_summary(self, raw: Dict) -> Dict:
         """Parse eToro API portfolio response into flat summary dict."""
         cp = raw.get("clientPortfolio", {})
+        positions = cp.get("positions", [])
+        
+        # Calculate totals correctly from raw positions
+        invested = sum(p.get("initialAmountInDollars", 0.0) for p in positions)
+        cash = cp.get("credit", 0.0)
+        unrealized_pnl = cp.get("unrealizedPnL", 0.0)
+        
+        # eToro API Currency ID 1=USD, 2=EUR
+        currency = "EUR" if cp.get("accountCurrencyId") == 2 else "USD"
+
         return {
-            "equity": cp.get("credit", 0.0) + abs(cp.get("unrealizedPnL", 0.0)),
-            "available_cash": cp.get("credit", 0.0),
-            "invested": cp.get("credit", 0.0),
-            "unrealized_pnl": cp.get("unrealizedPnL", 0.0),
+            "equity": cash + invested + unrealized_pnl,
+            "available_cash": cash,
+            "invested": invested,
+            "unrealized_pnl": unrealized_pnl,
+            "currency": currency,
             "realized_pnl": 0.0,
             "daily_pnl": 0.0,
             "weekly_pnl": 0.0,
@@ -204,12 +212,14 @@ class EToroSyncService:
         """Extract copied trader info from mirrors array."""
         cp = raw.get("clientPortfolio", {})
         mirrors = cp.get("mirrors", [])
+        total_equity = cp.get("credit", 0.0) + sum(p.get("initialAmountInDollars", 0.0) for p in cp.get("positions", [])) + cp.get("unrealizedPnL", 0.0)
+        
         result = []
         for m in mirrors:
             result.append({
                 "trader_id": str(m.get("mirrorId", 0)),
                 "username": m.get("parentUsername", "Unknown"),
-                "allocation_pct": m.get("initialInvestment", 0.0) / max(cp.get("credit", 1.0), 1.0) * 100,
+                "allocation_pct": (m.get("initialInvestment", 0.0) / max(total_equity, 1.0)) * 100,
                 "avg_return": 0.0,
                 "max_drawdown": 0.0,
                 "volatility": 0.0,
@@ -217,7 +227,7 @@ class EToroSyncService:
             })
         return result
 
-    def _sync_traders(self, db, portfolio_id: int, traders_data: List[Dict]):
+    def _sync_traders(self, db, portfolio_id: int, traders_data: List[Dict], total_equity: float):
         """Update or create copied trader records."""
         from backend.database.models import CopiedTrader
 

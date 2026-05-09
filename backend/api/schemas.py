@@ -50,6 +50,7 @@ class PortfolioResponse(BaseModel):
     weekly_pnl: float
     monthly_pnl: float
     health_score: float
+    currency: str
     is_simulation: bool
     last_updated: datetime
     created_at: datetime
