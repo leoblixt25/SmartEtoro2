@@ -1,0 +1,13 @@
+# Ignore backend — Vercel only builds the frontend
+backend/
+telegram/
+docker/
+logs/
+config/
+requirements.txt
+render.yaml
+*.db
+*.sqlite
+__pycache__/
+*.pyc
+.env
