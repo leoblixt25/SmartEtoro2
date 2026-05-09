@@ -17,7 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
-from backend.database.connection import init_db, get_db
+from backend.database.connection import init_db, get_db, SessionLocal
 from backend.database.models import (
     Portfolio, CopiedTrader, AutomationRule, AutomationLog,
     Alert, AIRecommendation, RiskSettings, AutomationStatus,
@@ -588,6 +588,12 @@ def update_settings(settings: dict, db: Session = Depends(get_db)):
             db.add(setting)
         else:
             setting.value = value
+
+    # Sync simulation mode with default portfolio
+    if "is_simulation" in settings:
+        portfolio = db.query(Portfolio).first()
+        if portfolio:
+            portfolio.is_simulation = settings["is_simulation"]
 
     db.commit()
     logger.info("Settings updated successfully")
