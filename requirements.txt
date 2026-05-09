@@ -6,7 +6,7 @@ uvicorn[standard]==0.30.0
 sqlalchemy==2.0.30
 
 # Data validation
-pydantic==2.7.0
+pydantic==2.13.4
 
 # AI
 anthropic==0.28.0
