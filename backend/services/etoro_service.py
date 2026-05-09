@@ -161,6 +161,7 @@ class EToroSyncService:
             portfolio.available_cash = summary.get("available_cash", 0.0)
             portfolio.invested_amount = summary.get("invested", 0.0)
             portfolio.unrealized_pnl = summary.get("unrealized_pnl", 0.0)
+            portfolio.realized_pnl = summary.get("realized_pnl", 0.0)
             portfolio.currency = summary.get("currency", "USD")
             portfolio.last_updated = datetime.utcnow()
             db.commit()
@@ -209,12 +210,15 @@ class EToroSyncService:
         mirrors_pnl = sum(
             pos.get("unrealizedPnL", {}).get("pnL", 0.0) for m in mirrors for pos in m.get("positions", [])
         )
-        closed_positions_profit = sum(m.get("closedPositionsNetProfit", 0.0) for m in mirrors)
-        unrealized_pnl = positions_pnl + mirrors_pnl + closed_positions_profit
-
-        # 5. Total Value (Equity)
-        total_value = available_cash + total_invested + unrealized_pnl
+        unrealized_pnl = positions_pnl + mirrors_pnl
         
+        # 5. Realized PnL
+        realized_pnl = sum(m.get("closedPositionsNetProfit", 0.0) for m in mirrors)
+
+        # 6. Total Value (Equity) = Invested + Realized + Unrealized + Credit
+        total_value = total_invested + realized_pnl + unrealized_pnl + available_cash
+        
+        # Currency: eToro API Currency ID 1=USD, 2=EUR
         currency = "EUR" if cp.get("accountCurrencyId") == 2 else "USD"
 
         return {
@@ -222,8 +226,8 @@ class EToroSyncService:
             "available_cash": available_cash,
             "invested": total_invested,
             "unrealized_pnl": unrealized_pnl,
+            "realized_pnl": realized_pnl,
             "currency": currency,
-            "realized_pnl": 0.0,
             "daily_pnl": 0.0,
             "weekly_pnl": 0.0,
             "monthly_pnl": 0.0,
