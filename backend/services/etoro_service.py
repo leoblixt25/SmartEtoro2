@@ -258,6 +258,7 @@ class EToroSyncService:
                 "max_drawdown": 0.0,
                 "volatility": 0.0,
                 "risk_score": 5.0,
+                "total_return_pct": m.get("netProfit", 0.0),
             })
         return result
 
@@ -278,6 +279,7 @@ class EToroSyncService:
                 trader.max_drawdown = info.get("max_drawdown", trader.max_drawdown)
                 trader.volatility = info.get("volatility", trader.volatility)
                 trader.risk_score = info.get("risk_score", trader.risk_score)
+                trader.total_return_pct = info.get("total_return_pct", trader.total_return_pct)
                 trader.last_updated = datetime.utcnow()
             else:
                 trader = CopiedTrader(
@@ -289,6 +291,7 @@ class EToroSyncService:
                     max_drawdown=info.get("max_drawdown", 0.0),
                     volatility=info.get("volatility", 0.0),
                     risk_score=info.get("risk_score", 0.0),
+                    total_return_pct=info.get("total_return_pct", 0.0),
                 )
                 db.add(trader)
 
