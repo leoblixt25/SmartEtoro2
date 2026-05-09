@@ -20,7 +20,8 @@ from sqlalchemy.orm import Session
 from backend.database.connection import init_db, get_db
 from backend.database.models import (
     Portfolio, CopiedTrader, AutomationRule, AutomationLog,
-    Alert, AIRecommendation, RiskSettings, AutomationStatus
+    Alert, AIRecommendation, RiskSettings, AutomationStatus,
+    AppSetting
 )
 from backend.api.schemas import (
     PortfolioCreate, PortfolioResponse, PortfolioUpdate,
@@ -87,7 +88,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=os.getenv(
-        "ALLOWED_ORIGINS", "http://localhost:3000").split(","),
+        "ALLOWED_ORIGINS", "http://localhost:3000,https://smart-etoro2.vercel.app").split(","),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -518,23 +519,28 @@ def mark_alert_read(alert_id: int, db: Session = Depends(get_db)):
 # ──────────────────────────────────────────────
 
 @app.get("/api/settings")
-def get_settings():
+def get_settings(db: Session = Depends(get_db)):
     """Get current application settings."""
+
+    def _load_setting(key: str, default=""):
+        setting = db.query(AppSetting).filter(AppSetting.key == key).first()
+        if setting is not None:
+            return setting.value
+        return os.getenv(key.upper(), default)
+
     return {
-        "etoro_api_key": os.getenv("ETORO_API_KEY", ""),
-        "etoro_api_secret": os.getenv("ETORO_API_SECRET", ""),
-        "etoro_account_id": os.getenv("ETORO_ACCOUNT_ID", ""),
-        "telegram_bot_token": os.getenv("TELEGRAM_BOT_TOKEN", ""),
-        "telegram_chat_id": os.getenv("TELEGRAM_CHAT_ID", ""),
-        "is_simulation": os.getenv("APP_ENV", "development") == "development"
+        "etoro_api_key": _load_setting("etoro_api_key"),
+        "etoro_api_secret": _load_setting("etoro_api_secret"),
+        "etoro_account_id": _load_setting("etoro_account_id"),
+        "telegram_bot_token": _load_setting("telegram_bot_token"),
+        "telegram_chat_id": _load_setting("telegram_chat_id"),
+        "is_simulation": _load_setting("is_simulation", True) is True,
     }
 
 
 @app.post("/api/settings")
-def update_settings(settings: dict):
-    """Update application settings (stored in environment variables)."""
-    # In a production app, you'd want to store these securely
-    # For demo purposes, we'll just validate and return success
+def update_settings(settings: dict, db: Session = Depends(get_db)):
+    """Update application settings stored in the database."""
 
     required_fields = ["etoro_api_key", "etoro_api_secret",
                        "telegram_bot_token", "telegram_chat_id"]
@@ -543,8 +549,15 @@ def update_settings(settings: dict):
             raise HTTPException(
                 status_code=400, detail=f"Missing required field: {field}")
 
-    # Here you would typically save to a secure config store
-    # For this demo, we'll just acknowledge the settings
+    for field, value in settings.items():
+        setting = db.query(AppSetting).filter(AppSetting.key == field).first()
+        if setting is None:
+            setting = AppSetting(key=field, value=value)
+            db.add(setting)
+        else:
+            setting.value = value
+
+    db.commit()
     logger.info("Settings updated successfully")
 
     return {"message": "Settings updated successfully", "settings": settings}

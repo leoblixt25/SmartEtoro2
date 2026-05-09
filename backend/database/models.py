@@ -28,6 +28,17 @@ class AutomationStatus(str, enum.Enum):
     PAUSED = "paused"
 
 
+class AppSetting(Base):
+    """Persistent application settings stored in the database."""
+    __tablename__ = "app_settings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    key = Column(String, unique=True, nullable=False, index=True)
+    value = Column(JSON, nullable=False, default="")
+    updated_at = Column(DateTime, default=datetime.utcnow,
+                        onupdate=datetime.utcnow)
+
+
 class AlertType(str, enum.Enum):
     DRAWDOWN = "drawdown"
     PROFIT_MILESTONE = "profit_milestone"
@@ -117,7 +128,8 @@ class CopiedTrader(Base):
     last_updated = Column(DateTime, default=datetime.utcnow)
 
     portfolio = relationship("Portfolio", back_populates="copied_traders")
-    analytics_history = relationship("TraderAnalyticsSnapshot", back_populates="trader")
+    analytics_history = relationship(
+        "TraderAnalyticsSnapshot", back_populates="trader")
 
 
 class TraderAnalyticsSnapshot(Base):
@@ -157,7 +169,8 @@ class AutomationRule(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     portfolio_id = Column(Integer, ForeignKey("portfolios.id"))
-    rule_type = Column(String, nullable=False)   # take_profit / rebalance / pause_copy etc.
+    # take_profit / rebalance / pause_copy etc.
+    rule_type = Column(String, nullable=False)
     name = Column(String, nullable=False)
     description = Column(Text, nullable=True)
     status = Column(Enum(AutomationStatus), default=AutomationStatus.DISABLED)
@@ -214,7 +227,8 @@ class AIRecommendation(Base):
     confidence = Column(Float, default=0.5)      # 0.0–1.0
     risk_level = Column(String, default="low")   # low / medium / high
     is_acted_on = Column(Boolean, default=False)
-    related_trader_id = Column(Integer, ForeignKey("copied_traders.id"), nullable=True)
+    related_trader_id = Column(Integer, ForeignKey(
+        "copied_traders.id"), nullable=True)
     expires_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -242,7 +256,8 @@ class RiskSettings(Base):
 
 def get_engine(database_url: str = "sqlite:///./etoro_platform.db"):
     """Create SQLAlchemy engine. Swap URL for PostgreSQL in production."""
-    connect_args = {"check_same_thread": False} if database_url.startswith("sqlite") else {}
+    connect_args = {"check_same_thread": False} if database_url.startswith(
+        "sqlite") else {}
     return create_engine(database_url, connect_args=connect_args)
 
 

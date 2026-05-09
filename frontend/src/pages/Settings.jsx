@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { Save, Key, MessageSquare, User, AlertCircle, CheckCircle } from 'lucide-react'
+import { API_URL } from '../services/api'
 
 export default function Settings() {
   const [settings, setSettings] = useState({
@@ -18,7 +19,7 @@ export default function Settings() {
   useEffect(() => {
     const loadSettings = async () => {
       try {
-        const response = await fetch('/api/settings')
+        const response = await fetch(`${API_URL}/api/settings`)
         if (response.ok) {
           const data = await response.json()
           setSettings(data)
@@ -40,7 +41,7 @@ export default function Settings() {
     setMessage('')
 
     try {
-      const response = await fetch('/api/settings', {
+      const response = await fetch(`${API_URL}/api/settings`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
