@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState } from 'react'
 import { BrowserRouter as Router, Routes, Route, NavLink } from 'react-router-dom'
+import { API_URL } from './services/api'
 import {
   LayoutDashboard, Users, Shield, Zap, Bell, BarChart3,
   Settings as SettingsIcon, Moon, Sun, Menu, X, AlertTriangle
@@ -146,7 +147,7 @@ function SimBanner() {
   React.useEffect(() => {
     const fetchPortfolio = async () => {
       try {
-        const portfolio = await (await fetch(`/api/portfolios/${portfolioId}`)).json()
+        const portfolio = await (await fetch(`${API_URL}/api/portfolios/${portfolioId}`)).json()
         setIsSimulation(portfolio.is_simulation ?? true)
       } catch (err) {
         console.error('Failed to fetch portfolio:', err)

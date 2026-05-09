@@ -12,7 +12,7 @@ import {
   DollarSign, TrendingUp, TrendingDown, Activity,
   RefreshCw, Sparkles, AlertTriangle, ChevronRight
 } from 'lucide-react'
-import { portfolioAPI, aiAPI, tradersAPI } from '../services/api'
+import { portfolioAPI, aiAPI, tradersAPI, API_URL } from '../services/api'
 import {
   Card, PageHeader, StatCard, HealthRing, PnlDisplay,
   Badge, Spinner, EmptyState, SectionHeader, RiskPill
@@ -169,7 +169,7 @@ export default function Dashboard() {
   const syncEToroData = async () => {
     setLoading(true)
     try {
-      const response = await fetch(`/api/portfolios/${portfolioId}/sync`, {
+      const response = await fetch(`${API_URL}/api/portfolios/${portfolioId}/sync`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
       })
