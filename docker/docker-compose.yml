@@ -1,0 +1,56 @@
+version: "3.9"
+
+services:
+  # ── Backend API ──────────────────────────────
+  backend:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.backend
+    container_name: copyvault_backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ../logs:/app/logs
+      - db_data:/app/data
+    environment:
+      - DATABASE_URL=sqlite:////app/data/etoro_platform.db
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - ALLOWED_ORIGINS=http://localhost:3000
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ── Frontend ─────────────────────────────────
+  frontend:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.frontend
+    container_name: copyvault_frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  # ── Telegram Bot ─────────────────────────────
+  telegram_bot:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.backend
+    container_name: copyvault_telegram
+    command: python -m telegram.bot
+    environment:
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - BACKEND_URL=http://backend:8000
+      - DEFAULT_PORTFOLIO_ID=${DEFAULT_PORTFOLIO_ID:-1}
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  db_data:
+    driver: local
