@@ -184,27 +184,27 @@ class EToroSyncService:
             return False
 
     def _extract_summary(self, raw: Dict) -> Dict:
-        """Parse eToro API portfolio response into flat summary dict based on official formulas."""
-        # DEBUG: Log the full raw payload to identify the correct fields
-        import json
-        logger.info(f"FULL ETORO PAYLOAD: {json.dumps(raw, indent=2)}")
-        
+        """Parse eToro API portfolio response into flat summary dict based on payload analysis."""
         cp = raw.get("clientPortfolio", {})
         
         # 1. Available Cash
         available_cash = cp.get("credit", 0.0)
         
-        # 2. Total Invested
+        # 2. Open Positions value
         positions = cp.get("positions", [])
-        mirrors = cp.get("mirrors", [])
-        
         positions_amount = sum(p.get("amount", 0.0) for p in positions)
+        
+        # 3. Mirror (Copy Trading) value
+        mirrors = cp.get("mirrors", [])
         mirrors_positions_amount = sum(
             pos.get("amount", 0.0) for m in mirrors for pos in m.get("positions", [])
         )
-        total_invested = positions_amount + mirrors_positions_amount
+        # Mirrors have their own available cash which is part of Total Invested
+        mirrors_available = sum(m.get("availableAmount", 0.0) for m in mirrors)
+        
+        total_invested = positions_amount + mirrors_positions_amount + mirrors_available
 
-        # 3. Unrealized PnL
+        # 4. Total PnL (Unrealized)
         positions_pnl = sum(p.get("unrealizedPnL", {}).get("pnL", 0.0) for p in positions)
         mirrors_pnl = sum(
             pos.get("unrealizedPnL", {}).get("pnL", 0.0) for m in mirrors for pos in m.get("positions", [])
@@ -212,10 +212,9 @@ class EToroSyncService:
         closed_positions_profit = sum(m.get("closedPositionsNetProfit", 0.0) for m in mirrors)
         unrealized_pnl = positions_pnl + mirrors_pnl + closed_positions_profit
 
-        # 4. Total Value (Equity) - Raw eToro formula: Available Cash + Total Invested + Unrealized PnL
+        # 5. Total Value (Equity)
         total_value = available_cash + total_invested + unrealized_pnl
         
-        # Currency: eToro API Currency ID 1=USD, 2=EUR
         currency = "EUR" if cp.get("accountCurrencyId") == 2 else "USD"
 
         return {
@@ -234,19 +233,23 @@ class EToroSyncService:
         """Extract copied trader info from mirrors array."""
         cp = raw.get("clientPortfolio", {})
         mirrors = cp.get("mirrors", [])
-        total_equity = cp.get("credit", 0.0) + sum(p.get("initialAmountInDollars", 0.0) for p in cp.get("positions", [])) + cp.get("unrealizedPnL", 0.0)
         
         result = []
         for m in mirrors:
+            # PnL % = (Closed PnL + Unrealized PnL) / Initial Investment
+            unrealized_pnl_mirror = sum(pos.get("unrealizedPnL", {}).get("pnL", 0.0) for pos in m.get("positions", []))
+            total_pnl = m.get("closedPositionsNetProfit", 0.0) + unrealized_pnl_mirror
+            initial_investment = m.get("initialInvestment", 1.0)
+            
             result.append({
                 "trader_id": str(m.get("mirrorId", 0)),
                 "username": m.get("parentUsername", "Unknown"),
-                "allocation_pct": (m.get("initialInvestment", 0.0) / max(total_equity, 1.0)) * 100,
+                "allocation_pct": (m.get("initialInvestment", 0.0) / max(cp.get("credit", 1.0) + sum(p.get("amount", 0.0) for p in cp.get("positions", [])) + sum(pos.get("amount", 0.0) for m in cp.get("mirrors", []) for pos in m.get("positions", [])), 1.0)) * 100,
                 "avg_return": 0.0,
                 "max_drawdown": 0.0,
                 "volatility": 0.0,
                 "risk_score": 5.0,
-                "total_return_pct": m.get("netProfit", 0.0),
+                "total_return_pct": (total_pnl / max(initial_investment, 1.0)) * 100,
             })
         return result
 
