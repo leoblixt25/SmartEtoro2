@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import List, Optional
 
-from fastapi import FastAPI, Depends, HTTPException, WebSocket, WebSocketDisconnect, status
+from fastapi import FastAPI, Depends, HTTPException, WebSocket, WebSocketDisconnect, status, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
@@ -164,6 +164,10 @@ async def broadcast(event: str, data: dict):
 @app.get("/health")
 def health_check():
     return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
+
+@app.head("/health")
+def health_check_head():
+    return Response(status_code=status.HTTP_200_OK)
 
 
 # ──────────────────────────────────────────────
