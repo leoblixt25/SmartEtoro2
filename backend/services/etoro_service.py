@@ -186,20 +186,28 @@ class EToroSyncService:
     def _extract_summary(self, raw: Dict) -> Dict:
         """Parse eToro API portfolio response into flat summary dict."""
         cp = raw.get("clientPortfolio", {})
-        positions = cp.get("positions", [])
         
-        # Calculate totals correctly from raw positions
-        invested = sum(p.get("initialAmountInDollars", 0.0) for p in positions)
+        # 1. Cash Balance
         cash = cp.get("credit", 0.0)
+        
+        # 2. Open Positions value
+        positions = cp.get("positions", [])
+        invested_positions = sum(p.get("amount", 0.0) for p in positions)
+        
+        # 3. Mirror (Copy Trading) value
+        mirrors = cp.get("mirrors", [])
+        invested_mirrors = sum(m.get("initialInvestment", 0.0) for m in mirrors)
+        
+        # 4. Total PnL
         unrealized_pnl = cp.get("unrealizedPnL", 0.0)
         
         # eToro API Currency ID 1=USD, 2=EUR
         currency = "EUR" if cp.get("accountCurrencyId") == 2 else "USD"
 
         return {
-            "equity": cash + invested + unrealized_pnl,
+            "equity": cash + invested_positions + invested_mirrors + unrealized_pnl,
             "available_cash": cash,
-            "invested": invested,
+            "invested": invested_positions + invested_mirrors,
             "unrealized_pnl": unrealized_pnl,
             "currency": currency,
             "realized_pnl": 0.0,
