@@ -80,6 +80,10 @@ class PortfolioAnalyticsEngine:
             for t in traders
         ]
 
+        # Persist health score to the portfolio record
+        portfolio.health_score = round(health_score, 1)
+        db.commit()
+
         return PortfolioHealthResult(
             health_score=round(health_score, 1),
             diversification_score=round(diversification, 1),

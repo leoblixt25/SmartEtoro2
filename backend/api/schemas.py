@@ -150,7 +150,10 @@ class PortfolioHealthResult(BaseModel):
     risk_exposure: str
     concentration_risk: bool
     overexposed_traders: List[str]
+    underperforming_traders: List[str]
     recommendations: List[str]
+    pnl_breakdown: Dict[str, float]
+    allocation_by_trader: List[Dict]
 
 
 class PerformanceChartPoint(BaseModel):

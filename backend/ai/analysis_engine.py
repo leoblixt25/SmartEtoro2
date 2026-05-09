@@ -74,7 +74,7 @@ class AIAnalysisEngine:
             logger.warning("ANTHROPIC_API_KEY not set — AI analysis will return mock data")
             self._client = None
         else:
-            self._client = anthropic.Anthropic(api_key=key)
+            self._client = anthropic.AsyncAnthropic(api_key=key)
 
     # ── Public analysis methods ──────────────────
 
@@ -211,8 +211,8 @@ Only return recommendations if there are real risk concerns. If everything looks
             return self._mock_response(context)
 
         try:
-            response = self._client.messages.create(
-                model="claude-opus-4-5",
+            response = await self._client.messages.create(
+                model="claude-sonnet-4-20250514",
                 max_tokens=1500,
                 system=SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": prompt}],

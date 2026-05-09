@@ -577,9 +577,9 @@ def update_settings(settings: dict, db: Session = Depends(get_db)):
     required_fields = ["etoro_api_key", "etoro_api_secret",
                        "telegram_bot_token", "telegram_chat_id"]
     for field in required_fields:
-        if field not in settings:
+        if field not in settings or not isinstance(settings[field], str) or not settings[field].strip():
             raise HTTPException(
-                status_code=400, detail=f"Missing required field: {field}")
+                status_code=400, detail=f"Missing or empty required field: {field}")
 
     for field, value in settings.items():
         setting = db.query(AppSetting).filter(AppSetting.key == field).first()
