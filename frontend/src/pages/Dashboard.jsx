@@ -22,17 +22,18 @@ import { usePortfolio } from '../App'
 // ──────────────────────────────────────────────
 // Custom chart tooltip
 // ──────────────────────────────────────────────
-function ChartTooltip({ active, payload, label }) {
+function ChartTooltip({ active, payload, label, currency = 'USD' }) {
   if (!active || !payload?.length) return null
+  const sym = currency === 'EUR' ? '€' : '$'
   return (
     <div className="bg-surface-800 border border-surface-700 rounded-lg p-3 shadow-xl">
       <p className="text-xs text-surface-400 mb-1 font-body">{label}</p>
       <p className="text-sm font-mono text-white">
-        ${payload[0]?.value?.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+        {sym}{payload[0]?.value?.toLocaleString('en-US', { minimumFractionDigits: 2 })}
       </p>
       {payload[1] && (
         <p className={`text-xs font-mono mt-0.5 ${payload[1].value >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-          {payload[1].value >= 0 ? '+' : ''}${payload[1].value?.toFixed(2)} PnL
+          {payload[1].value >= 0 ? '+' : ''}{sym}{payload[1].value?.toFixed(2)} PnL
         </p>
       )}
     </div>
@@ -190,6 +191,9 @@ export default function Dashboard() {
     }
   }
 
+  const formatCurrency = (val, cur = 'USD') =>
+    `${cur === 'EUR' ? '€' : '$'}${(val || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}`
+
   if (loading) return (
     <div className="flex items-center justify-center h-64">
       <div className="text-center">
@@ -243,16 +247,11 @@ export default function Dashboard() {
 
       {/* Stat Cards Row */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-  const formatCurrency = (val, cur = 'USD') => {
-    return `${cur === 'EUR' ? '€' : '$'}${val.toLocaleString('en-US', { minimumFractionDigits: 2 })}`
-  }
-
-  // Inside render:
-  <StatCard
-    label="Total Value"
-    value={formatCurrency(p.total_value || 0, p.currency)}
-    icon={DollarSign}
-  />
+        <StatCard
+          label="Total Value"
+          value={formatCurrency(p.total_value, p.currency)}
+          icon={DollarSign}
+        />
         <StatCard
           label="Daily PnL"
           value={<PnlDisplay value={p.daily_pnl || 0} currency={p.currency} />}
@@ -262,16 +261,16 @@ export default function Dashboard() {
           colorClass={p.daily_pnl >= 0 ? 'bg-emerald-500/15' : 'bg-red-500/15'}
         />
         <StatCard
-          label="Monthly PnL"
-          value={<PnlDisplay value={p.monthly_pnl || 0} currency={p.currency} />}
-          subvalue={`${p.monthly_pnl >= 0 ? '+' : ''}${((p.monthly_pnl || 0) / (p.total_value || 1) * 100).toFixed(2)}%`}
-          trend={p.monthly_pnl || 0}
+          label="Weekly PnL"
+          value={<PnlDisplay value={p.weekly_pnl || 0} currency={p.currency} />}
+          subvalue={`${p.weekly_pnl >= 0 ? '+' : ''}${((p.weekly_pnl || 0) / (p.total_value || 1) * 100).toFixed(2)}%`}
+          trend={p.weekly_pnl || 0}
           icon={Activity}
           colorClass="bg-purple-500/15"
         />
         <StatCard
           label="Monthly PnL"
-          value={<PnlDisplay value={p.monthly_pnl || 0} />}
+          value={<PnlDisplay value={p.monthly_pnl || 0} currency={p.currency} />}
           subvalue={`${p.monthly_pnl >= 0 ? '+' : ''}${((p.monthly_pnl || 0) / (p.total_value || 1) * 100).toFixed(2)}%`}
           trend={p.monthly_pnl || 0}
           icon={Activity}
@@ -309,8 +308,8 @@ export default function Dashboard() {
                 <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
                 <XAxis dataKey="date" tick={{ fill: '#64748b', fontSize: 11 }} tickLine={false} />
                 <YAxis tick={{ fill: '#64748b', fontSize: 11 }} tickLine={false} axisLine={false}
-                  tickFormatter={v => `$${(v/1000).toFixed(1)}k`} />
-                <Tooltip content={<ChartTooltip />} />
+                  tickFormatter={v => `${p.currency === 'EUR' ? '€' : '$'}${(v/1000).toFixed(1)}k`} />
+                <Tooltip content={<ChartTooltip currency={p.currency} />} />
                 <Area type="monotone" dataKey="value" stroke="#0ea5e9" strokeWidth={2}
                   fill="url(#valueGrad)" dot={false} />
               </AreaChart>
@@ -348,7 +347,7 @@ export default function Dashboard() {
             <div className="flex justify-between">
               <span className="text-sm font-medium text-white font-body">Invested Amount</span>
               <span className="font-mono text-sm text-surface-200">
-                ${(p.invested_amount || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                {formatCurrency(p.invested_amount, p.currency)}
               </span>
             </div>
           </div>
