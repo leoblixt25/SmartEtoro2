@@ -72,6 +72,38 @@ ws_connections: list[WebSocket] = []
 async def lifespan(app: FastAPI):
     logger.info("Starting eToro Portfolio Platform…")
     init_db()
+
+    # Create default portfolio if none exists
+    db = SessionLocal()
+    try:
+        portfolio_count = db.query(Portfolio).count()
+        if portfolio_count == 0:
+            logger.info("Creating default portfolio...")
+            default_portfolio = Portfolio(
+                user_id="default_user",
+                total_value=10000.0,
+                invested_amount=10000.0,
+                available_cash=10000.0,
+                is_simulation=True
+            )
+            db.add(default_portfolio)
+            db.commit()
+            db.refresh(default_portfolio)
+
+            # Create default risk settings
+            settings = RiskSettings(portfolio_id=default_portfolio.id)
+            db.add(settings)
+            db.commit()
+
+            logger.info(
+                f"Default portfolio created with ID: {default_portfolio.id}")
+        else:
+            logger.info(f"Found {portfolio_count} existing portfolio(s)")
+    except Exception as e:
+        logger.error(f"Error creating default portfolio: {e}")
+    finally:
+        db.close()
+
     scheduler.start()
     yield
     scheduler.stop()
