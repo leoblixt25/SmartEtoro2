@@ -144,14 +144,15 @@ export function RiskPill({ level }) {
 // ──────────────────────────────────────────────
 // PnL display
 // ──────────────────────────────────────────────
-export function PnlDisplay({ value, prefix = '$', showSign = true, className }) {
+export function PnlDisplay({ value, currency = 'USD', prefix, showSign = true, className }) {
   const isPositive = value >= 0
   const color = isPositive ? 'text-emerald-400' : 'text-red-400'
   const sign = showSign ? (isPositive ? '+' : '') : ''
+  const finalPrefix = prefix !== undefined ? prefix : (currency === 'EUR' ? '€' : '$')
 
   return (
     <span className={clsx(color, className, 'font-mono')}>
-      {sign}{prefix}{Math.abs(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+      {sign}{finalPrefix}{Math.abs(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
     </span>
   )
 }

@@ -243,19 +243,31 @@ export default function Dashboard() {
 
       {/* Stat Cards Row */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCard
-          label="Total Value"
-          value={`$${(p.total_value || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}`}
-          icon={DollarSign}
-          colorClass="bg-brand-500/15"
-        />
+  const formatCurrency = (val, cur = 'USD') => {
+    return `${cur === 'EUR' ? '€' : '$'}${val.toLocaleString('en-US', { minimumFractionDigits: 2 })}`
+  }
+
+  // Inside render:
+  <StatCard
+    label="Total Value"
+    value={formatCurrency(p.total_value || 0, p.currency)}
+    icon={DollarSign}
+  />
         <StatCard
           label="Daily PnL"
-          value={<PnlDisplay value={p.daily_pnl || 0} />}
+          value={<PnlDisplay value={p.daily_pnl || 0} currency={p.currency} />}
           subvalue={`${p.daily_pnl >= 0 ? '+' : ''}${((p.daily_pnl || 0) / (p.total_value || 1) * 100).toFixed(2)}%`}
           trend={p.daily_pnl || 0}
           icon={p.daily_pnl >= 0 ? TrendingUp : TrendingDown}
           colorClass={p.daily_pnl >= 0 ? 'bg-emerald-500/15' : 'bg-red-500/15'}
+        />
+        <StatCard
+          label="Monthly PnL"
+          value={<PnlDisplay value={p.monthly_pnl || 0} currency={p.currency} />}
+          subvalue={`${p.monthly_pnl >= 0 ? '+' : ''}${((p.monthly_pnl || 0) / (p.total_value || 1) * 100).toFixed(2)}%`}
+          trend={p.monthly_pnl || 0}
+          icon={Activity}
+          colorClass="bg-purple-500/15"
         />
         <StatCard
           label="Monthly PnL"
@@ -328,7 +340,7 @@ export default function Dashboard() {
             ].map(({ label, value }) => (
               <div key={label} className="flex items-center justify-between py-2 border-b border-surface-800 last:border-0">
                 <span className="text-sm text-surface-400 font-body">{label}</span>
-                <PnlDisplay value={value} className="text-sm" />
+                <PnlDisplay value={value} currency={p.currency} className="text-sm" />
               </div>
             ))}
           </div>
