@@ -81,7 +81,7 @@ AVAILABLE CANDIDATES (Choose 3 from this list or the CURRENT PORTFOLIO list):
 
 Output your analysis in the following JSON schema:
 {
-  TARGET_KEY: [
+  "target_portfolio": [
     {"username": "trader_1", "allocation_pct": 50, "reasoning": "Performance is resilient."},
     {"username": "trader_2", "allocation_pct": 25, "reasoning": "Low risk hedge."},
     {"username": "trader_3", "allocation_pct": 25, "reasoning": "Diversification."}
@@ -219,7 +219,7 @@ class GeminiScout:
             return {TARGET_KEY: [], "total_risk_score": 0, "market_sentiment": "unknown"}
         pct = round(100 / len(top), 1)
         return {
-            TARGET_KEY: [
+  "target_portfolio": [
                 {"username": t["username"], "allocation_pct": pct, "reasoning": "Fallback — equal weight"}
                 for t in top
             ],
@@ -316,30 +316,19 @@ class GeminiScout:
             raise RuntimeError(f"Gemini API error: {e}")
 
     def _parse_response(self, raw_text: str):
-        """Robustly parse JSON from Gemini text output.
-
-        Handles markdown fences, preamble text, trailing commentary,
-        and bare JSON objects/arrays.
-        """
-        import re
-        text = raw_text.strip()
-        # Strip markdown code fences if present
-        text = re.sub(r'^```(?:json)?\s*', '', text, flags=re.MULTILINE)
-        text = re.sub(r'\s*```$', '', text, flags=re.MULTILINE)
-        # Find the first JSON object or array
-        brace_start = text.find('{')
-        brace_end = text.rfind('}')
-        bracket_start = text.find('[')
-        if brace_start != -1 and brace_end != -1 and brace_end > brace_start:
-            text = text[brace_start:brace_end + 1]
-        elif bracket_start != -1:
-            bracket_end = text.rfind(']')
-            if bracket_end > bracket_start:
-                text = text[bracket_start:bracket_end + 1]
+        import json
         try:
-            data = json.loads(text)
-            return data
+            # 1. Clean the text
+            clean_json = raw_text.strip().replace('```json', '').replace('```', '')
+            data = json.loads(clean_json)
+
+            # 2. Extract the data using the VARIABLE, not a string
+            # We use .get() to prevent KeyErrors forever.
+            return {
+                "action_required": data.get("action_required", False),
+                "reasoning": data.get("reasoning", "No reasoning provided"),
+                "target_portfolio": data.get("target_portfolio", [])
+            }
         except Exception as e:
-            print(f"DEBUG: Gemini raw output was: {raw_text}")
-            print(f"DEBUG: Extracted text was: {text}")
-            return {TARGET_KEY: []}
+            print(f"CRITICAL PARSE ERROR: {e}")
+            return {"action_required": False, "reasoning": "Error", "target_portfolio": []}
