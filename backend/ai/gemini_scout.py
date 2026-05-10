@@ -141,8 +141,7 @@ class GeminiScout:
         prompt = self._build_prompt(holdings_data, news_data, top_traders)
 
         try:
-            json_config = genai.GenerationConfig(response_mime_type="application/json")
-            response = await self._call_gemini(prompt, generation_config=json_config)
+            response = await self._call_gemini(prompt)
             parsed = self._parse_response(response)
             if parsed.get("action_required"):
                 logger.warning(
@@ -180,9 +179,8 @@ class GeminiScout:
         prompt = self._build_allocation_prompt(holdings_data, news_data, top_traders)
 
         try:
-            json_config = genai.GenerationConfig(response_mime_type="application/json")
-            response = await self._call_gemini(prompt, model=self._allocation_model, generation_config=json_config)
-            parsed = json.loads(response)
+            response = await self._call_gemini(prompt, model=self._allocation_model)
+            parsed = self._parse_response(response)
             if not isinstance(parsed, dict):
                 logger.warning(f"Gemini returned non-dict JSON: {type(parsed).__name__} — using fallback")
                 return self._fallback_allocation(holdings_data)
@@ -318,12 +316,30 @@ class GeminiScout:
             raise RuntimeError(f"Gemini API error: {e}")
 
     def _parse_response(self, raw_text: str):
-        import json
+        """Robustly parse JSON from Gemini text output.
+
+        Handles markdown fences, preamble text, trailing commentary,
+        and bare JSON objects/arrays.
+        """
+        import re
+        text = raw_text.strip()
+        # Strip markdown code fences if present
+        text = re.sub(r'^```(?:json)?\s*', '', text, flags=re.MULTILINE)
+        text = re.sub(r'\s*```$', '', text, flags=re.MULTILINE)
+        # Find the first JSON object or array
+        brace_start = text.find('{')
+        brace_end = text.rfind('}')
+        bracket_start = text.find('[')
+        if brace_start != -1 and brace_end != -1 and brace_end > brace_start:
+            text = text[brace_start:brace_end + 1]
+        elif bracket_start != -1:
+            bracket_end = text.rfind(']')
+            if bracket_end > bracket_start:
+                text = text[bracket_start:bracket_end + 1]
         try:
-            # Force-strip every possible whitespace character
-            data = json.loads(raw_text.strip())
-            # Return the dict as is. We will handle key access safely.
+            data = json.loads(text)
             return data
         except Exception as e:
             print(f"DEBUG: Gemini raw output was: {raw_text}")
+            print(f"DEBUG: Extracted text was: {text}")
             return {TARGET_KEY: []}
