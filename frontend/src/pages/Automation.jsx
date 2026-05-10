@@ -6,7 +6,7 @@
 import React, { useState, useEffect, useCallback } from 'react'
 import {
   Zap, StopCircle, RefreshCw, Plus, Clock, CheckCircle,
-  XCircle, RotateCcw, AlertTriangle, ChevronDown, ChevronUp
+  XCircle, RotateCcw, AlertTriangle, ChevronDown, ChevronUp, Trash2
 } from 'lucide-react'
 import { automationAPI } from '../services/api'
 import {
@@ -84,9 +84,21 @@ function StatusBadge({ status }) {
 // ──────────────────────────────────────────────
 // Rule card
 // ──────────────────────────────────────────────
-function RuleCard({ rule, onToggle, portfolioId }) {
+function RuleCard({ rule, onToggle, onDelete, portfolioId }) {
   const def = RULE_TYPES.find(r => r.type === rule.rule_type)
   const isEnabled = rule.status === 'enabled'
+  const [deleting, setDeleting] = useState(false)
+  const [confirm, setConfirm] = useState(false)
+
+  const handleDelete = async () => {
+    setDeleting(true)
+    try {
+      await onDelete(rule.id)
+    } finally {
+      setDeleting(false)
+      setConfirm(false)
+    }
+  }
 
   return (
     <div className="border border-surface-700 rounded-xl p-4 hover:border-surface-600 transition-colors">
@@ -119,7 +131,27 @@ function RuleCard({ rule, onToggle, portfolioId }) {
             </div>
           </div>
         </div>
-        <div className="shrink-0">
+        <div className="shrink-0 flex items-center gap-1">
+          {!confirm ? (
+            <button
+              onClick={() => setConfirm(true)}
+              className="p-1.5 text-surface-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors"
+              title="Delete rule"
+            >
+              <Trash2 size={14} />
+            </button>
+          ) : (
+            <div className="flex items-center gap-1">
+              <button onClick={handleDelete} disabled={deleting}
+                className="px-2 py-1 bg-red-500 text-white rounded text-xs font-body">
+                {deleting ? '…' : 'Delete'}
+              </button>
+              <button onClick={() => setConfirm(false)}
+                className="px-2 py-1 bg-surface-700 text-surface-300 rounded text-xs font-body">
+                No
+              </button>
+            </div>
+          )}
           <Toggle
             checked={isEnabled}
             onChange={() => onToggle(rule.id)}
@@ -378,6 +410,11 @@ export default function Automation() {
     }
   }
 
+  const handleDelete = async (ruleId) => {
+    await automationAPI.deleteRule(portfolioId, ruleId)
+    setRules(rs => rs.filter(r => r.id !== ruleId))
+  }
+
   const handleEmergencyStop = async () => {
     await automationAPI.emergencyStop(portfolioId)
     fetchAll()
@@ -462,7 +499,7 @@ export default function Automation() {
           ) : (
             <div className="space-y-3">
               {rules.map(r => (
-                <RuleCard key={r.id} rule={r} onToggle={handleToggle} portfolioId={portfolioId} />
+                <RuleCard key={r.id} rule={r} onToggle={handleToggle} onDelete={handleDelete} portfolioId={portfolioId} />
               ))}
             </div>
           )}

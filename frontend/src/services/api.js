@@ -61,6 +61,7 @@ export const automationAPI = {
   listRules:    (pid) =>        api.get(`/api/portfolios/${pid}/automation/rules`).then(r => r.data),
   createRule:   (pid, d) =>     api.post(`/api/portfolios/${pid}/automation/rules`, d).then(r => r.data),
   toggleRule:   (pid, rid) =>   api.post(`/api/portfolios/${pid}/automation/rules/${rid}/toggle`).then(r => r.data),
+  deleteRule:   (pid, rid) =>   api.delete(`/api/portfolios/${pid}/automation/rules/${rid}`).then(r => r.data),
   emergencyStop:(pid) =>        api.post(`/api/portfolios/${pid}/automation/emergency-stop`).then(r => r.data),
   getLogs:      (pid, limit=50) => api.get(`/api/portfolios/${pid}/automation/logs?limit=${limit}`).then(r => r.data),
   reverseAction:(lid, pid) =>   api.post(`/api/automation/logs/${lid}/reverse?portfolio_id=${pid}`).then(r => r.data),

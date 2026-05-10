@@ -511,6 +511,19 @@ def toggle_rule(portfolio_id: int, rule_id: int, db: Session = Depends(get_db)):
     return {"rule_id": rule_id, "new_status": rule.status}
 
 
+@app.delete("/api/portfolios/{portfolio_id}/automation/rules/{rule_id}")
+def delete_rule(portfolio_id: int, rule_id: int, db: Session = Depends(get_db)):
+    rule = db.query(AutomationRule).filter(
+        AutomationRule.id == rule_id,
+        AutomationRule.portfolio_id == portfolio_id,
+    ).first()
+    if not rule:
+        raise HTTPException(status_code=404, detail="Rule not found")
+    db.delete(rule)
+    db.commit()
+    return {"message": "Rule deleted", "rule_id": rule_id}
+
+
 @app.post("/api/portfolios/{portfolio_id}/automation/emergency-stop")
 def emergency_stop(portfolio_id: int, db: Session = Depends(get_db)):
     _get_portfolio_or_404(db, portfolio_id)
