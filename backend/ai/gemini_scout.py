@@ -77,9 +77,9 @@ Rules:
 AVAILABLE CANDIDATES (Choose 3 from this list or the CURRENT PORTFOLIO list):
 {available_candidates}
 
-Output ONLY a JSON object with this exact structure:
+Output your analysis in the following JSON schema:
 {
-  "allocations": [
+  "target_portfolio": [
     {"username": "trader_1", "allocation_pct": 50, "reasoning": "Performance is resilient."},
     {"username": "trader_2", "allocation_pct": 25, "reasoning": "Low risk hedge."},
     {"username": "trader_3", "allocation_pct": 25, "reasoning": "Diversification."}
@@ -167,7 +167,7 @@ class GeminiScout:
     ) -> dict:
         """Ask Gemini to propose a 3-trader allocation plan."""
         if not self.enabled:
-            return {"allocations": [], "total_risk_score": 0, "market_sentiment": "unknown"}
+            return {"target_portfolio": [], "total_risk_score": 0, "market_sentiment": "unknown"}
 
         if not self._allocation_model:
             self._allocation_model = genai.GenerativeModel(
@@ -183,7 +183,7 @@ class GeminiScout:
             parsed = json.loads(response)
 
             # Strict 3-trader enforcement
-            allocs = parsed.get("allocations", [])
+            allocs = parsed.get("target_portfolio", [])
             if len(allocs) != 3:
                 logger.warning(f"Gemini returned {len(allocs)} allocations, need 3 — using fallback")
                 return self._fallback_allocation(holdings_data)
@@ -200,7 +200,7 @@ class GeminiScout:
             logger.info(f"Gemini allocation: {[a['username'] for a in allocs]}")
 
             return {
-                "allocations": allocs,
+                "target_portfolio": allocs,
                 "total_risk_score": parsed.get("total_risk_score", 5.0),
                 "market_sentiment": parsed.get("market_sentiment", "neutral"),
             }
@@ -213,10 +213,10 @@ class GeminiScout:
         """Equal-weight fallback if Gemini fails."""
         top = sorted(holdings, key=lambda h: h.get("total_return_pct", 0) or 0, reverse=True)[:3]
         if not top:
-            return {"allocations": [], "total_risk_score": 0, "market_sentiment": "unknown"}
+            return {"target_portfolio": [], "total_risk_score": 0, "market_sentiment": "unknown"}
         pct = round(100 / len(top), 1)
         return {
-            "allocations": [
+            "target_portfolio": [
                 {"username": t["username"], "allocation_pct": pct, "reasoning": "Fallback — equal weight"}
                 for t in top
             ],
@@ -312,26 +312,19 @@ class GeminiScout:
             logger.error(f"Gemini API call failed: {e}")
             raise RuntimeError(f"Gemini API error: {e}")
 
-    def _parse_response(self, raw: str) -> dict:
+    def _parse_response(self, raw_text: str) -> dict:
         """Parse JSON response from Gemini.
 
         JSON mode (response_mime_type="application/json") guarantees
-        clean JSON, so no preamble/markdown stripping is needed.
+        clean JSON output — no preamble or markdown stripping needed.
         """
         try:
-            result = json.loads(raw)
-        except json.JSONDecodeError as e:
-            logger.error(f"Gemini returned invalid JSON (len={len(raw)}): {raw[:500]}")
+            return json.loads(raw_text.strip())
+        except json.JSONDecodeError:
+            logger.error(f"Failed to parse Gemini JSON. Raw output: {raw_text[:500]}")
             return {
                 "action_required": False,
                 "flagged_trader": None,
-                "reasoning": f"Failed to parse Gemini response: {e}",
+                "reasoning": "Failed to parse Gemini response",
                 "recommended_swap": None,
             }
-
-        return {
-            "action_required": str(result.get("action_required", "")).lower() == "true",
-            "flagged_trader": result.get("flagged_trader"),
-            "reasoning": result.get("reasoning", "No reasoning provided"),
-            "recommended_swap": result.get("recommended_swap"),
-        }

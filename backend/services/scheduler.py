@@ -287,15 +287,15 @@ class SchedulerService:
 
                     # 3-trader allocation recommendation
                     allocation = await scout.evaluate_portfolio_with_gemini(holdings, news, candidates)
-                    if allocation.get("allocations"):
+                    if allocation.get("target_portfolio"):
                         from backend.services.rebalance_service import calculate_rebalance_orders
                         current_positions = [
                             {"username": h["username"], "current_value": h.get("allocation_pct", 0) * 0.01 * (portfolio.total_value or 10000)}
                             for h in holdings
                         ]
-                        orders = calculate_rebalance_orders(portfolio.total_value or 0, current_positions, allocation["allocations"])
+                        orders = calculate_rebalance_orders(portfolio.total_value or 0, current_positions, allocation["target_portfolio"])
                         alloc_lines = []
-                        for a in allocation["allocations"]:
+                        for a in allocation["target_portfolio"]:
                             alloc_lines.append(f"• {a['username']} — {a['allocation_pct']}%")
                         alloc_lines.append(f"Sentiment: {allocation['market_sentiment']}")
                         if orders.get("warnings"):
@@ -324,9 +324,9 @@ class SchedulerService:
                                 f"*Recommend swapping to:* {result['recommended_swap']}\n\n"
                                 f"Reply `/swap {result['flagged_trader']} {result['recommended_swap']}` to execute."
                             )
-                            if allocation.get("allocations"):
+                            if allocation.get("target_portfolio"):
                                 msg += "\n\n📊 *AI Allocation Plan*\n"
-                                for a in allocation["allocations"]:
+                                for a in allocation["target_portfolio"]:
                                     msg += f"• *{a['username']}* — {a['allocation_pct']}%\n"
                             await bot.send_message(msg, show_keyboard=True)
 
