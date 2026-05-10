@@ -318,17 +318,28 @@ class GeminiScout:
 
     def _parse_response(self, raw_text: str):
         import json
+        import html
         try:
             # 1. Clean the text
             clean_json = raw_text.strip().replace('```json', '').replace('```', '')
             data = json.loads(clean_json)
 
-            # 2. Extract the data using the VARIABLE, not a string
-            # We use .get() to prevent KeyErrors forever.
+            # 2. Escape any HTML entities in free-text fields so Telegram's
+            #    HTML parse mode doesn't choke on stray &, <, > characters
+            #    (e.g. "Return: +5% & risk score > 7" in Gemini's reasoning).
+            reasoning = html.escape(data.get("reasoning", "No reasoning provided"))
+
+            portfolio = data.get("target_portfolio", [])
+            for entry in portfolio:
+                if "reasoning" in entry:
+                    entry["reasoning"] = html.escape(entry["reasoning"])
+
             return {
                 "action_required": data.get("action_required", False),
-                "reasoning": data.get("reasoning", "No reasoning provided"),
-                "target_portfolio": data.get("target_portfolio", [])
+                "flagged_trader": data.get("flagged_trader", None),
+                "recommended_swap": data.get("recommended_swap", None),
+                "reasoning": reasoning,
+                "target_portfolio": portfolio,
             }
         except Exception as e:
             print(f"CRITICAL PARSE ERROR: {e}")
