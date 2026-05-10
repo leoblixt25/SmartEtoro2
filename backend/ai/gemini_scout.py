@@ -60,28 +60,37 @@ If no action is needed:
 
 
 ALLOCATION_PROMPT = """You are a portfolio allocation optimizer for eToro copy-trading.
+Your only job is to construct a 3-trader target portfolio from the data below.
 
-Given the user's current holdings and live market news, recommend the 3 best
-traders to copy and how to split the portfolio among them.
+CRITICAL: You MUST select exactly 3 traders for the target_portfolio.
+If specific stock holdings are unknown, you must base your decision on
+their historical return, risk score, and overall market sentiment.
+Do not allocate 100% to a single trader.
 
 Rules:
-- Recommend EXACTLY 3 traders (no more, no fewer).
-- Allocations must sum to exactly 100%.
-- Prioritize traders with strong returns, low risk, and resilience to current news.
-- You may recommend keeping an existing trader or swapping them out.
-- Only recommend traders from the provided candidate list.
+- You MUST output exactly 3 traders. No more, no fewer.
+- Allocations MUST sum to exactly 100%.
+- You may select existing traders, the provided candidates, or a mix of both.
+- ONLY select from traders appearing in CURRENT PORTFOLIO or CANDIDATES below.
+- If insufficient context is available, choose the top 3 by return and risk.
 
-Respond with ONLY valid JSON, no markdown fences, no commentary:
+AVAILABLE CANDIDATES — only pick from this list or the CURRENT PORTFOLIO list:
+{available_candidates}
 
-{
+Do not include any preamble, conversational text, or markdown formatting
+outside of the JSON block. Your entire response must be valid, parseable JSON.
+
+```json
+{{
   "allocations": [
-    {"username": "trader_1", "allocation_pct": 40, "reasoning": "..."},
-    {"username": "trader_2", "allocation_pct": 35, "reasoning": "..."},
-    {"username": "trader_3", "allocation_pct": 25, "reasoning": "..."}
+    {{"username": "trader_1", "allocation_pct": 40, "reasoning": ".."}},
+    {{"username": "trader_2", "allocation_pct": 35, "reasoning": ".."}},
+    {{"username": "trader_3", "allocation_pct": 25, "reasoning": ".."}}
   ],
   "total_risk_score": 4.2,
-  "market_sentiment": "bullish / neutral / bearish"
-}
+  "market_sentiment": "bullish"
+}}
+```
 """
 
 
@@ -165,27 +174,32 @@ class GeminiScout:
         if not self.enabled:
             return {"allocations": [], "total_risk_score": 0, "market_sentiment": "unknown"}
 
-        self._allocation_model = genai.GenerativeModel(
-            model_name="gemini-2.5-flash",
-            system_instruction=ALLOCATION_PROMPT,
-        )
+        if not self._allocation_model:
+            self._allocation_model = genai.GenerativeModel(
+                model_name="gemini-2.5-flash",
+                system_instruction=ALLOCATION_PROMPT,
+            )
 
-        prompt = self._build_prompt(holdings_data, news_data, top_traders)
+        prompt = self._build_allocation_prompt(holdings_data, news_data, top_traders)
 
         try:
-            response = await self._call_gemini(prompt)
+            response = await self._call_gemini(prompt, model=self._allocation_model)
             parsed = self._parse_response(response)
 
             if "allocations" not in parsed or len(parsed.get("allocations", [])) != 3:
-                logger.warning("Gemini did not return exactly 3 allocations, using fallback")
+                logger.warning(f"Gemini returned {len(parsed.get('allocations', []))} allocations, need 3 — using fallback")
                 return self._fallback_allocation(holdings_data)
 
             allocs = parsed["allocations"]
             total = sum(a.get("allocation_pct", 0) for a in allocs)
             if total <= 0:
+                logger.warning("Gemini allocations sum to 0 — using fallback")
                 return self._fallback_allocation(holdings_data)
             for a in allocs:
                 a["allocation_pct"] = round((a["allocation_pct"] / total) * 100, 1)
+
+            logger.info(f"Gemini allocation: {[a['username'] for a in allocs]} "
+                        f"sentiment={parsed.get('market_sentiment', '?')}")
 
             return {
                 "allocations": allocs,
@@ -243,11 +257,49 @@ class GeminiScout:
 
         return "\n".join(sections)
 
-    async def _call_gemini(self, prompt: str) -> str:
+    def _build_allocation_prompt(
+        self,
+        holdings: list[dict],
+        news: list[dict],
+        candidates: list[dict],
+    ) -> str:
+        """Build prompt for 3-trader allocation, injecting candidates explicitly."""
+        # Format candidate list for insertion into ALLOCATION_PROMPT template
+        candidate_lines = []
+        for c in candidates[:10]:
+            candidate_lines.append(
+                f"  - {c.get('username', '?')} "
+                f"(Risk: {c.get('risk_score', '?')}/10, "
+                f"Return: {c.get('total_return_pct', '?')}%)"
+            )
+        candidate_block = "\n".join(candidate_lines) if candidate_lines else "  (none available)"
+
+        # Fill the template
+        prompt_header = ALLOCATION_PROMPT.format(available_candidates=candidate_block)
+        sections = [prompt_header]
+
+        sections.append("\n=== CURRENT PORTFOLIO HOLDINGS ===")
+        for t in holdings:
+            sections.append(
+                f"Trader: {t.get('username', '?')}\n"
+                f"  Allocation: {t.get('allocation_pct', 0):.1f}%\n"
+                f"  Return: {t.get('total_return_pct', 0):+.2f}%\n"
+                f"  Risk Score: {t.get('risk_score', 5):.1f}/10\n"
+                f"  Max Drawdown: {t.get('max_drawdown', 0):.1f}%\n"
+            )
+
+        sections.append("\n=== MARKET NEWS HEADLINES ===")
+        for i, n in enumerate(news[:15], 1):
+            sections.append(f"{i}. [{n.get('source', '?')}] {n.get('title', '')}")
+
+        return "\n".join(sections)
+
+    async def _call_gemini(self, prompt: str, model=None) -> str:
         """Call Gemini API and return raw text response."""
         from google.api_core.exceptions import NotFound, ServiceUnavailable
+        m = model or self._model
         try:
-            response = await self._model.generate_content_async(prompt)
+            response = await m.generate_content_async(prompt)
             return response.text
         except NotFound as e:
             logger.error(f"Gemini API model not found (404): {e}")
