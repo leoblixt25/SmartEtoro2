@@ -275,8 +275,9 @@ class GeminiScout:
             )
         candidate_block = "\n".join(candidate_lines) if candidate_lines else "  (none available)"
 
-        # Fill the template
-        prompt_header = ALLOCATION_PROMPT.format(available_candidates=candidate_block)
+        # Fill the template — use replace() instead of format() to avoid KeyError
+        # from JSON braces in ALLOCATION_PROMPT being misread as str.format() placeholders.
+        prompt_header = ALLOCATION_PROMPT.replace("{available_candidates}", candidate_block)
         sections = [prompt_header]
 
         sections.append("\n=== CURRENT PORTFOLIO HOLDINGS ===")
