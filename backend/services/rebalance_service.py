@@ -18,14 +18,15 @@ MIN_POSITION_SIZE = 200.0
 def calculate_rebalance_orders(
     total_portfolio_value: float,
     current_positions: List[Dict],
-    target_allocations: List[Dict],
+    allocation_data: Dict,
 ) -> Dict:
     """Produce executable rebalance orders respecting eToro constraints.
 
     Args:
         total_portfolio_value: Current total portfolio value in USD.
         current_positions: List of dicts with keys ['username', 'current_value'].
-        target_allocations: List of dicts with keys ['username', 'allocation_pct'].
+        allocation_data: Dict with key 'target_portfolio' containing list of
+                         dicts with keys ['username', 'allocation_pct'].
 
     Returns:
         Dict with:
@@ -34,6 +35,7 @@ def calculate_rebalance_orders(
           - total_required_cash: Float
           - warnings: List[str]
     """
+    target_allocations = allocation_data.get("target_portfolio", [])
     orders: List[Dict] = []
     skipped: List[str] = []
     warnings: List[str] = []

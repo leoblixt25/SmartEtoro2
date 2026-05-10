@@ -557,7 +557,7 @@ class TelegramBot:
                         {"username": h["username"], "current_value": h.get("allocation_pct", 0) * 0.01 * (p.total_value or 10000)}
                         for h in holdings
                     ]
-                    orders = calculate_rebalance_orders(p.total_value or 0, current_positions, allocation["target_portfolio"])
+                    orders = calculate_rebalance_orders(p.total_value or 0, current_positions, allocation)
 
                     lines.append(f"\n---\n*📊 AI Allocation Plan*")
                     for a in allocation["target_portfolio"]:

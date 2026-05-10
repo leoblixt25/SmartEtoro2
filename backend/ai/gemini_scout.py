@@ -315,28 +315,15 @@ class GeminiScout:
             logger.error(f"Gemini API call failed: {e}")
             raise RuntimeError(f"Gemini API error: {e}")
 
-    def _parse_response(self, raw_text: str) -> dict:
-        """Parse JSON response from Gemini.
-
-        JSON mode (response_mime_type="application/json") guarantees
-        clean JSON output — no preamble or markdown stripping needed.
-        """
+    def _parse_response(self, raw_text: str):
         try:
-            parsed = json.loads(raw_text.strip())
-            if not isinstance(parsed, dict):
-                logger.error(f"Gemini returned non-dict JSON: {type(parsed).__name__} — raw: {raw_text[:200]}")
-                return {
-                    "action_required": False,
-                    "flagged_trader": None,
-                    "reasoning": "Gemini returned a string instead of a JSON object",
-                    "recommended_swap": None,
-                }
-            return parsed
-        except json.JSONDecodeError:
-            logger.error(f"Failed to parse Gemini JSON. Raw output: {raw_text[:500]}")
+            cleaned_data = json.loads(raw_text.strip())
+            return {k.strip().strip('"'): v for k, v in cleaned_data.items()}
+        except Exception as e:
+            logger.error(f"Failed to parse JSON: {e}. Raw: {raw_text}")
             return {
                 "action_required": False,
                 "flagged_trader": None,
-                "reasoning": "Failed to parse Gemini response",
+                "reasoning": f"Failed to parse Gemini response: {e}",
                 "recommended_swap": None,
             }
