@@ -30,6 +30,7 @@ Environment variables:
 from __future__ import annotations
 import logging
 import os
+from datetime import datetime
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,8 @@ class TelegramBot:
         self.allowed_user_id = self._parse_int("TELEGRAM_ALLOWED_USER_ID")
         self.chat_id = self._parse_int("TELEGRAM_CHAT_ID", self.allowed_user_id)
         self._bot: Optional[Bot] = None
+        self._started_at: Optional[datetime] = None
+        self.last_error: Optional[str] = None
 
         if not TELEGRAM_AVAILABLE:
             self.enabled = False
@@ -62,6 +65,23 @@ class TelegramBot:
         else:
             self._bot = Bot(token=self.token)
             self.enabled = True
+
+    @property
+    def status(self) -> dict:
+        uptime = None
+        if self._started_at:
+            delta = datetime.utcnow() - self._started_at
+            mins = int(delta.total_seconds() // 60)
+            uptime = f"{mins}m" if mins < 60 else f"{mins // 60}h{mins % 60}m"
+        return {
+            "enabled": self.enabled,
+            "has_token": bool(self.token),
+            "has_allowed_user": self.allowed_user_id is not None,
+            "has_chat_id": self.chat_id is not None,
+            "webhook_url": self.webhook_url() if self.enabled else None,
+            "uptime": uptime,
+            "last_error": self.last_error,
+        }
 
     COMMANDS = [
         BotCommand("help", "Show all commands"),
@@ -127,7 +147,7 @@ class TelegramBot:
     async def _reply(self, update: Update, text: str, **kwargs) -> None:
         """Reply with text + persistent keyboard."""
         markup = self._keyboard()
-        await self._reply(update, text, reply_markup=markup, **kwargs)
+        await update.message.reply_text(text, reply_markup=markup, **kwargs)
 
     async def process_update(self, payload: dict) -> None:
         if not self.enabled or not self._bot:

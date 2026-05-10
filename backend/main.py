@@ -111,6 +111,7 @@ async def lifespan(app: FastAPI):
     # Initialize Telegram bot
     if telegram_bot.enabled:
         try:
+            telegram_bot._started_at = datetime.utcnow()
             webhook_url = telegram_bot.webhook_url()
             await telegram_bot._bot.set_webhook(url=webhook_url)
             logger.info(f"Telegram webhook set to {webhook_url}")
@@ -193,6 +194,25 @@ def health_check_head():
 # ──────────────────────────────────────────────
 # Telegram webhook endpoint
 # ──────────────────────────────────────────────
+
+@app.get("/api/telegram/status")
+def telegram_status():
+    """Return Telegram bot connection status."""
+    return telegram_bot.status
+
+
+@app.post("/api/telegram/test")
+async def telegram_test():
+    """Send a test message to verify Telegram bot is working."""
+    if not telegram_bot.enabled:
+        raise HTTPException(status_code=400, detail="Telegram bot is not enabled. Check TELEGRAM_BOT_TOKEN and TELEGRAM_ALLOWED_USER_ID.")
+    try:
+        await telegram_bot.send_message("✅ *Test message*\n\nCopyVault Telegram bot is connected and operational.\nServer time: " + datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"), show_keyboard=True)
+        return {"status": "ok", "message": "Test message sent successfully"}
+    except Exception as e:
+        telegram_bot.last_error = str(e)
+        raise HTTPException(status_code=500, detail=f"Failed to send test message: {e}")
+
 
 @app.post(telegram_bot.webhook_path())
 async def telegram_webhook(request: Request):

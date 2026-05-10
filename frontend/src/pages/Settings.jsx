@@ -15,6 +15,8 @@ export default function Settings() {
   const [saving, setSaving] = useState(false)
   const [loading, setLoading] = useState(true)
   const [message, setMessage] = useState('')
+  const [telegramStatus, setTelegramStatus] = useState(null)
+  const [testing, setTesting] = useState(false)
 
   useEffect(() => {
     const loadSettings = async () => {
@@ -35,6 +37,34 @@ export default function Settings() {
     }
     loadSettings()
   }, [])
+
+  useEffect(() => {
+    const fetchStatus = async () => {
+      try {
+        const res = await fetch(`${API_URL}/api/telegram/status`)
+        if (res.ok) {
+          setTelegramStatus(await res.json())
+        }
+      } catch { /* ignore */ }
+    }
+    fetchStatus()
+    const interval = setInterval(fetchStatus, 30000)
+    return () => clearInterval(interval)
+  }, [])
+
+  const handleTestTelegram = async () => {
+    setTesting(true)
+    try {
+      const res = await fetch(`${API_URL}/api/telegram/test`, { method: 'POST' })
+      const data = await res.json()
+      setMessage(data.message || 'Test message sent!')
+      setTimeout(() => setMessage(''), 3000)
+    } catch (err) {
+      setMessage('Failed to send test message')
+    } finally {
+      setTesting(false)
+    }
+  }
 
   const handleSave = async () => {
     setSaving(true)
@@ -165,9 +195,24 @@ export default function Settings() {
           <div className="w-10 h-10 rounded-lg bg-blue-500/20 flex items-center justify-center">
             <MessageSquare size={20} className="text-blue-400" />
           </div>
-          <div>
-            <h2 className="text-lg font-semibold text-white">Telegram Bot</h2>
-            <p className="text-surface-400 text-sm">Configure Telegram notifications</p>
+          <div className="flex-1">
+            <div className="flex items-center gap-3">
+              <h2 className="text-lg font-semibold text-white">Telegram Bot</h2>
+              {telegramStatus && (
+                <div className="flex items-center gap-1.5">
+                  <span className={`w-2.5 h-2.5 rounded-full inline-block ${telegramStatus.enabled ? 'bg-green-500 shadow-[0_0_6px_rgba(34,197,94,0.5)]' : 'bg-red-500 shadow-[0_0_6px_rgba(239,68,68,0.5)]'}`} />
+                  <span className={`text-xs font-medium ${telegramStatus.enabled ? 'text-green-400' : 'text-red-400'}`}>
+                    {telegramStatus.enabled ? 'Active' : 'Inactive'}
+                  </span>
+                </div>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <p className="text-surface-400 text-sm">Configure Telegram notifications</p>
+              {telegramStatus?.uptime && (
+                <span className="text-surface-500 text-xs">· up {telegramStatus.uptime}</span>
+              )}
+            </div>
           </div>
         </div>
 
@@ -197,6 +242,22 @@ export default function Settings() {
               className="w-full px-3 py-2 bg-surface-800 border border-surface-700 rounded-lg text-white placeholder-surface-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             />
           </div>
+
+          {telegramStatus && (
+            <div className="flex items-center gap-4 pt-2">
+              <button
+                onClick={handleTestTelegram}
+                disabled={testing || !telegramStatus.enabled}
+                className="px-4 py-2 bg-surface-800 hover:bg-surface-700 disabled:bg-surface-800/50 disabled:cursor-not-allowed text-white rounded-lg text-sm flex items-center gap-2 transition-colors border border-surface-700"
+              >
+                <MessageSquare size={16} />
+                {testing ? 'Sending...' : 'Test Notification'}
+              </button>
+              {telegramStatus.enabled && (
+                <span className="text-xs text-surface-500">Webhook: {telegramStatus.webhook_url}</span>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
