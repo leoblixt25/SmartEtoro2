@@ -139,7 +139,8 @@ class GeminiScout:
         prompt = self._build_prompt(holdings_data, news_data, top_traders)
 
         try:
-            response = await self._call_gemini(prompt)
+            json_config = genai.GenerationConfig(response_mime_type="application/json")
+            response = await self._call_gemini(prompt, generation_config=json_config)
             parsed = self._parse_response(response)
             if parsed.get("action_required"):
                 logger.warning(
@@ -177,8 +178,12 @@ class GeminiScout:
         prompt = self._build_allocation_prompt(holdings_data, news_data, top_traders)
 
         try:
-            response = await self._call_gemini(prompt, model=self._allocation_model)
+            json_config = genai.GenerationConfig(response_mime_type="application/json")
+            response = await self._call_gemini(prompt, model=self._allocation_model, generation_config=json_config)
             parsed = json.loads(response)
+            if not isinstance(parsed, dict):
+                logger.warning(f"Gemini returned non-dict JSON: {type(parsed).__name__} — using fallback")
+                return self._fallback_allocation(holdings_data)
 
             # Strict 3-trader enforcement
             allocs = parsed.get("target_portfolio", [])
@@ -317,7 +322,16 @@ class GeminiScout:
         clean JSON output — no preamble or markdown stripping needed.
         """
         try:
-            return json.loads(raw_text.strip())
+            parsed = json.loads(raw_text.strip())
+            if not isinstance(parsed, dict):
+                logger.error(f"Gemini returned non-dict JSON: {type(parsed).__name__} — raw: {raw_text[:200]}")
+                return {
+                    "action_required": False,
+                    "flagged_trader": None,
+                    "reasoning": "Gemini returned a string instead of a JSON object",
+                    "recommended_swap": None,
+                }
+            return parsed
         except json.JSONDecodeError:
             logger.error(f"Failed to parse Gemini JSON. Raw output: {raw_text[:500]}")
             return {
