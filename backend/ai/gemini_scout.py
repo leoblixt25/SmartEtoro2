@@ -62,10 +62,10 @@ If no action is needed:
 ALLOCATION_PROMPT = """You are a portfolio allocation optimizer for eToro copy-trading.
 Your only job is to construct a 3-trader target portfolio from the data below.
 
+You are a macro-level quantitative evaluator. Detailed stock holdings are intentionally abstracted. DO NOT mention missing or unknown holdings. You must evaluate traders solely based on their Return %, Risk Score, and how their general trading style aligns with current Macro News.
+
 CRITICAL: You MUST select exactly 3 traders for the target_portfolio.
-If specific stock holdings are unknown, you must base your decision on
-their historical return, risk score, and overall market sentiment.
-Do not allocate 100% to a single trader.
+If specific stock holdings are unknown, you must base your decision on their historical return, risk score, and overall market sentiment. Do not allocate 100% to a single trader.
 
 Rules:
 - You MUST output exactly 3 traders. No more, no fewer.
@@ -74,23 +74,22 @@ Rules:
 - ONLY select from traders appearing in CURRENT PORTFOLIO or CANDIDATES below.
 - If insufficient context is available, choose the top 3 by return and risk.
 
-AVAILABLE CANDIDATES — only pick from this list or the CURRENT PORTFOLIO list:
+AVAILABLE CANDIDATES (Choose 3 from this list or the CURRENT PORTFOLIO list):
 {available_candidates}
 
-Do not include any preamble, conversational text, or markdown formatting
-outside of the JSON block. Your entire response must be valid, parseable JSON.
-
+Your response MUST be valid JSON matching this exact structure:
 ```json
-{{
+{
+  "action_required": true,
+  "reasoning": "Since the tech sector is rallying, I am allocating 50% to high-return trader X, and hedging 25% each into low-risk traders Y and Z.",
   "allocations": [
-    {{"username": "trader_1", "allocation_pct": 40, "reasoning": ".."}},
-    {{"username": "trader_2", "allocation_pct": 35, "reasoning": ".."}},
-    {{"username": "trader_3", "allocation_pct": 25, "reasoning": ".."}}
-  ],
-  "total_risk_score": 4.2,
-  "market_sentiment": "bullish"
-}}
+    {"username": "trader_1", "allocation_pct": 50, "reasoning": "Performance is resilient."},
+    {"username": "trader_2", "allocation_pct": 25, "reasoning": "Low risk hedge."},
+    {"username": "trader_3", "allocation_pct": 25, "reasoning": "Diversification."}
+  ]
+}
 ```
+Do not include any preamble, conversational text, or markdown formatting outside of the JSON block. Your entire response must be valid, parseable JSON.
 """
 
 
@@ -186,20 +185,22 @@ class GeminiScout:
             response = await self._call_gemini(prompt, model=self._allocation_model)
             parsed = self._parse_response(response)
 
-            if "allocations" not in parsed or len(parsed.get("allocations", [])) != 3:
-                logger.warning(f"Gemini returned {len(parsed.get('allocations', []))} allocations, need 3 — using fallback")
+            # Strict 3-trader enforcement
+            allocs = parsed.get("allocations", [])
+            if len(allocs) != 3:
+                logger.warning(f"Gemini returned {len(allocs)} allocations, need 3 — using fallback")
                 return self._fallback_allocation(holdings_data)
 
-            allocs = parsed["allocations"]
+            # Normalize to 100%
             total = sum(a.get("allocation_pct", 0) for a in allocs)
             if total <= 0:
                 logger.warning("Gemini allocations sum to 0 — using fallback")
                 return self._fallback_allocation(holdings_data)
+            
             for a in allocs:
                 a["allocation_pct"] = round((a["allocation_pct"] / total) * 100, 1)
 
-            logger.info(f"Gemini allocation: {[a['username'] for a in allocs]} "
-                        f"sentiment={parsed.get('market_sentiment', '?')}")
+            logger.info(f"Gemini allocation: {[a['username'] for a in allocs]}")
 
             return {
                 "allocations": allocs,
