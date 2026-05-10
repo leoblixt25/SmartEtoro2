@@ -13,6 +13,7 @@
 - **Accurate Portfolio Tracking** — Sync eToro portfolio data every 5 minutes, compute true Total Value using the defined formula (see §3).
 - **Real Allocation Calculation** — Compute per-trader allocation % as a proportion of total portfolio equity.
 - **24/7 Automation** — Evaluate risk-management rules (Take-Profit, Rebalance, Drawdown protection) every 10 minutes. Rules can auto-execute or require Telegram approval.
+- **AI Market Scout** — Every 6 hours, Gemini Pro cross-references trader holdings against Yahoo Finance news headlines to flag toxic assets and recommend trader swaps. Never auto-executes — only alerts via Telegram with a `/swap` command for manual approval.
 - **Telegram Monitoring & Control** — Query portfolio status, approve pending actions, trigger syncs, and emergency-stop all rules via a webhook-based Telegram bot.
 
 ### Non-Goals
@@ -34,7 +35,8 @@
 | HTTP Client | **httpx** (AsyncClient) |
 | Database | **SQLite** via **SQLAlchemy 2.0** |
 | Scheduler | **APScheduler** (`AsyncIOScheduler`) |
-| AI | **Anthropic Claude** (`claude-sonnet-4-20250514`) |
+| AI (Analysis) | **Anthropic Claude** (`claude-sonnet-4-20250514`) |
+| AI (Scout) | **Google Gemini Pro** (`gemini-1.5-pro`) via `google-generativeai` |
 | Telegram | **python-telegram-bot** (raw `Bot` class only — no `Application` due to `__slots__` bug on Python 3.14) |
 
 ### Frontend
@@ -179,7 +181,7 @@ currency = "EUR" if clientPortfolio.accountCurrencyId == 2 else "USD"
 |------|--------|
 | `AutomationStatus` | `enabled`, `disabled`, `paused` |
 | `RiskClassification` | `conservative`, `balanced`, `aggressive`, `high_risk` |
-| `AlertType` | `drawdown`, `profit_milestone`, `volatility`, `trader_risk`, `imbalance`, `automation`, `weekly_summary` |
+| `AlertType` | `drawdown`, `profit_milestone`, `volatility`, `trader_risk`, `imbalance`, `automation`, `weekly_summary`, `ai_scout` |
 
 ---
 
@@ -187,7 +189,7 @@ currency = "EUR" if clientPortfolio.accountCurrencyId == 2 else "USD"
 
 ### 5.1 Scheduler Lifecycle
 
-The scheduler starts in the FastAPI `lifespan` handler and stops on shutdown. It runs **6 jobs**:
+The scheduler starts in the FastAPI `lifespan` handler and stops on shutdown. It runs **7 jobs**:
 
 | Job | Trigger | Interval | What It Does |
 |-----|---------|----------|-------------|
@@ -197,6 +199,7 @@ The scheduler starts in the FastAPI `lifespan` handler and stops on shutdown. It
 | `_risk_check_job` | `IntervalTrigger` | **Every 15 min** | Runs `RiskEngine.check_all()` on all portfolios, creates alerts for violations |
 | `_daily_snapshot_job` | `CronTrigger` | **Daily at 00:05** | Creates `PortfolioSnapshot` for historical tracking |
 | `_weekly_summary_job` | `CronTrigger` | **Sunday at 08:00** | Calls AI engine `generate_weekly_summary()`, saves as Alert |
+| `_market_scout_job` | `CronTrigger` | **Every 6h** (at :15) | Fetches market news + eToro discovery, runs Gemini Scout evaluation, saves Alert + Telegram warning if risk detected |
 
 ### 5.2 Supported Rule Types
 
@@ -266,6 +269,25 @@ def _in_cooldown(self, rule: AutomationRule) -> bool:
 
 `POST /api/portfolios/{pid}/automation/emergency-stop` sets ALL rules to `paused` status. Individual rules can be re-enabled from the UI. This triggers a critical Alert and an `AutomationLog`.
 
+### 5.6 AI Market Scout (Gemini Pro)
+
+The scout runs every 6 hours as part of the scheduler. It does **not** execute trades — only reports findings.
+
+**Data ingestion pipeline:**
+1. `market_data.get_current_holdings(db, portfolio_id)` — reads active `CopiedTrader` records with metrics (allocation, return, drawdown, risk score, positions)
+2. `market_data.fetch_market_news()` — async HTTP fetch from Yahoo Finance RSS headlines (falls back to market summary)
+3. `market_data.discover_top_traders()` — attempts eToro public discovery API (falls back to 5 static candidates)
+
+**Evaluation:**
+4. `GeminiScout.evaluate(holdings, news, candidates)` — sends structured prompt to `gemini-1.5-pro` with system instruction to act as Chief Risk Officer. Returns JSON:
+   ```json
+   {"action_required": bool, "flagged_trader": "username", "reasoning": "...", "recommended_swap": "username"}
+   ```
+
+**Outcome:**
+- `action_required=false` → `Alert(severity="info")` saved to DB: "✅ AI Scout: All Clear"
+- `action_required=true` → `Alert(severity="warning")` saved + Telegram sent with formatted message and `/swap` command. User must type `/swap` manually — never auto-executed.
+
 ---
 
 ## 6. Telegram Bot Integration
@@ -302,6 +324,8 @@ def _in_cooldown(self, rule: AutomationRule) -> bool:
 | `/approve <rule_id>` | `_cmd_approve` | Re-evaluates rules, matches by rule_id, calls `execute_etoro_action()`, logs with `approved_by="telegram"` |
 | `/sync` | `_cmd_sync` | Triggers `EToroSyncService.sync_portfolio_data()`, returns updated value |
 | `/pause` | `_cmd_pause` | Calls `automation_engine.emergency_stop()` — pauses ALL rules |
+| `/scout` | `_cmd_scout` | Runs Gemini Scout on demand: fetches news + discovery, evaluates holdings, returns result in chat |
+| `/swap <old> <new>` | `_cmd_swap` | Executes a trader swap: closes old mirror via eToro API, marks trader inactive in DB, logs as Alert |
 
 ### 6.4 Reply Keyboard
 
@@ -311,7 +335,7 @@ Every response includes a persistent reply keyboard (4×2 grid):
 /status   /traders
 /portfolio /risk
 /pending   /alerts
-/sync      /pause
+/sync      /scout
 ```
 
 ### 6.5 Status Endpoint (for frontend indicator)
@@ -335,6 +359,31 @@ The Settings page polls this every 30s and shows a green/red indicator dot.
 ### 6.6 Startup Notification
 
 On server start, the bot sends: "🚀 CopyVault Server Started — eToro sync is active. Use the menu below or tap /help for commands."
+
+### 6.7 Scout Alert Flow
+
+When Gemini Scout detects a risk (either from scheduler or manual `/scout`), the bot sends:
+
+```
+⚠️ AI Scout Alert
+
+Risk detected in <trader>'s portfolio.
+
+Reasoning: <Gemini's explanation citing news or metrics>
+
+Recommend swapping to: <recommended_trader>
+
+Reply /swap <trader> <recommended_trader> to execute.
+```
+
+The `/swap` handler:
+1. Validates the old trader exists and is active in DB
+2. Calls `execute_close_mirror(mirror_id)` on eToro to close the position
+3. Sets `is_active=False`, `is_paused=True`, `paused_reason` on the DB record
+4. Logs an Alert with `alert_type=AI_SCOUT`
+5. Informs the user that starting the new copy must be done via eToro UI
+
+**Safety rule:** The scout NEVER auto-executes swaps. Every swap requires the user to type `/swap`. This is a hard architectural guard.
 
 ---
 
@@ -401,10 +450,12 @@ Each violation creates an **Alert** in the database, visible on the UI Alerts pa
 | `TELEGRAM_CHAT_ID` | `telegram_service.py` | `=ALLOWED_USER_ID` | No | Telegram chat ID |
 | `RENDER_EXTERNAL_URL` | `telegram_service.py`, `scheduler.py` | `http://localhost:8000` | No | Base URL for webhook/keep-alive |
 | `ANTHROPIC_API_KEY` | `analysis_engine.py` | `None` | No | Claude API key |
+| `GEMINI_API_KEY` | `gemini_scout.py` | `None` | No\*\* | Google Gemini API key for AI Market Scout |
 | `DATABASE_URL` | `connection.py` | `sqlite:///./etoro_platform.db` | No | SQLAlchemy DB URL |
 | `APP_ENV` | `dev_routes.py` | `development` | No | Blocks dev routes in production |
 
 \* Required for Telegram to be enabled.
+\*\* Required for AI Market Scout to be enabled.
 
 ---
 
@@ -412,7 +463,7 @@ Each violation creates an **Alert** in the database, visible on the UI Alerts pa
 
 ### ADR-001: Render Env Vars for Secrets
 
-**Decision:** All API credentials (`ETORO_API_KEY`, `ETORO_API_SECRET`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_USER_ID`, `TELEGRAM_CHAT_ID`, `ANTHROPIC_API_KEY`) are stored as Render environment variables, not in the database via the Settings UI.
+**Decision:** All API credentials (`ETORO_API_KEY`, `ETORO_API_SECRET`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_USER_ID`, `TELEGRAM_CHAT_ID`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`) are stored as Render environment variables, not in the database via the Settings UI.
 
 **Rationale:** Secrets stored in the DB would be lost on SQLite file reset and would require re-entry on every deploy. Env vars persist across redeploys and are not exposed client-side.
 
@@ -442,6 +493,12 @@ Each violation creates an **Alert** in the database, visible on the UI Alerts pa
 
 **Rationale:** If an API call fails (network error, eToro downtime), the rule should retry on the next eval cycle rather than waiting out a cooldown.
 
+### ADR-006: Scout Never Auto-Executes
+
+**Decision:** The AI Market Scout (Gemini) is strictly read-only. It evaluates holdings against news and returns a recommendation, but **never** calls any eToro execution endpoint automatically.
+
+**Rationale:** AI models can hallucinate or misinterpret news context. A false-positive swap could crystallize losses. The `/swap` command requires explicit human confirmation via Telegram. This is a hard architectural guard — no code path exists where the scout triggers an eToro mutation.
+
 ---
 
 ## 11. Frontend Pages & Routes
@@ -469,6 +526,7 @@ Each violation creates an **Alert** in the database, visible on the UI Alerts pa
 | Replaced `Application` with raw `Bot` | `telegram_service.py` | Fixed `__slots__` crash on Python 3.14 deployment |
 | Moved `formatCurrency` out of JSX | `Dashboard.jsx` | Fixed invalid React (function defined inside JSX expression) |
 | Replaced duplicate Monthly PnL with Weekly PnL | `Dashboard.jsx` | Dashboard was showing Monthly PnL twice instead of Weekly |
+| Removed Anthropic mock-data fallback | `analysis_engine.py:_call_claude` | API failures now raise exceptions instead of silently returning fake "AI Analysis Unavailable" recommendations |
 
 ---
 
@@ -483,3 +541,6 @@ Each violation creates an **Alert** in the database, visible on the UI Alerts pa
 | Cooldown | Period after a successful automation execution during which the rule won't re-trigger. |
 | ENABLED/DISABLED/PAUSED | Automation rule statuses. PAUSED is set by emergency stop and cannot be toggled from the UI toggle (must re-enable manually). |
 | Pending Approval | An automation rule that triggered but has `requires_approval=True`. An Alert is created and user must approve via Telegram `/approve {rule_id}`. |
+| AI Market Scout | Gemini Pro-powered evaluation that cross-references trader holdings against market news to flag risks. Runs every 6 hours or via `/scout`. Never auto-executes. |
+| Scout Alert | An `Alert` with `alert_type=AI_SCOUT` created when Gemini detects a risk. Severity is `warning` if action needed, `info` if all clear. |
+| Trader Swap | The act of closing a copy-trade mirror on eToro and starting a new one. In CopyVault, initiated via Telegram `/swap <old> <new>` after a Scout recommendation. |
