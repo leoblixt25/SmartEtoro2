@@ -109,11 +109,10 @@ async def lifespan(app: FastAPI):
     scheduler.start()
 
     # Initialize Telegram bot webhook
-    tg_app = telegram_bot.build_application()
-    if tg_app:
+    if telegram_bot.enabled:
         try:
             webhook_url = telegram_bot.webhook_url()
-            await tg_app.bot.set_webhook(url=webhook_url)
+            await telegram_bot._bot.set_webhook(url=webhook_url)
             logger.info(f"Telegram webhook set to {webhook_url}")
             await telegram_bot.send_message(
                 "🚀 CopyVault Server Started.\n"
@@ -196,16 +195,12 @@ def health_check_head():
 @app.post(telegram_bot.webhook_path())
 async def telegram_webhook(request: Request):
     """Receive Telegram update via webhook and dispatch to the bot."""
-    if not telegram_bot.enabled or not telegram_bot._app:
-        return Response(status_code=200)
-
-    try:
-        data = await request.json()
-        from telegram import Update
-        update = Update.de_json(data, telegram_bot._app.bot)
-        await telegram_bot._app.process_update(update)
-    except Exception as e:
-        logger.error(f"Telegram webhook error: {e}")
+    if telegram_bot.enabled:
+        try:
+            data = await request.json()
+            await telegram_bot.process_update(data)
+        except Exception as e:
+            logger.error(f"Telegram webhook error: {e}")
 
     return Response(status_code=200)
 

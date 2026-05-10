@@ -3,9 +3,9 @@ Telegram Bot Service
 ────────────────────────────────────────────────────────────────────
 Webhook-based Telegram bot for monitoring and approving automation rules.
 
-Architecture (avoids asyncio conflicts on Render):
-  - Uses python-telegram-bot with webhooks tied to a FastAPI endpoint
-  - Bot is initialized once and mounted at /api/telegram/webhook
+Architecture:
+  - Uses raw telegram.Bot (no Application/Dispatcher which has __slots__ issues on Py3.14)
+  - Webhook dispatch via FastAPI endpoint
   - Only responds to TELEGRAM_ALLOWED_USER_ID
   - Commands: /ping, /status, /pending, /approve <action_id>
 
@@ -21,10 +21,16 @@ import os
 from datetime import datetime
 from typing import Optional
 
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
-
 logger = logging.getLogger(__name__)
+
+# Import telegram.Bot only — avoids Application.__slots__ bug on Python 3.14
+try:
+    import telegram
+    from telegram import Bot, Update
+    TELEGRAM_AVAILABLE = True
+except ImportError:
+    TELEGRAM_AVAILABLE = False
+    logger.warning("python-telegram-bot not installed")
 
 
 class TelegramBot:
@@ -34,15 +40,19 @@ class TelegramBot:
         self.token = os.getenv("TELEGRAM_BOT_TOKEN", "")
         self.allowed_user_id = self._parse_int("TELEGRAM_ALLOWED_USER_ID")
         self.chat_id = self._parse_int("TELEGRAM_CHAT_ID", self.allowed_user_id)
-        self._app: Optional[Application] = None
+        self._bot: Optional[Bot] = None
 
-        if not self.token:
+        if not TELEGRAM_AVAILABLE:
+            logger.info("python-telegram-bot not available")
+            self.enabled = False
+        elif not self.token:
             logger.info("TELEGRAM_BOT_TOKEN not set — Telegram bot disabled")
             self.enabled = False
         elif not self.allowed_user_id:
             logger.warning("TELEGRAM_ALLOWED_USER_ID not set — Telegram bot disabled (no auth)")
             self.enabled = False
         else:
+            self._bot = Bot(token=self.token)
             self.enabled = True
 
     def _parse_int(self, key: str, default: Optional[int] = None) -> Optional[int]:
@@ -52,32 +62,69 @@ class TelegramBot:
         return default
 
     def _is_authorized(self, user_id: int) -> bool:
-        """Only allow the configured user ID."""
         return user_id == self.allowed_user_id
 
     async def send_message(self, text: str, chat_id: Optional[int] = None) -> None:
         """Send a proactive message (e.g., startup notification)."""
-        if not self.enabled or not self._app:
+        if not self.enabled or not self._bot:
             return
         target = chat_id or self.chat_id
         if not target:
             return
         try:
-            await self._app.bot.send_message(chat_id=target, text=text)
+            await self._bot.send_message(chat_id=target, text=text, parse_mode="Markdown")
             logger.info(f"Telegram message sent to {target}")
         except Exception as e:
             logger.error(f"Failed to send Telegram message: {e}")
 
+    async def process_update(self, payload: dict) -> None:
+        """Process an incoming Telegram update webhook payload."""
+        if not self.enabled or not self._bot:
+            return
+
+        try:
+            update = Update.de_json(payload, self._bot)
+        except Exception as e:
+            logger.error(f"Failed to parse Telegram update: {e}")
+            return
+
+        if not update.message or not update.message.text:
+            return
+
+        user_id = update.effective_user.id if update.effective_user else None
+        if not user_id or not self._is_authorized(user_id):
+            logger.debug(f"Ignored message from unauthorized user {user_id}")
+            return
+
+        text = update.message.text.strip()
+        if not text.startswith("/"):
+            return
+
+        parts = text.split()
+        command = parts[0].lower()
+        args = parts[1:]
+
+        handlers = {
+            "/ping": self._cmd_ping,
+            "/status": self._cmd_status,
+            "/pending": self._cmd_pending,
+            "/approve": self._cmd_approve,
+        }
+
+        handler = handlers.get(command)
+        if handler:
+            await handler(update, args)
+        else:
+            await update.message.reply_text(
+                f"Unknown command: {command}\nAvailable: /ping, /status, /pending, /approve <id>"
+            )
+
     # ── Command handlers ─────────────────────────
 
-    async def _cmd_ping(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        if not self._is_authorized(update.effective_user.id):
-            return
+    async def _cmd_ping(self, update: Update, args: list[str]) -> None:
         await update.message.reply_text("CopyVault Bot is active!")
 
-    async def _cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        if not self._is_authorized(update.effective_user.id):
-            return
+    async def _cmd_status(self, update: Update, args: list[str]) -> None:
         from backend.database.connection import db_session
         from backend.database.models import Portfolio
 
@@ -105,9 +152,7 @@ class TelegramBot:
             logger.error(f"Telegram /status error: {e}")
             await update.message.reply_text(f"Error fetching status: {e}")
 
-    async def _cmd_pending(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        if not self._is_authorized(update.effective_user.id):
-            return
+    async def _cmd_pending(self, update: Update, args: list[str]) -> None:
         from backend.database.connection import db_session
         from backend.database.models import Alert
 
@@ -137,17 +182,14 @@ class TelegramBot:
             logger.error(f"Telegram /pending error: {e}")
             await update.message.reply_text(f"Error: {e}")
 
-    async def _cmd_approve(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        if not self._is_authorized(update.effective_user.id):
-            return
-
-        if not context.args or not context.args[0].isdigit():
+    async def _cmd_approve(self, update: Update, args: list[str]) -> None:
+        if not args or not args[0].isdigit():
             await update.message.reply_text("Usage: /approve <action_id>")
             return
 
-        action_id = int(context.args[0])
+        action_id = int(args[0])
         from backend.database.connection import db_session
-        from backend.database.models import Portfolio, AutomationRule, AutomationLog
+        from backend.database.models import Portfolio, AutomationRule
         from backend.automation.automation_engine import AutomationEngine
         from backend.services.etoro_service import EToroSyncService
 
@@ -156,7 +198,6 @@ class TelegramBot:
 
         try:
             with db_session() as db:
-                # Find the rule
                 rule = db.query(AutomationRule).filter(AutomationRule.id == action_id).first()
                 if not rule:
                     await update.message.reply_text(f"No rule found with ID {action_id}.")
@@ -168,8 +209,6 @@ class TelegramBot:
                     return
 
                 traders = [t for t in portfolio.copied_traders if t.is_active and not t.is_paused]
-
-                # Re-evaluate the specific rule to get the action
                 actions = engine.evaluate_rules(db, portfolio, traders)
                 matching_action = next((a for a in actions if a.rule_id == action_id), None)
 
@@ -180,7 +219,6 @@ class TelegramBot:
                     )
                     return
 
-                # Execute on eToro
                 await update.message.reply_text(f"Executing '{rule.name}' on eToro...")
                 etoro_response = await engine.execute_etoro_action(
                     sync_service.client, matching_action, portfolio, db
@@ -209,29 +247,11 @@ class TelegramBot:
             logger.error(f"Telegram /approve error: {e}")
             await update.message.reply_text(f"Execution error: {e}")
 
-    # ── Webhook setup ────────────────────────────
-
-    def build_application(self) -> Optional[Application]:
-        """Build and configure the Application (call once at startup)."""
-        if not self.enabled:
-            return None
-
-        app = Application.builder().token(self.token).build()
-
-        app.add_handler(CommandHandler("ping", self._cmd_ping))
-        app.add_handler(CommandHandler("status", self._cmd_status))
-        app.add_handler(CommandHandler("pending", self._cmd_pending))
-        app.add_handler(CommandHandler("approve", self._cmd_approve))
-
-        self._app = app
-        logger.info(f"Telegram bot built — authorized user ID: {self.allowed_user_id}")
-        return app
+    # ── Webhook helpers ──────────────────────────
 
     def webhook_path(self) -> str:
-        """FastAPI path for the webhook endpoint."""
-        return f"/api/telegram/webhook"
+        return "/api/telegram/webhook"
 
     def webhook_url(self) -> str:
-        """Full webhook URL for the bot."""
         base = os.getenv("RENDER_EXTERNAL_URL", "http://localhost:8000")
         return f"{base}{self.webhook_path()}"
