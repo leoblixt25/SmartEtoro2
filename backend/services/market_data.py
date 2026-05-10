@@ -88,12 +88,63 @@ def get_current_holdings(db, portfolio_id: int) -> List[Dict]:
 # ── 2. Market News ───────────────────────────────────────────────
 
 
-async def fetch_market_news() -> List[Dict]:
-    """Fetch top financial headlines using Yahoo Finance RSS.
+async def get_market_news(symbols: Optional[List[str]] = None) -> List[Dict]:
+    """Fetch live news headlines for major indices using yfinance.
 
-    Returns up to 20 recent news items with title, source, and summary.
-    Falls back gracefully if Yahoo Finance is unreachable.
+    Args:
+        symbols: List of Yahoo Finance ticker symbols (default: S&P 500,
+                 Nasdaq, Dow Jones).
+
+    Returns up to 10 unique news items with title, summary, source.
     """
+    import yfinance as yf
+    import asyncio
+
+    if symbols is None:
+        symbols = ["^GSPC", "^IXIC", "^DJI"]
+
+    def _fetch():
+        seen = set()
+        items = []
+        for sym in symbols:
+            try:
+                ticker = yf.Ticker(sym)
+                news = ticker.news or []
+                for article in news:
+                    title = article.get("title", "")
+                    if title and title not in seen:
+                        seen.add(title)
+                        items.append({
+                            "title": title,
+                            "summary": (article.get("summary") or "")[:300],
+                            "source": article.get("publisher", "Yahoo Finance"),
+                        })
+                        if len(items) >= 10:
+                            return items
+            except Exception:
+                continue
+        return items
+
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _fetch)
+
+
+async def fetch_market_news() -> List[Dict]:
+    """Fetch live market news via yfinance, falling back to RSS.
+
+    Returns up to 10 recent news items with title, source, and summary.
+    """
+    try:
+        news = await get_market_news()
+        if news:
+            logger.info(f"Scout: fetched {len(news)} news items via yfinance")
+            return news
+    except ImportError:
+        logger.info("yfinance not installed — falling back to RSS")
+    except Exception as e:
+        logger.warning(f"yfinance news fetch failed: {e}")
+
+    # Fallback: Yahoo Finance RSS
     try:
         async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
             resp = await client.get(
