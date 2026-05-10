@@ -77,19 +77,14 @@ Rules:
 AVAILABLE CANDIDATES (Choose 3 from this list or the CURRENT PORTFOLIO list):
 {available_candidates}
 
-Your response MUST be valid JSON matching this exact structure:
-```json
+Output ONLY a JSON object with this exact structure:
 {
-  "action_required": true,
-  "reasoning": "Since the tech sector is rallying, I am allocating 50% to high-return trader X, and hedging 25% each into low-risk traders Y and Z.",
   "allocations": [
     {"username": "trader_1", "allocation_pct": 50, "reasoning": "Performance is resilient."},
     {"username": "trader_2", "allocation_pct": 25, "reasoning": "Low risk hedge."},
     {"username": "trader_3", "allocation_pct": 25, "reasoning": "Diversification."}
   ]
 }
-```
-Do not include any preamble, conversational text, or markdown formatting outside of the JSON block. Your entire response must be valid, parseable JSON.
 """
 
 
@@ -144,9 +139,10 @@ class GeminiScout:
         prompt = self._build_prompt(holdings_data, news_data, top_traders)
 
         try:
-            response = await self._call_gemini(prompt)
+            json_config = genai.GenerationConfig(response_mime_type="application/json")
+            response = await self._call_gemini(prompt, generation_config=json_config)
             parsed = self._parse_response(response)
-            if parsed["action_required"]:
+            if parsed.get("action_required"):
                 logger.warning(
                     f"Scout flagged {parsed['flagged_trader']}: "
                     f"{parsed['reasoning'][:120]}..."
@@ -175,15 +171,16 @@ class GeminiScout:
 
         if not self._allocation_model:
             self._allocation_model = genai.GenerativeModel(
-                model_name="gemini-2.5-flash",
+                model_name="gemini-2.0-flash",
                 system_instruction=ALLOCATION_PROMPT,
             )
 
         prompt = self._build_allocation_prompt(holdings_data, news_data, top_traders)
 
         try:
-            response = await self._call_gemini(prompt, model=self._allocation_model)
-            parsed = self._parse_response(response)
+            json_config = genai.GenerationConfig(response_mime_type="application/json")
+            response = await self._call_gemini(prompt, model=self._allocation_model, generation_config=json_config)
+            parsed = json.loads(response)
 
             # Strict 3-trader enforcement
             allocs = parsed.get("allocations", [])
@@ -295,12 +292,15 @@ class GeminiScout:
 
         return "\n".join(sections)
 
-    async def _call_gemini(self, prompt: str, model=None) -> str:
+    async def _call_gemini(self, prompt: str, model=None, generation_config=None) -> str:
         """Call Gemini API and return raw text response."""
         from google.api_core.exceptions import NotFound, ServiceUnavailable
         m = model or self._model
+        kwargs = {}
+        if generation_config is not None:
+            kwargs["generation_config"] = generation_config
         try:
-            response = await m.generate_content_async(prompt)
+            response = await m.generate_content_async(prompt, **kwargs)
             return response.text
         except NotFound as e:
             logger.error(f"Gemini API model not found (404): {e}")
@@ -313,29 +313,19 @@ class GeminiScout:
             raise RuntimeError(f"Gemini API error: {e}")
 
     def _parse_response(self, raw: str) -> dict:
-        """Parse Gemini JSON response with safety net."""
-        import re
-        # Find the first { and last } — strips any preamble or markdown fences
-        brace_start = raw.find("{")
-        brace_end = raw.rfind("}")
-        if brace_start == -1 or brace_end == -1:
-            logger.error(f"Gemini returned no JSON object: {raw[:300]}")
-            return {
-                "action_required": False,
-                "flagged_trader": None,
-                "reasoning": "Failed to parse Gemini response",
-                "recommended_swap": None,
-            }
-        cleaned = raw[brace_start : brace_end + 1].strip()
+        """Parse JSON response from Gemini.
 
+        JSON mode (response_mime_type="application/json") guarantees
+        clean JSON, so no preamble/markdown stripping is needed.
+        """
         try:
-            result = json.loads(cleaned)
-        except json.JSONDecodeError:
-            logger.error(f"Gemini returned non-JSON: {raw[:300]}")
+            result = json.loads(raw)
+        except json.JSONDecodeError as e:
+            logger.error(f"Gemini returned invalid JSON (len={len(raw)}): {raw[:500]}")
             return {
                 "action_required": False,
                 "flagged_trader": None,
-                "reasoning": "Failed to parse Gemini response",
+                "reasoning": f"Failed to parse Gemini response: {e}",
                 "recommended_swap": None,
             }
 
