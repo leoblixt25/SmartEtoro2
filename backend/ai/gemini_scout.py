@@ -174,13 +174,19 @@ class GeminiScout:
 
     def _parse_response(self, raw: str) -> dict:
         """Parse Gemini JSON response with safety net."""
-        cleaned = raw.strip()
-        # Strip markdown code fences if present
-        if cleaned.startswith("```"):
-            cleaned = cleaned.split("```")[1]
-            if cleaned.startswith("json"):
-                cleaned = cleaned[4:]
-        cleaned = cleaned.strip()
+        import re
+        # Find the first { and last } — strips any preamble or markdown fences
+        brace_start = raw.find("{")
+        brace_end = raw.rfind("}")
+        if brace_start == -1 or brace_end == -1:
+            logger.error(f"Gemini returned no JSON object: {raw[:300]}")
+            return {
+                "action_required": False,
+                "flagged_trader": None,
+                "reasoning": "Failed to parse Gemini response",
+                "recommended_swap": None,
+            }
+        cleaned = raw[brace_start : brace_end + 1].strip()
 
         try:
             result = json.loads(cleaned)
@@ -194,7 +200,7 @@ class GeminiScout:
             }
 
         return {
-            "action_required": bool(result.get("action_required", False)),
+            "action_required": str(result.get("action_required", "")).lower() == "true",
             "flagged_trader": result.get("flagged_trader"),
             "reasoning": result.get("reasoning", "No reasoning provided"),
             "recommended_swap": result.get("recommended_swap"),

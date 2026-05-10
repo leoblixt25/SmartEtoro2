@@ -53,33 +53,45 @@ class EToroAPIClient:
     async def get_portfolio_data(self, is_simulation: bool = True) -> Optional[Dict]:
         """
         Fetch portfolio + PnL + positions + mirrors in one call.
-        Uses demo or real endpoint based on is_simulation flag.
+        Retries up to 3 times with 5-second backoff on failure.
         """
         if not self.enabled:
             return None
 
         env = "demo" if is_simulation else "real"
-        try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(
-                    f"{self.BASE_URL}/api/v1/trading/info/{env}/pnl",
-                    headers=self._get_headers(),
-                )
-                response.raise_for_status()
-                data = response.json()
-                logger.info(
-                    f"Fetched portfolio data from eToro ({env})")
-                return data
-        except httpx.HTTPStatusError as e:
-            logger.error(
-                f"eToro API error {e.response.status_code}: {e.response.text}")
-            return None
-        except httpx.RequestError as e:
-            logger.error(f"Network error connecting to eToro API: {e}")
-            return None
-        except Exception as e:
-            logger.error(f"Unexpected error fetching eToro portfolio: {e}")
-            return None
+        last_error = None
+        import asyncio
+
+        for attempt in range(1, 4):
+            try:
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    response = await client.get(
+                        f"{self.BASE_URL}/api/v1/trading/info/{env}/pnl",
+                        headers=self._get_headers(),
+                    )
+                    response.raise_for_status()
+                    data = response.json()
+                    logger.info(
+                        f"Fetched portfolio data from eToro ({env}) attempt {attempt}")
+                    return data
+            except httpx.HTTPStatusError as e:
+                last_error = e
+                logger.warning(
+                    f"eToro API error {e.response.status_code} (attempt {attempt}/3): {e.response.text[:200]}")
+            except httpx.RequestError as e:
+                last_error = e
+                logger.warning(
+                    f"Network error (attempt {attempt}/3): {e}")
+            except Exception as e:
+                last_error = e
+                logger.warning(
+                    f"Unexpected error (attempt {attempt}/3): {e}")
+
+            if attempt < 3:
+                await asyncio.sleep(5)
+
+        logger.error(f"eToro API failed after 3 attempts: {last_error}")
+        return None
 
     async def execute_close_mirror(self, mirror_id: int, is_simulation: bool = True) -> Optional[Dict]:
         """Close a copy-trade mirror position on eToro.
@@ -263,34 +275,32 @@ class EToroSyncService:
                 logger.error(f"Portfolio {portfolio_id} not found")
                 return False
 
-            # Try real API, fall back to mock data
-            if self.client.enabled:
-                raw = await self.client.get_portfolio_data(
-                    is_simulation=portfolio.is_simulation
-                )
-                if raw:
-                    summary = self._extract_summary(raw)
-                    traders = self._extract_traders(raw)
-                    logger.info("Synced live data from eToro API")
-                    logger.info(f"RAW clientPortfolio: credit={raw.get('clientPortfolio', {}).get('credit')}, "
-                                f"accountCurrencyId={raw.get('clientPortfolio', {}).get('accountCurrencyId')}, "
-                                f"mirrors={len(raw.get('clientPortfolio', {}).get('mirrors', []))}")
-                    for m in raw.get("clientPortfolio", {}).get("mirrors", []):
-                        logger.info(f"MIRROR {m.get('mirrorId')}: user={m.get('parentUsername')}, "
-                                    f"initInvest={m.get('initialInvestment')}, "
-                                    f"available={m.get('availableAmount')}, "
-                                    f"closedPnL={m.get('closedPositionsNetProfit')}, "
-                                    f"positions={len(m.get('positions', []))}")
-                    logger.info(f"EXTRACTED summary: {summary}")
-                    logger.info(f"EXTRACTED traders: {traders}")
-                else:
-                    logger.info("eToro API unavailable — using simulation data")
-                    summary = self.client._get_mock_account_summary()
-                    traders = self.client._get_mock_traders()
-            else:
-                logger.info("eToro API not configured — using simulation data")
-                summary = self.client._get_mock_account_summary()
-                traders = self.client._get_mock_traders()
+            # Production: real API only, no mock fallback
+            if not self.client.enabled:
+                logger.error("eToro API not configured — sync aborted")
+                return False
+
+            raw = await self.client.get_portfolio_data(
+                is_simulation=portfolio.is_simulation
+            )
+            if not raw:
+                logger.error("eToro API returned no data — sync aborted")
+                return False
+
+            summary = self._extract_summary(raw)
+            traders = self._extract_traders(raw)
+            logger.info("Synced live data from eToro API")
+            logger.info(f"RAW clientPortfolio: credit={raw.get('clientPortfolio', {}).get('credit')}, "
+                        f"accountCurrencyId={raw.get('clientPortfolio', {}).get('accountCurrencyId')}, "
+                        f"mirrors={len(raw.get('clientPortfolio', {}).get('mirrors', []))}")
+            for m in raw.get("clientPortfolio", {}).get("mirrors", []):
+                logger.info(f"MIRROR {m.get('mirrorId')}: user={m.get('parentUsername')}, "
+                            f"initInvest={m.get('initialInvestment')}, "
+                            f"available={m.get('availableAmount')}, "
+                            f"closedPnL={m.get('closedPositionsNetProfit')}, "
+                            f"positions={len(m.get('positions', []))}")
+            logger.info(f"EXTRACTED summary: {summary}")
+            logger.info(f"EXTRACTED traders: {traders}")
 
             portfolio.total_value = summary.get("equity", 0.0)
             portfolio.available_cash = summary.get("available_cash", 0.0)
