@@ -545,7 +545,11 @@ class TelegramBot:
 
         except Exception as e:
             logger.error(f"/scout error: {e}")
-            await self._reply(update, f"❌ Scout failed: {e}")
+            err_str = str(e)
+            if "Gemini" in err_str and ("model" in err_str or "API" in err_str):
+                await self._reply(update, "⚠️ AI Scout Error: Unable to reach Gemini API. Please check model configuration or try again later.")
+            else:
+                await self._reply(update, f"❌ Scout failed: {e}")
 
     async def _cmd_swap(self, update: Update, args: list[str]) -> None:
         """Execute a trader swap: stop copying old, start copying new.

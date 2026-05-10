@@ -73,11 +73,11 @@ class GeminiScout:
         else:
             genai.configure(api_key=key)
             self._model = genai.GenerativeModel(
-                model_name="gemini-1.5-pro",
+                model_name="gemini-1.5-flash",
                 system_instruction=SYSTEM_PROMPT,
             )
             self.enabled = True
-            logger.info("Gemini scout initialized with gemini-1.5-pro")
+            logger.info("Gemini scout initialized with gemini-1.5-flash")
 
     async def evaluate(
         self,
@@ -158,8 +158,19 @@ class GeminiScout:
 
     async def _call_gemini(self, prompt: str) -> str:
         """Call Gemini API and return raw text response."""
-        response = await self._model.generate_content_async(prompt)
-        return response.text
+        from google.api_core.exceptions import NotFound, ServiceUnavailable
+        try:
+            response = await self._model.generate_content_async(prompt)
+            return response.text
+        except NotFound as e:
+            logger.error(f"Gemini API model not found (404): {e}")
+            raise RuntimeError("Gemini model not found — check model name and API version")
+        except ServiceUnavailable as e:
+            logger.error(f"Gemini API service unavailable (503): {e}")
+            raise RuntimeError("Gemini API service unavailable — try again later")
+        except Exception as e:
+            logger.error(f"Gemini API call failed: {e}")
+            raise RuntimeError(f"Gemini API error: {e}")
 
     def _parse_response(self, raw: str) -> dict:
         """Parse Gemini JSON response with safety net."""
