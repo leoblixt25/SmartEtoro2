@@ -7,6 +7,7 @@ Uses APScheduler for simple, reliable job scheduling.
 
 from __future__ import annotations
 import logging
+import os
 from datetime import datetime
 from typing import Optional
 
@@ -34,12 +35,12 @@ class SchedulerService:
 
         self._scheduler = AsyncIOScheduler()
 
-        # Risk check every 15 minutes
+        # Self-ping keep-alive every 4 minutes (prevents Render free-tier spin-down)
         self._scheduler.add_job(
-            self._risk_check_job,
-            IntervalTrigger(minutes=15),
-            id="risk_check",
-            name="Portfolio Risk Check",
+            self._keep_alive_job,
+            IntervalTrigger(minutes=4),
+            id="keep_alive",
+            name="Render Keep-Alive Ping",
         )
 
         # eToro data sync every 5 minutes
@@ -48,6 +49,22 @@ class SchedulerService:
             IntervalTrigger(minutes=5),
             id="etoro_sync",
             name="eToro Portfolio Sync",
+        )
+
+        # Automation rule evaluation every 10 minutes
+        self._scheduler.add_job(
+            self._automation_eval_job,
+            IntervalTrigger(minutes=10),
+            id="automation_eval",
+            name="Automation Rule Evaluation",
+        )
+
+        # Risk check every 15 minutes
+        self._scheduler.add_job(
+            self._risk_check_job,
+            IntervalTrigger(minutes=15),
+            id="risk_check",
+            name="Portfolio Risk Check",
         )
 
         # Daily portfolio snapshot at midnight
@@ -67,7 +84,7 @@ class SchedulerService:
         )
 
         self._scheduler.start()
-        logger.info("Scheduler started with 4 jobs")
+        logger.info("Scheduler started with 6 jobs")
 
     def stop(self):
         if self._scheduler:
@@ -75,6 +92,64 @@ class SchedulerService:
             logger.info("Scheduler stopped")
 
     # ── Job implementations ──────────────────────
+
+    async def _keep_alive_job(self):
+        """Self-ping to keep the Render web service awake.
+
+        Render free tier spins down after 15 min of inactivity.
+        This pings our own /health endpoint every 4 minutes.
+        """
+        import httpx
+        try:
+            base = os.getenv("RENDER_EXTERNAL_URL", "http://localhost:8000")
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(f"{base}/health")
+                logger.debug(f"Keep-alive ping: {resp.status_code}")
+        except Exception as e:
+            logger.debug(f"Keep-alive ping skipped (expected on local dev): {e}")
+
+    async def _automation_eval_job(self):
+        """Evaluate all enabled automation rules and dispatch execution.
+
+        - requires_approval=True  → creates a pending alert for user review
+        - requires_approval=False → executes directly on eToro, logs success/failure
+        """
+        from backend.database.connection import db_session
+        from backend.database.models import Portfolio
+        from backend.automation.automation_engine import AutomationEngine
+        from backend.services.etoro_service import EToroSyncService
+
+        engine = AutomationEngine()
+        try:
+            with db_session() as db:
+                portfolios = db.query(Portfolio).all()
+                for portfolio in portfolios:
+                    traders = [t for t in portfolio.copied_traders if t.is_active and not t.is_paused]
+                    actions = engine.evaluate_rules(db, portfolio, traders)
+                    for action in actions:
+                        if action.requires_approval:
+                            # Create pending alert — user must approve via Telegram or UI
+                            engine.create_pending_alert(db, portfolio.id, action)
+                            logger.info(f"Pending approval: '{action.rule_name}' — {action.description}")
+                        else:
+                            # Auto-execute: call eToro API directly
+                            sync_service = EToroSyncService()
+                            etoro_response = await engine.execute_etoro_action(
+                                sync_service.client, action, portfolio, db
+                            )
+                            success = not (etoro_response or {}).get("error", False)
+                            engine.log_execution(
+                                db, portfolio, action,
+                                approved_by="auto",
+                                success=success,
+                                etoro_response=etoro_response,
+                            )
+                            if success:
+                                logger.info(f"Auto-executed rule '{action.rule_name}': {action.description}")
+                            else:
+                                logger.error(f"Auto-execution FAILED for rule '{action.rule_name}': {etoro_response.get('detail')}")
+        except Exception as e:
+            logger.error(f"Automation eval job failed: {e}")
 
     async def _risk_check_job(self):
         """Run risk checks for all active portfolios."""

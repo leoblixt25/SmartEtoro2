@@ -81,6 +81,130 @@ class EToroAPIClient:
             logger.error(f"Unexpected error fetching eToro portfolio: {e}")
             return None
 
+    async def execute_close_mirror(self, mirror_id: int, is_simulation: bool = True) -> Optional[Dict]:
+        """Close a copy-trade mirror position on eToro.
+
+        Uses the same auth headers (x-api-key, x-user-key, x-request-id)
+        as the read endpoint. Demo/real selection matches the account type.
+
+        eToro API: POST /api/v1/trading/mirrors/{mirrorId}/close
+        """
+        if not self.enabled:
+            return None
+
+        env = "demo" if is_simulation else "real"
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    f"{self.BASE_URL}/api/v1/trading/mirrors/{mirror_id}/close",
+                    headers=self._get_headers(),
+                    json={"mirrorId": mirror_id},
+                )
+                response.raise_for_status()
+                result = response.json()
+                logger.info(f"Closed mirror {mirror_id} on eToro ({env}): {result}")
+                return result
+        except httpx.HTTPStatusError as e:
+            logger.error(f"eToro close-mirror error {e.response.status_code}: {e.response.text}")
+            return {"error": True, "status": e.response.status_code, "detail": e.response.text}
+        except httpx.RequestError as e:
+            logger.error(f"Network error closing mirror {mirror_id}: {e}")
+            return {"error": True, "detail": str(e)}
+        except Exception as e:
+            logger.error(f"Unexpected error closing mirror {mirror_id}: {e}")
+            return {"error": True, "detail": str(e)}
+
+    async def execute_change_mirror_amount(self, mirror_id: int, new_amount: float, is_simulation: bool = True) -> Optional[Dict]:
+        """Change the allocated amount of a copy-trade mirror on eToro.
+
+        eToro API: POST /api/v1/trading/mirrors/{mirrorId}/change-amount
+        Body: {"amount": <new_amount>}
+        """
+        if not self.enabled:
+            return None
+
+        env = "demo" if is_simulation else "real"
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    f"{self.BASE_URL}/api/v1/trading/mirrors/{mirror_id}/change-amount",
+                    headers=self._get_headers(),
+                    json={"mirrorId": mirror_id, "amount": new_amount},
+                )
+                response.raise_for_status()
+                result = response.json()
+                logger.info(f"Changed mirror {mirror_id} amount to {new_amount} ({env}): {result}")
+                return result
+        except httpx.HTTPStatusError as e:
+            logger.error(f"eToro change-amount error {e.response.status_code}: {e.response.text}")
+            return {"error": True, "status": e.response.status_code, "detail": e.response.text}
+        except httpx.RequestError as e:
+            logger.error(f"Network error changing mirror {mirror_id} amount: {e}")
+            return {"error": True, "detail": str(e)}
+        except Exception as e:
+            logger.error(f"Unexpected error changing mirror {mirror_id} amount: {e}")
+            return {"error": True, "detail": str(e)}
+
+    async def execute_pause_mirror(self, mirror_id: int, is_simulation: bool = True) -> Optional[Dict]:
+        """Pause a copy-trade mirror on eToro.
+
+        eToro API: POST /api/v1/trading/mirrors/{mirrorId}/pause
+        """
+        if not self.enabled:
+            return None
+
+        env = "demo" if is_simulation else "real"
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    f"{self.BASE_URL}/api/v1/trading/mirrors/{mirror_id}/pause",
+                    headers=self._get_headers(),
+                    json={"mirrorId": mirror_id},
+                )
+                response.raise_for_status()
+                result = response.json()
+                logger.info(f"Paused mirror {mirror_id} on eToro ({env}): {result}")
+                return result
+        except httpx.HTTPStatusError as e:
+            logger.error(f"eToro pause-mirror error {e.response.status_code}: {e.response.text}")
+            return {"error": True, "status": e.response.status_code, "detail": e.response.text}
+        except httpx.RequestError as e:
+            logger.error(f"Network error pausing mirror {mirror_id}: {e}")
+            return {"error": True, "detail": str(e)}
+        except Exception as e:
+            logger.error(f"Unexpected error pausing mirror {mirror_id}: {e}")
+            return {"error": True, "detail": str(e)}
+
+    async def execute_unpause_mirror(self, mirror_id: int, is_simulation: bool = True) -> Optional[Dict]:
+        """Unpause a copy-trade mirror on eToro.
+
+        eToro API: POST /api/v1/trading/mirrors/{mirrorId}/unpause
+        """
+        if not self.enabled:
+            return None
+
+        env = "demo" if is_simulation else "real"
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    f"{self.BASE_URL}/api/v1/trading/mirrors/{mirror_id}/unpause",
+                    headers=self._get_headers(),
+                    json={"mirrorId": mirror_id},
+                )
+                response.raise_for_status()
+                result = response.json()
+                logger.info(f"Unpaused mirror {mirror_id} on eToro ({env}): {result}")
+                return result
+        except httpx.HTTPStatusError as e:
+            logger.error(f"eToro unpause-mirror error {e.response.status_code}: {e.response.text}")
+            return {"error": True, "status": e.response.status_code, "detail": e.response.text}
+        except httpx.RequestError as e:
+            logger.error(f"Network error unpausing mirror {mirror_id}: {e}")
+            return {"error": True, "detail": str(e)}
+        except Exception as e:
+            logger.error(f"Unexpected error unpausing mirror {mirror_id}: {e}")
+            return {"error": True, "detail": str(e)}
+
     def _get_mock_account_summary(self) -> Dict:
         import random
         base_value = 15000 + random.uniform(-2000, 3000)

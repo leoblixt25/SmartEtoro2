@@ -8,8 +8,7 @@ Executes automation rules with mandatory safeguards:
 - Emergency stop respected
 - All actions reversible via the log
 
-This engine NEVER directly modifies real eToro positions.
-It generates proposed actions that users can review and approve.
+When requires_approval=False, the engine executes directly on eToro.
 """
 
 from __future__ import annotations
@@ -29,9 +28,9 @@ logger = logging.getLogger(__name__)
 @dataclass
 class ProposedAction:
     """
-    An automation action waiting for review.
-    Real actions require explicit user approval.
-    Simulation actions are auto-approved.
+    An automation action waiting for review or execution.
+    When requires_approval=True, user must approve via Telegram or UI.
+    When False, the scheduler executes it automatically.
     """
     rule_id: int
     rule_name: str
@@ -45,8 +44,9 @@ class ProposedAction:
 
 class AutomationEngine:
     """
-    Evaluates active automation rules and generates proposed actions.
-    Execution is deferred until user approval (for real portfolios).
+    Evaluates active automation rules and dispatches execution.
+    - Pending actions (requires_approval=True): create alerts, log pending.
+    - Auto actions (requires_approval=False): execute immediately via eToro API.
     """
 
     SUPPORTED_RULES = {
@@ -91,40 +91,180 @@ class AutomationEngine:
 
         return proposed
 
-    def approve_and_execute(
+    def create_pending_alert(
+        self,
+        db: Session,
+        portfolio_id: int,
+        action: ProposedAction,
+    ) -> None:
+        """Create an alert for a proposed action requiring user approval."""
+        db.add(Alert(
+            portfolio_id=portfolio_id,
+            alert_type=AlertType.AUTOMATION,
+            title=f"⚠️ Action Pending: {action.rule_name}",
+            message=(
+                f"Rule '{action.rule_name}' triggered: {action.description}. "
+                f"Use /approve {action.rule_id} via Telegram or the UI to approve."
+            ),
+            severity=action.severity,
+        ))
+        db.commit()
+        logger.info(f"Pending alert created for rule '{action.rule_name}' (rule_id={action.rule_id})")
+
+    def log_execution(
         self,
         db: Session,
         portfolio: Portfolio,
         action: ProposedAction,
-        approved_by: str = "user",
+        approved_by: str = "auto",
+        success: bool = True,
+        etoro_response: Optional[dict] = None,
     ) -> AutomationLog:
-        """
-        Mark a proposed action as approved and create an audit log entry.
-        In simulation mode, auto-approve. In live mode, require explicit approval.
-        """
+        """Create an audit log entry for an executed action."""
         log_entry = AutomationLog(
             rule_id=action.rule_id,
             portfolio_id=portfolio.id,
             action_type=action.action_type,
             description=action.description,
-            details={**action.details, "approved_by": approved_by},
+            details={
+                **action.details,
+                "approved_by": approved_by,
+                "success": success,
+                "etoro_response": etoro_response or {},
+            },
             was_simulated=portfolio.is_simulation,
-            was_approved=True,
+            was_approved=success,
         )
         db.add(log_entry)
 
-        # Update rule trigger count and timestamp
-        rule = db.query(AutomationRule).filter(AutomationRule.id == action.rule_id).first()
-        if rule:
-            rule.last_triggered = datetime.utcnow()
-            rule.trigger_count += 1
+        # Update rule trigger count and cooldown timestamp only on success
+        if success:
+            rule = db.query(AutomationRule).filter(AutomationRule.id == action.rule_id).first()
+            if rule:
+                rule.last_triggered = datetime.utcnow()
+                rule.trigger_count += 1
 
         db.commit()
+        status = "SUCCESS" if success else "FAILED"
         logger.info(
-            f"Action executed: [{action.action_type}] {action.description} "
-            f"(simulation={portfolio.is_simulation})"
+            f"Action {status}: [{action.action_type}] {action.description} "
+            f"(simulation={portfolio.is_simulation}, approved_by={approved_by})"
         )
         return log_entry
+
+    async def execute_etoro_action(
+        self,
+        etoro_client,
+        action: ProposedAction,
+        portfolio: Portfolio,
+        db: Session,
+    ) -> dict:
+        """Execute a proposed action directly on eToro via the execution API.
+
+        Returns the eToro API response dict. On failure, the dict contains
+        {"error": True, "detail": ...}.
+        """
+        is_sim = portfolio.is_simulation
+        action_type = action.action_type
+        trader_id = action.details.get("trader_id")
+
+        try:
+            if action_type == "take_profit":
+                # Close all copy-trade mirrors to take profit
+                mirrors = db.query(CopiedTrader).filter(
+                    CopiedTrader.portfolio_id == portfolio.id,
+                    CopiedTrader.is_active.is_(True),
+                    CopiedTrader.is_paused.is_(False),
+                ).all()
+                results = []
+                for m in mirrors:
+                    resp = await etoro_client.execute_close_mirror(
+                        int(m.trader_id), is_simulation=is_sim
+                    )
+                    results.append({"mirror_id": m.trader_id, "response": resp})
+                    if resp and resp.get("error"):
+                        logger.error(f"Failed to close mirror {m.trader_id}: {resp.get('detail')}")
+                return {"action": "take_profit", "results": results}
+
+            elif action_type == "partial_profit_lock":
+                lock_amount = action.details.get("lock_amount", 0)
+                # Reduce each active mirror by the proportional lock amount
+                mirrors = db.query(CopiedTrader).filter(
+                    CopiedTrader.portfolio_id == portfolio.id,
+                    CopiedTrader.is_active.is_(True),
+                    CopiedTrader.is_paused.is_(False),
+                ).all()
+                results = []
+                for m in mirrors:
+                    new_amount = max(0, (m.allocated_amount or 0) - lock_amount / max(len(mirrors), 1))
+                    resp = await etoro_client.execute_change_mirror_amount(
+                        int(m.trader_id), new_amount, is_simulation=is_sim
+                    )
+                    results.append({"mirror_id": m.trader_id, "new_amount": new_amount, "response": resp})
+                    if resp and resp.get("error"):
+                        logger.error(f"Failed to change mirror {m.trader_id}: {resp.get('detail')}")
+                return {"action": "partial_profit_lock", "results": results}
+
+            elif action_type == "pause_copy":
+                traders_to_pause = action.details.get("traders_to_pause", [])
+                mirrors = db.query(CopiedTrader).filter(
+                    CopiedTrader.portfolio_id == portfolio.id,
+                    CopiedTrader.trader_username.in_(traders_to_pause),
+                ).all()
+                results = []
+                for m in mirrors:
+                    resp = await etoro_client.execute_pause_mirror(
+                        int(m.trader_id), is_simulation=is_sim
+                    )
+                    results.append({"mirror_id": m.trader_id, "response": resp})
+                    if resp and resp.get("error"):
+                        logger.error(f"Failed to pause mirror {m.trader_id}: {resp.get('detail')}")
+                return {"action": "pause_copy", "results": results}
+
+            elif action_type in ("reduce_on_drawdown", "reduce_on_volatility"):
+                reduction_pct = action.details.get("reduction_pct", 20)
+                mirrors = db.query(CopiedTrader).filter(
+                    CopiedTrader.portfolio_id == portfolio.id,
+                    CopiedTrader.is_active.is_(True),
+                    CopiedTrader.is_paused.is_(False),
+                ).all()
+                results = []
+                for m in mirrors:
+                    new_amount = (m.allocated_amount or 0) * (1 - reduction_pct / 100)
+                    resp = await etoro_client.execute_change_mirror_amount(
+                        int(m.trader_id), new_amount, is_simulation=is_sim
+                    )
+                    results.append({"mirror_id": m.trader_id, "new_amount": new_amount, "response": resp})
+                    if resp and resp.get("error"):
+                        logger.error(f"Failed to reduce mirror {m.trader_id}: {resp.get('detail')}")
+                return {"action": action_type, "results": results}
+
+            elif action_type == "rebalance":
+                drifted = action.details.get("drifted_traders", [])
+                results = []
+                for d in drifted:
+                    trader_name = d.get("trader")
+                    target_pct = d.get("target_pct", 0)
+                    mirror = db.query(CopiedTrader).filter(
+                        CopiedTrader.portfolio_id == portfolio.id,
+                        CopiedTrader.trader_username == trader_name,
+                    ).first()
+                    if mirror and portfolio.total_value > 0:
+                        new_amount = portfolio.total_value * (target_pct / 100)
+                        resp = await etoro_client.execute_change_mirror_amount(
+                            int(mirror.trader_id), new_amount, is_simulation=is_sim
+                        )
+                        results.append({"mirror_id": mirror.trader_id, "new_amount": new_amount, "response": resp})
+                        if resp and resp.get("error"):
+                            logger.error(f"Failed to rebalance mirror {mirror.trader_id}: {resp.get('detail')}")
+                return {"action": "rebalance", "results": results}
+
+            else:
+                return {"error": True, "detail": f"Unknown action type: {action_type}"}
+
+        except Exception as e:
+            logger.error(f"eToro execution failed for action {action.action_type}: {e}")
+            return {"error": True, "detail": str(e)}
 
     def reverse_action(
         self,
@@ -161,7 +301,6 @@ class AutomationEngine:
             rule.status = AutomationStatus.PAUSED
             count += 1
 
-        # Log the emergency stop
         db.add(AutomationLog(
             portfolio_id=portfolio_id,
             action_type="emergency_stop",
@@ -171,7 +310,6 @@ class AutomationEngine:
             was_approved=True,
         ))
 
-        # Create alert
         db.add(Alert(
             portfolio_id=portfolio_id,
             alert_type=AlertType.AUTOMATION,
@@ -238,7 +376,7 @@ class AutomationEngine:
         self, rule: AutomationRule, portfolio: Portfolio, traders: List
     ) -> Optional[ProposedAction]:
         threshold = rule.threshold or 15.0
-        lock_pct = rule.config.get("lock_percentage", 30)  # Lock 30% of profits by default
+        lock_pct = rule.config.get("lock_percentage", 30)
 
         if portfolio.invested_amount <= 0 or portfolio.unrealized_pnl <= 0:
             return None
@@ -279,6 +417,7 @@ class AutomationEngine:
             if drift >= drift_threshold:
                 drifted.append({
                     "trader": trader.trader_username,
+                    "trader_id": trader.trader_id,
                     "current_pct": round(trader.allocation_pct, 2),
                     "target_pct": target,
                     "drift": round(drift, 2),
@@ -337,7 +476,6 @@ class AutomationEngine:
         to_pause = []
 
         for trader in traders:
-            # Simplified check: total return < threshold AND risk score high
             loss_threshold = rule.config.get("min_loss_pct", -10.0)
             if trader.total_return_pct <= loss_threshold and trader.risk_score >= 6.5:
                 to_pause.append(trader.trader_username)

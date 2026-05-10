@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import List, Optional
 
-from fastapi import FastAPI, Depends, HTTPException, WebSocket, WebSocketDisconnect, status, Response
+from fastapi import FastAPI, Depends, HTTPException, WebSocket, WebSocketDisconnect, status, Response, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
@@ -39,6 +39,7 @@ from backend.automation.automation_engine import AutomationEngine
 from backend.services.data_service import DataService
 from backend.services.etoro_service import EToroSyncService
 from backend.services.scheduler import SchedulerService
+from backend.services.telegram_service import TelegramBot
 
 # ──────────────────────────────────────────────
 # Logging
@@ -59,6 +60,7 @@ risk_engine = RiskEngine()
 automation_engine = AutomationEngine()
 data_service = DataService()
 scheduler = SchedulerService()
+telegram_bot = TelegramBot()
 
 # WebSocket connection manager
 ws_connections: list[WebSocket] = []
@@ -105,7 +107,24 @@ async def lifespan(app: FastAPI):
         db.close()
 
     scheduler.start()
+
+    # Initialize Telegram bot webhook
+    tg_app = telegram_bot.build_application()
+    if tg_app:
+        try:
+            webhook_url = telegram_bot.webhook_url()
+            await tg_app.bot.set_webhook(url=webhook_url)
+            logger.info(f"Telegram webhook set to {webhook_url}")
+            await telegram_bot.send_message(
+                "🚀 CopyVault Server Started.\n"
+                "eToro sync is active.\n"
+                "Send /ping to test."
+            )
+        except Exception as e:
+            logger.error(f"Telegram webhook setup failed: {e}")
+
     yield
+
     scheduler.stop()
     logger.info("Platform shutdown complete.")
 
@@ -168,6 +187,27 @@ def health_check():
 @app.head("/health")
 def health_check_head():
     return Response(status_code=status.HTTP_200_OK)
+
+
+# ──────────────────────────────────────────────
+# Telegram webhook endpoint
+# ──────────────────────────────────────────────
+
+@app.post(telegram_bot.webhook_path())
+async def telegram_webhook(request: Request):
+    """Receive Telegram update via webhook and dispatch to the bot."""
+    if not telegram_bot.enabled or not telegram_bot._app:
+        return Response(status_code=200)
+
+    try:
+        data = await request.json()
+        from telegram import Update
+        update = Update.de_json(data, telegram_bot._app.bot)
+        await telegram_bot._app.process_update(update)
+    except Exception as e:
+        logger.error(f"Telegram webhook error: {e}")
+
+    return Response(status_code=200)
 
 
 # ──────────────────────────────────────────────
