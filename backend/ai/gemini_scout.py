@@ -59,6 +59,32 @@ If no action is needed:
 """
 
 
+ALLOCATION_PROMPT = """You are a portfolio allocation optimizer for eToro copy-trading.
+
+Given the user's current holdings and live market news, recommend the 3 best
+traders to copy and how to split the portfolio among them.
+
+Rules:
+- Recommend EXACTLY 3 traders (no more, no fewer).
+- Allocations must sum to exactly 100%.
+- Prioritize traders with strong returns, low risk, and resilience to current news.
+- You may recommend keeping an existing trader or swapping them out.
+- Only recommend traders from the provided candidate list.
+
+Respond with ONLY valid JSON, no markdown fences, no commentary:
+
+{
+  "allocations": [
+    {"username": "trader_1", "allocation_pct": 40, "reasoning": "..."},
+    {"username": "trader_2", "allocation_pct": 35, "reasoning": "..."},
+    {"username": "trader_3", "allocation_pct": 25, "reasoning": "..."}
+  ],
+  "total_risk_score": 4.2,
+  "market_sentiment": "bullish / neutral / bearish"
+}
+"""
+
+
 class GeminiScout:
     """Proactive market-risk scout powered by Google Gemini Pro."""
 
@@ -75,6 +101,10 @@ class GeminiScout:
             self._model = genai.GenerativeModel(
                 model_name="gemini-2.5-flash",
                 system_instruction=SYSTEM_PROMPT,
+            )
+            self._allocation_model = genai.GenerativeModel(
+                model_name="gemini-2.5-flash",
+                system_instruction=ALLOCATION_PROMPT,
             )
             self.enabled = True
             logger.info("Gemini scout initialized with gemini-2.5-flash")
@@ -124,6 +154,63 @@ class GeminiScout:
                 "reasoning": f"Scout evaluation error: {e}",
                 "recommended_swap": None,
             }
+
+    async def evaluate_portfolio_with_gemini(
+        self,
+        holdings_data: list[dict],
+        news_data: list[dict],
+        top_traders: list[dict],
+    ) -> dict:
+        """Ask Gemini to propose a 3-trader allocation plan."""
+        if not self.enabled:
+            return {"allocations": [], "total_risk_score": 0, "market_sentiment": "unknown"}
+
+        self._allocation_model = genai.GenerativeModel(
+            model_name="gemini-2.5-flash",
+            system_instruction=ALLOCATION_PROMPT,
+        )
+
+        prompt = self._build_prompt(holdings_data, news_data, top_traders)
+
+        try:
+            response = await self._call_gemini(prompt)
+            parsed = self._parse_response(response)
+
+            if "allocations" not in parsed or len(parsed.get("allocations", [])) != 3:
+                logger.warning("Gemini did not return exactly 3 allocations, using fallback")
+                return self._fallback_allocation(holdings_data)
+
+            allocs = parsed["allocations"]
+            total = sum(a.get("allocation_pct", 0) for a in allocs)
+            if total <= 0:
+                return self._fallback_allocation(holdings_data)
+            for a in allocs:
+                a["allocation_pct"] = round((a["allocation_pct"] / total) * 100, 1)
+
+            return {
+                "allocations": allocs,
+                "total_risk_score": parsed.get("total_risk_score", 5.0),
+                "market_sentiment": parsed.get("market_sentiment", "neutral"),
+            }
+
+        except Exception as e:
+            logger.error(f"Gemini allocation evaluation failed: {e}")
+            return self._fallback_allocation(holdings_data)
+
+    def _fallback_allocation(self, holdings: list[dict]) -> dict:
+        """Equal-weight fallback if Gemini fails."""
+        top = sorted(holdings, key=lambda h: h.get("total_return_pct", 0) or 0, reverse=True)[:3]
+        if not top:
+            return {"allocations": [], "total_risk_score": 0, "market_sentiment": "unknown"}
+        pct = round(100 / len(top), 1)
+        return {
+            "allocations": [
+                {"username": t["username"], "allocation_pct": pct, "reasoning": "Fallback — equal weight"}
+                for t in top
+            ],
+            "total_risk_score": 5.0,
+            "market_sentiment": "neutral",
+        }
 
     def _build_prompt(
         self,

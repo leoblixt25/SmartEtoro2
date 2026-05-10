@@ -530,8 +530,9 @@ class TelegramBot:
 
                 result = await scout.evaluate(holdings, news, candidates)
 
+                lines = []
                 if result["action_required"]:
-                    text = (
+                    lines.append(
                         f"⚠️ *AI Scout Alert*\n\n"
                         f"*Flagged Trader:* {result['flagged_trader']}\n\n"
                         f"*Reasoning:* {result['reasoning']}\n\n"
@@ -539,8 +540,34 @@ class TelegramBot:
                         f"Reply `/swap {result['flagged_trader']} {result['recommended_swap']}` to execute."
                     )
                 else:
-                    text = f"✅ *AI Scout: All Clear*\n\n{result['reasoning']}"
+                    lines.append(f"✅ *AI Scout: All Clear*\n\n{result['reasoning']}")
 
+                # 3-trader allocation recommendation
+                allocation = await scout.evaluate_portfolio_with_gemini(holdings, news, candidates)
+                if allocation.get("allocations"):
+                    from backend.services.rebalance_service import calculate_rebalance_orders
+                    current_positions = [
+                        {"username": h["username"], "current_value": h.get("allocation_pct", 0) * 0.01 * (p.total_value or 10000)}
+                        for h in holdings
+                    ]
+                    orders = calculate_rebalance_orders(p.total_value or 0, current_positions, allocation["allocations"])
+
+                    lines.append(f"\n---\n*📊 AI Allocation Plan*")
+                    for a in allocation["allocations"]:
+                        lines.append(f"• *{a['username']}* — {a['allocation_pct']}%")
+                        if a.get("reasoning"):
+                            lines.append(f"  _{a['reasoning']}_")
+                    lines.append(f"\n*Sentiment:* {allocation['market_sentiment']}")
+                    if orders.get("warnings"):
+                        for w in orders["warnings"]:
+                            lines.append(f"⚠️ {w}")
+                    if orders.get("orders"):
+                        lines.append(f"\n*Rebalance Orders:*")
+                        for o in orders["orders"][:5]:
+                            icon = {"buy": "🟢", "sell": "🔴", "hold": "⚪"}.get(o["action"], "⚪")
+                            lines.append(f"{icon} {o['action'].upper()} {o['username']}: ${o['amount']:.2f}")
+
+                text = "\n".join(lines)
                 await self._reply(update, text, parse_mode="Markdown")
 
         except Exception as e:

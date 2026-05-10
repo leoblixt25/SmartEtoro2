@@ -285,6 +285,24 @@ class SchedulerService:
                         message = result.get("reasoning", "No issues detected.")
                         severity = "info"
 
+                    # 3-trader allocation recommendation
+                    allocation = await scout.evaluate_portfolio_with_gemini(holdings, news, candidates)
+                    if allocation.get("allocations"):
+                        from backend.services.rebalance_service import calculate_rebalance_orders
+                        current_positions = [
+                            {"username": h["username"], "current_value": h.get("allocation_pct", 0) * 0.01 * (portfolio.total_value or 10000)}
+                            for h in holdings
+                        ]
+                        orders = calculate_rebalance_orders(portfolio.total_value or 0, current_positions, allocation["allocations"])
+                        alloc_lines = []
+                        for a in allocation["allocations"]:
+                            alloc_lines.append(f"• {a['username']} — {a['allocation_pct']}%")
+                        alloc_lines.append(f"Sentiment: {allocation['market_sentiment']}")
+                        if orders.get("warnings"):
+                            alloc_lines.extend([f"⚠️ {w}" for w in orders["warnings"]])
+                        message += "\n\n📊 AI Allocation Plan:\n" + "\n".join(alloc_lines)
+                        title += " + Allocation Plan"
+
                     db.add(Alert(
                         portfolio_id=portfolio.id,
                         alert_type=alert_type,
@@ -299,14 +317,18 @@ class SchedulerService:
                         from backend.services.telegram_service import TelegramBot
                         bot = TelegramBot()
                         if bot.enabled:
-                            await bot.send_message(
+                            msg = (
                                 f"⚠️ *AI Scout Alert*\n\n"
                                 f"Risk detected in *{result['flagged_trader']}*'s portfolio.\n\n"
                                 f"*Reasoning:* {result['reasoning']}\n\n"
                                 f"*Recommend swapping to:* {result['recommended_swap']}\n\n"
-                                f"Reply `/swap {result['flagged_trader']} {result['recommended_swap']}` to execute.",
-                                show_keyboard=True,
+                                f"Reply `/swap {result['flagged_trader']} {result['recommended_swap']}` to execute."
                             )
+                            if allocation.get("allocations"):
+                                msg += "\n\n📊 *AI Allocation Plan*\n"
+                                for a in allocation["allocations"]:
+                                    msg += f"• *{a['username']}* — {a['allocation_pct']}%\n"
+                            await bot.send_message(msg, show_keyboard=True)
 
                     logger.info(
                         f"Market scout {'flagged' if result['action_required'] else 'cleared'} "
