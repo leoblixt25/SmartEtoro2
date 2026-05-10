@@ -518,6 +518,13 @@ class TelegramBot:
             news = await fetch_market_news()
             candidates = await discover_top_traders()
 
+            # Trace data pipeline
+            logger.info(f"Scout pipeline: {len(news)} news headlines, {len(candidates)} candidate traders")
+            if news:
+                logger.info(f"Scout news sample: {news[0]['title'][:100]}")
+            if candidates:
+                logger.info(f"Scout candidates sample: {candidates[0]['username']}")
+
             with db_session() as db:
                 p = db.query(Portfolio).first()
                 if not p:
