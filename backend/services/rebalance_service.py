@@ -10,6 +10,8 @@ from __future__ import annotations
 import logging
 from typing import Dict, List
 
+from backend.ai.gemini_scout import TARGET_KEY
+
 logger = logging.getLogger(__name__)
 
 MIN_POSITION_SIZE = 200.0
@@ -35,7 +37,7 @@ def calculate_rebalance_orders(
           - total_required_cash: Float
           - warnings: List[str]
     """
-    target_allocations = allocation_data.get("target_portfolio", [])
+    target_allocations = allocation_data.get(TARGET_KEY, [])
     orders: List[Dict] = []
     skipped: List[str] = []
     warnings: List[str] = []

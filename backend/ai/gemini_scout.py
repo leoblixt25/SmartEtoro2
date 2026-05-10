@@ -18,6 +18,8 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+TARGET_KEY = "target_portfolio"
+
 try:
     import google.generativeai as genai
     GEMINI_AVAILABLE = True
@@ -79,7 +81,7 @@ AVAILABLE CANDIDATES (Choose 3 from this list or the CURRENT PORTFOLIO list):
 
 Output your analysis in the following JSON schema:
 {
-  "target_portfolio": [
+  TARGET_KEY: [
     {"username": "trader_1", "allocation_pct": 50, "reasoning": "Performance is resilient."},
     {"username": "trader_2", "allocation_pct": 25, "reasoning": "Low risk hedge."},
     {"username": "trader_3", "allocation_pct": 25, "reasoning": "Diversification."}
@@ -167,7 +169,7 @@ class GeminiScout:
     ) -> dict:
         """Ask Gemini to propose a 3-trader allocation plan."""
         if not self.enabled:
-            return {"target_portfolio": [], "total_risk_score": 0, "market_sentiment": "unknown"}
+            return {TARGET_KEY: [], "total_risk_score": 0, "market_sentiment": "unknown"}
 
         if not self._allocation_model:
             self._allocation_model = genai.GenerativeModel(
@@ -186,7 +188,7 @@ class GeminiScout:
                 return self._fallback_allocation(holdings_data)
 
             # Strict 3-trader enforcement
-            allocs = parsed.get("target_portfolio", [])
+            allocs = parsed.get(TARGET_KEY, [])
             if len(allocs) != 3:
                 logger.warning(f"Gemini returned {len(allocs)} allocations, need 3 — using fallback")
                 return self._fallback_allocation(holdings_data)
@@ -203,7 +205,7 @@ class GeminiScout:
             logger.info(f"Gemini allocation: {[a['username'] for a in allocs]}")
 
             return {
-                "target_portfolio": allocs,
+                TARGET_KEY: allocs,
                 "total_risk_score": parsed.get("total_risk_score", 5.0),
                 "market_sentiment": parsed.get("market_sentiment", "neutral"),
             }
@@ -216,10 +218,10 @@ class GeminiScout:
         """Equal-weight fallback if Gemini fails."""
         top = sorted(holdings, key=lambda h: h.get("total_return_pct", 0) or 0, reverse=True)[:3]
         if not top:
-            return {"target_portfolio": [], "total_risk_score": 0, "market_sentiment": "unknown"}
+            return {TARGET_KEY: [], "total_risk_score": 0, "market_sentiment": "unknown"}
         pct = round(100 / len(top), 1)
         return {
-            "target_portfolio": [
+            TARGET_KEY: [
                 {"username": t["username"], "allocation_pct": pct, "reasoning": "Fallback — equal weight"}
                 for t in top
             ],
@@ -316,14 +318,12 @@ class GeminiScout:
             raise RuntimeError(f"Gemini API error: {e}")
 
     def _parse_response(self, raw_text: str):
+        import json
         try:
-            cleaned_data = json.loads(raw_text.strip())
-            return {k.strip().strip('"'): v for k, v in cleaned_data.items()}
+            # Force-strip every possible whitespace character
+            data = json.loads(raw_text.strip())
+            # Return the dict as is. We will handle key access safely.
+            return data
         except Exception as e:
-            logger.error(f"Failed to parse JSON: {e}. Raw: {raw_text}")
-            return {
-                "action_required": False,
-                "flagged_trader": None,
-                "reasoning": f"Failed to parse Gemini response: {e}",
-                "recommended_swap": None,
-            }
+            print(f"DEBUG: Gemini raw output was: {raw_text}")
+            return {TARGET_KEY: []}

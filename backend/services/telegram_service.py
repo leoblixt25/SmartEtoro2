@@ -505,7 +505,7 @@ class TelegramBot:
         from backend.database.connection import db_session
         from backend.database.models import Portfolio
         from backend.services.market_data import get_current_holdings, fetch_market_news, discover_top_traders
-        from backend.ai.gemini_scout import GeminiScout
+        from backend.ai.gemini_scout import GeminiScout, TARGET_KEY
 
         await self._reply(update, "🔍 Running AI Market Scout... (this may take 10-20s)")
 
@@ -551,7 +551,7 @@ class TelegramBot:
 
                 # 3-trader allocation recommendation
                 allocation = await scout.evaluate_portfolio_with_gemini(holdings, news, candidates)
-                if allocation.get("target_portfolio"):
+                if allocation.get(TARGET_KEY):
                     from backend.services.rebalance_service import calculate_rebalance_orders
                     current_positions = [
                         {"username": h["username"], "current_value": h.get("allocation_pct", 0) * 0.01 * (p.total_value or 10000)}
@@ -560,7 +560,7 @@ class TelegramBot:
                     orders = calculate_rebalance_orders(p.total_value or 0, current_positions, allocation)
 
                     lines.append(f"\n---\n*📊 AI Allocation Plan*")
-                    for a in allocation["target_portfolio"]:
+                    for a in allocation.get(TARGET_KEY, []):
                         lines.append(f"• *{a['username']}* — {a['allocation_pct']}%")
                         if a.get("reasoning"):
                             lines.append(f"  _{a['reasoning']}_")
