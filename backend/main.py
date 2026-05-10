@@ -108,16 +108,18 @@ async def lifespan(app: FastAPI):
 
     scheduler.start()
 
-    # Initialize Telegram bot webhook
+    # Initialize Telegram bot
     if telegram_bot.enabled:
         try:
             webhook_url = telegram_bot.webhook_url()
             await telegram_bot._bot.set_webhook(url=webhook_url)
             logger.info(f"Telegram webhook set to {webhook_url}")
+            await telegram_bot.setup_commands()
             await telegram_bot.send_message(
-                "🚀 CopyVault Server Started.\n"
+                "🚀 *CopyVault Server Started*\n\n"
                 "eToro sync is active.\n"
-                "Send /ping to test."
+                "Use the menu below or tap /help for commands.",
+                show_keyboard=True,
             )
         except Exception as e:
             logger.error(f"Telegram webhook setup failed: {e}")

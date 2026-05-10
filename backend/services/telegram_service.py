@@ -36,7 +36,8 @@ logger = logging.getLogger(__name__)
 
 try:
     import telegram
-    from telegram import Bot, Update
+    from telegram import Bot, Update, BotCommand
+    from telegram.constants import ParseMode
     TELEGRAM_AVAILABLE = True
 except ImportError:
     TELEGRAM_AVAILABLE = False
@@ -62,6 +63,40 @@ class TelegramBot:
             self._bot = Bot(token=self.token)
             self.enabled = True
 
+    COMMANDS = [
+        BotCommand("help", "Show all commands"),
+        BotCommand("ping", "Liveness check"),
+        BotCommand("status", "Quick portfolio snapshot"),
+        BotCommand("portfolio", "Full portfolio breakdown"),
+        BotCommand("traders", "Copied traders with PnL"),
+        BotCommand("risk", "Active risk violations"),
+        BotCommand("alerts", "Recent unread alerts"),
+        BotCommand("pending", "Actions awaiting approval"),
+        BotCommand("approve", "Approve & execute a pending action"),
+        BotCommand("sync", "Force eToro sync now"),
+        BotCommand("pause", "Emergency stop all automation"),
+    ]
+
+    MAIN_KEYBOARD = [
+        ["/status", "/traders"],
+        ["/portfolio", "/risk"],
+        ["/pending", "/alerts"],
+        ["/sync", "/pause"],
+    ]
+
+    async def setup_commands(self) -> None:
+        """Register the slash-command menu with Telegram."""
+        if self._bot:
+            try:
+                await self._bot.set_my_commands(self.COMMANDS)
+                logger.info("Telegram command menu registered")
+            except Exception as e:
+                logger.warning(f"Failed to register commands: {e}")
+
+    def _keyboard(self) -> dict:
+        """Inline reply keyboard markup for easy command access."""
+        return {"keyboard": self.MAIN_KEYBOARD, "resize_keyboard": True}
+
     def _parse_int(self, key: str, default: Optional[int] = None) -> Optional[int]:
         raw = os.getenv(key)
         if raw and raw.strip().lstrip("-").isdigit():
@@ -74,17 +109,25 @@ class TelegramBot:
     def _sym(self, currency: str) -> str:
         return "€" if currency == "EUR" else "$"
 
-    async def send_message(self, text: str, chat_id: Optional[int] = None) -> None:
+    async def send_message(self, text: str, chat_id: Optional[int] = None, show_keyboard: bool = False) -> None:
         if not self.enabled or not self._bot:
             return
         target = chat_id or self.chat_id
         if not target:
             return
         try:
-            await self._bot.send_message(chat_id=target, text=text, parse_mode="Markdown")
+            kwargs = {"chat_id": target, "text": text, "parse_mode": "Markdown"}
+            if show_keyboard:
+                kwargs["reply_markup"] = self._keyboard()
+            await self._bot.send_message(**kwargs)
             logger.info(f"Telegram message sent to {target}")
         except Exception as e:
             logger.error(f"Failed to send Telegram message: {e}")
+
+    async def _reply(self, update: Update, text: str, **kwargs) -> None:
+        """Reply with text + persistent keyboard."""
+        markup = self._keyboard()
+        await self._reply(update, text, reply_markup=markup, **kwargs)
 
     async def process_update(self, payload: dict) -> None:
         if not self.enabled or not self._bot:
@@ -122,42 +165,38 @@ class TelegramBot:
         if handler:
             await handler(update, args)
         else:
-            await update.message.reply_text(
-                "Unknown command. Send /help for available commands."
-            )
+            await self._reply(update, "Unknown command. Send /help for available commands.")
 
     # ── Commands ─────────────────────────────────
 
     async def _cmd_help(self, update: Update, args: list[str]) -> None:
         text = (
             "*🤖 CopyVault Bot Commands*\n\n"
-            "/ping – Liveness check\n"
-            "/status – Quick portfolio snapshot\n"
-            "/portfolio – Full portfolio breakdown\n"
-            "/traders – Copied traders with PnL\n"
-            "/risk – Active risk violations\n"
-            "/alerts – Recent unread alerts\n"
-            "/pending – Actions awaiting approval\n"
-            "/approve <id> – Approve & execute an action\n"
-            "/sync – Force eToro sync now\n"
-            "/pause – Emergency stop all automation\n"
-            "/help – This message"
+            "Tap a button below or type a command:\n\n"
+            "/status – Portfolio snapshot\n"
+            "/portfolio – Full breakdown\n"
+            "/traders – Copied traders\n"
+            "/risk – Risk violations\n"
+            "/alerts – Unread alerts\n"
+            "/pending – Pending approvals\n"
+            "/approve <id> – Approve action\n"
+            "/sync – Sync eToro now\n"
+            "/pause – Emergency stop"
         )
-        await update.message.reply_text(text, parse_mode="Markdown")
+        await self._reply(update, text, parse_mode="Markdown")
 
     async def _cmd_ping(self, update: Update, args: list[str]) -> None:
-        await update.message.reply_text("✅ CopyVault Bot is active!")
+        await self._reply(update, "✅ CopyVault Bot is active!")
 
     async def _cmd_status(self, update: Update, args: list[str]) -> None:
         from backend.database.connection import db_session
         from backend.database.models import Portfolio
-        from datetime import datetime
 
         try:
             with db_session() as db:
                 p = db.query(Portfolio).first()
                 if not p:
-                    await update.message.reply_text("No portfolio found.")
+                    await self._reply(update, "No portfolio found.")
                     return
                 s = self._sym(p.currency)
                 total_return = p.total_value - p.invested_amount
@@ -172,10 +211,10 @@ class TelegramBot:
                     f"{mode}  |  {p.currency}\n"
                     f"Updated: {p.last_updated.strftime('%H:%M UTC') if p.last_updated else '—'}"
                 )
-                await update.message.reply_text(text, parse_mode="Markdown")
+                await self._reply(update, text, parse_mode="Markdown")
         except Exception as e:
             logger.error(f"/status error: {e}")
-            await update.message.reply_text(f"Error: {e}")
+            await self._reply(update, f"Error: {e}")
 
     async def _cmd_portfolio(self, update: Update, args: list[str]) -> None:
         from backend.database.connection import db_session
@@ -185,7 +224,7 @@ class TelegramBot:
             with db_session() as db:
                 p = db.query(Portfolio).first()
                 if not p:
-                    await update.message.reply_text("No portfolio found.")
+                    await self._reply(update, "No portfolio found.")
                     return
                 s = self._sym(p.currency)
                 total_return = p.total_value - p.invested_amount
@@ -210,10 +249,10 @@ class TelegramBot:
                     f"💱 {p.currency}  |  Mode: {mode}\n"
                     f"🕐 {p.last_updated.strftime('%Y-%m-%d %H:%M UTC') if p.last_updated else '—'}"
                 )
-                await update.message.reply_text(text, parse_mode="Markdown")
+                await self._reply(update, text, parse_mode="Markdown")
         except Exception as e:
             logger.error(f"/portfolio error: {e}")
-            await update.message.reply_text(f"Error: {e}")
+            await self._reply(update, f"Error: {e}")
 
     async def _cmd_traders(self, update: Update, args: list[str]) -> None:
         from backend.database.connection import db_session
@@ -223,11 +262,11 @@ class TelegramBot:
             with db_session() as db:
                 p = db.query(Portfolio).first()
                 if not p:
-                    await update.message.reply_text("No portfolio found.")
+                    await self._reply(update, "No portfolio found.")
                     return
                 traders = p.copied_traders
                 if not traders:
-                    await update.message.reply_text("No copied traders.")
+                    await self._reply(update, "No copied traders.")
                     return
                 lines = [f"👥 *Copied Traders ({len(traders)})*\n"]
                 for t in traders:
@@ -240,10 +279,10 @@ class TelegramBot:
                         f"  {ret_sign} Return: {ret:+.2f}%  |  Alloc: {t.allocation_pct:.1f}%\n"
                         f"  {risk_color} Risk: {t.risk_score:.1f}/10  |  {t.risk_classification.upper() if t.risk_classification else '—'}\n"
                     )
-                await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+                await self._reply(update, "\n".join(lines), parse_mode="Markdown")
         except Exception as e:
             logger.error(f"/traders error: {e}")
-            await update.message.reply_text(f"Error: {e}")
+            await self._reply(update, f"Error: {e}")
 
     async def _cmd_risk(self, update: Update, args: list[str]) -> None:
         from backend.database.connection import db_session
@@ -254,7 +293,7 @@ class TelegramBot:
             with db_session() as db:
                 p = db.query(Portfolio).first()
                 if not p:
-                    await update.message.reply_text("No portfolio found.")
+                    await self._reply(update, "No portfolio found.")
                     return
                 settings = db.query(RiskSettings).filter(
                     RiskSettings.portfolio_id == p.id
@@ -262,7 +301,7 @@ class TelegramBot:
                 engine = RiskEngine()
                 violations = engine.check_all(db, p, settings)
                 if not violations:
-                    await update.message.reply_text("✅ No risk violations. Portfolio is healthy.")
+                    await self._reply(update, "✅ No risk violations. Portfolio is healthy.")
                     return
                 lines = [f"⚠️ *{len(violations)} Risk Violation(s)*\n"]
                 for v in violations:
@@ -272,10 +311,10 @@ class TelegramBot:
                     if v.suggested_action:
                         lines.append(f"  💡 {v.suggested_action}")
                     lines.append("")
-                await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+                await self._reply(update, "\n".join(lines), parse_mode="Markdown")
         except Exception as e:
             logger.error(f"/risk error: {e}")
-            await update.message.reply_text(f"Error: {e}")
+            await self._reply(update, f"Error: {e}")
 
     async def _cmd_alerts(self, update: Update, args: list[str]) -> None:
         from backend.database.connection import db_session
@@ -291,7 +330,7 @@ class TelegramBot:
                     .all()
                 )
                 if not alerts:
-                    await update.message.reply_text("✅ No unread alerts.")
+                    await self._reply(update, "✅ No unread alerts.")
                     return
                 lines = [f"🔔 *{len(alerts)} Unread Alerts*\n"]
                 for a in alerts:
@@ -299,10 +338,10 @@ class TelegramBot:
                     lines.append(f"{icon} *{a.title}*")
                     lines.append(f"  {a.message[:200]}")
                     lines.append(f"  _{a.created_at.strftime('%m/%d %H:%M')}_\n")
-                await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+                await self._reply(update, "\n".join(lines), parse_mode="Markdown")
         except Exception as e:
             logger.error(f"/alerts error: {e}")
-            await update.message.reply_text(f"Error: {e}")
+            await self._reply(update, f"Error: {e}")
 
     async def _cmd_pending(self, update: Update, args: list[str]) -> None:
         from backend.database.connection import db_session
@@ -321,7 +360,7 @@ class TelegramBot:
                     .all()
                 )
                 if not alerts:
-                    await update.message.reply_text("✅ No pending approvals.")
+                    await self._reply(update, "✅ No pending approvals.")
                     return
                 lines = [f"⏳ *{len(alerts)} Pending Approval(s)*\n"]
                 for a in alerts:
@@ -329,14 +368,14 @@ class TelegramBot:
                     lines.append(f"  {a.message[:200]}")
                     lines.append(f"  _{a.created_at.strftime('%m/%d %H:%M')}_\n")
                 lines.append("Use /approve <rule_id> to execute.")
-                await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+                await self._reply(update, "\n".join(lines), parse_mode="Markdown")
         except Exception as e:
             logger.error(f"/pending error: {e}")
-            await update.message.reply_text(f"Error: {e}")
+            await self._reply(update, f"Error: {e}")
 
     async def _cmd_approve(self, update: Update, args: list[str]) -> None:
         if not args or not args[0].isdigit():
-            await update.message.reply_text("Usage: /approve <rule_id>")
+            await self._reply(update, "Usage: /approve <rule_id>")
             return
         action_id = int(args[0])
         from backend.database.connection import db_session
@@ -351,35 +390,35 @@ class TelegramBot:
             with db_session() as db:
                 rule = db.query(AutomationRule).filter(AutomationRule.id == action_id).first()
                 if not rule:
-                    await update.message.reply_text(f"No rule found with ID {action_id}.")
+                    await self._reply(update, f"No rule found with ID {action_id}.")
                     return
                 portfolio = db.query(Portfolio).filter(Portfolio.id == rule.portfolio_id).first()
                 if not portfolio:
-                    await update.message.reply_text("Portfolio not found.")
+                    await self._reply(update, "Portfolio not found.")
                     return
                 traders = [t for t in portfolio.copied_traders if t.is_active and not t.is_paused]
                 actions = engine.evaluate_rules(db, portfolio, traders)
                 match = next((a for a in actions if a.rule_id == action_id), None)
                 if not match:
-                    await update.message.reply_text(
+                    await self._reply(update, 
                         f"Rule '{rule.name}' is not currently triggered. Conditions may no longer be met."
                     )
                     return
-                await update.message.reply_text(f"⚙️ Executing '{rule.name}' on eToro...")
+                await self._reply(update, f"⚙️ Executing '{rule.name}' on eToro...")
                 resp = await engine.execute_etoro_action(sync_service.client, match, portfolio, db)
                 success = not (resp or {}).get("error", False)
                 engine.log_execution(db, portfolio, match, approved_by="telegram", success=success, etoro_response=resp)
                 if success:
-                    await update.message.reply_text(
+                    await self._reply(update, 
                         f"✅ *{rule.name}* executed.\n{match.description}",
                         parse_mode="Markdown",
                     )
                 else:
                     detail = (resp or {}).get("detail", "Unknown")
-                    await update.message.reply_text(f"❌ *{rule.name}* FAILED.\n{detail}", parse_mode="Markdown")
+                    await self._reply(update, f"❌ *{rule.name}* FAILED.\n{detail}", parse_mode="Markdown")
         except Exception as e:
             logger.error(f"/approve error: {e}")
-            await update.message.reply_text(f"Error: {e}")
+            await self._reply(update, f"Error: {e}")
 
     async def _cmd_sync(self, update: Update, args: list[str]) -> None:
         from backend.database.connection import db_session
@@ -387,28 +426,28 @@ class TelegramBot:
         from backend.services.etoro_service import EToroSyncService
 
         try:
-            await update.message.reply_text("🔄 Syncing with eToro...")
+            await self._reply(update, "🔄 Syncing with eToro...")
             with db_session() as db:
                 p = db.query(Portfolio).first()
                 if not p:
-                    await update.message.reply_text("No portfolio found.")
+                    await self._reply(update, "No portfolio found.")
                     return
                 sync_service = EToroSyncService()
                 success = await sync_service.sync_portfolio_data(db, p.id)
                 if success:
                     db.refresh(p)
                     s = self._sym(p.currency)
-                    await update.message.reply_text(
+                    await self._reply(update, 
                         f"✅ Sync complete.\n"
                         f"Value: {s}{p.total_value:,.2f}  |  "
                         f"Updated: {p.last_updated.strftime('%H:%M UTC')}",
                         parse_mode="Markdown",
                     )
                 else:
-                    await update.message.reply_text("❌ Sync failed. Check API credentials / logs.")
+                    await self._reply(update, "❌ Sync failed. Check API credentials / logs.")
         except Exception as e:
             logger.error(f"/sync error: {e}")
-            await update.message.reply_text(f"Sync error: {e}")
+            await self._reply(update, f"Sync error: {e}")
 
     async def _cmd_pause(self, update: Update, args: list[str]) -> None:
         from backend.database.connection import db_session
@@ -420,10 +459,10 @@ class TelegramBot:
             with db_session() as db:
                 p = db.query(Portfolio).first()
                 if not p:
-                    await update.message.reply_text("No portfolio found.")
+                    await self._reply(update, "No portfolio found.")
                     return
                 count = engine.emergency_stop(db, p.id)
-                await update.message.reply_text(
+                await self._reply(update, 
                     f"⛔ *Emergency Stop Activated*\n"
                     f"{count} automation rule(s) paused.\n"
                     "Use the web dashboard to re-enable.",
@@ -431,7 +470,7 @@ class TelegramBot:
                 )
         except Exception as e:
             logger.error(f"/pause error: {e}")
-            await update.message.reply_text(f"Error: {e}")
+            await self._reply(update, f"Error: {e}")
 
     # ── Webhook helpers ──────────────────────────
 
