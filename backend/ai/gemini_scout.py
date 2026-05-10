@@ -139,8 +139,7 @@ class GeminiScout:
         prompt = self._build_prompt(holdings_data, news_data, top_traders)
 
         try:
-            json_config = genai.GenerationConfig(response_mime_type="application/json")
-            response = await self._call_gemini(prompt, generation_config=json_config)
+            response = await self._call_gemini(prompt)
             parsed = self._parse_response(response)
             if parsed.get("action_required"):
                 logger.warning(
@@ -178,8 +177,7 @@ class GeminiScout:
         prompt = self._build_allocation_prompt(holdings_data, news_data, top_traders)
 
         try:
-            json_config = genai.GenerationConfig(response_mime_type="application/json")
-            response = await self._call_gemini(prompt, model=self._allocation_model, generation_config=json_config)
+            response = await self._call_gemini(prompt, model=self._allocation_model)
             parsed = json.loads(response)
 
             # Strict 3-trader enforcement
