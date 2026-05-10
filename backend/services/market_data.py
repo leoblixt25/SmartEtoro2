@@ -88,6 +88,12 @@ def get_current_holdings(db, portfolio_id: int) -> List[Dict]:
 # ── 2. Market News ───────────────────────────────────────────────
 
 
+def _strip_html(text: str) -> str:
+    """Remove HTML tags from a string."""
+    import re
+    return re.sub(r"<[^>]+>", "", text)
+
+
 async def get_market_news(symbols: Optional[List[str]] = None) -> List[Dict]:
     """Fetch live news headlines for major stocks + indices using yfinance.
 
@@ -117,9 +123,11 @@ async def get_market_news(symbols: Optional[List[str]] = None) -> List[Dict]:
                     title = article.get("title", "")
                     if title and title not in seen:
                         seen.add(title)
+                        # Strip any HTML tags from summary (yfinance sometimes includes <img> etc.)
+                        summary = (article.get("summary") or "")[:300]
                         items.append({
                             "title": title,
-                            "summary": (article.get("summary") or "")[:300],
+                            "summary": _strip_html(summary),
                             "source": article.get("publisher", "Yahoo Finance"),
                         })
                         if len(items) >= 10:

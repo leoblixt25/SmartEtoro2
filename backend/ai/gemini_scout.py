@@ -107,15 +107,15 @@ class GeminiScout:
         else:
             genai.configure(api_key=key)
             self._model = genai.GenerativeModel(
-                model_name="gemini-2.5-flash",
+                model_name="gemini-2.0-flash",
                 system_instruction=SYSTEM_PROMPT,
             )
             self._allocation_model = genai.GenerativeModel(
-                model_name="gemini-2.5-flash",
+                model_name="gemini-2.0-flash",
                 system_instruction=ALLOCATION_PROMPT,
             )
             self.enabled = True
-            logger.info("Gemini scout initialized with gemini-2.5-flash")
+            logger.info("Gemini scout initialized with gemini-2.0-flash")
 
     async def evaluate(
         self,
