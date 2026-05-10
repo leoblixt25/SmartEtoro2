@@ -205,10 +205,10 @@ Only return recommendations if there are real risk concerns. If everything looks
     async def _call_claude(self, prompt: str, context: str = "analysis") -> dict:
         """
         Call Claude API and return structured JSON response.
-        Falls back to mock data if API is unavailable.
+        Raises an exception if API is unavailable.
         """
         if self._client is None:
-            return self._mock_response(context)
+            raise RuntimeError("ANTHROPIC_API_KEY not configured — Claude unavailable")
 
         try:
             response = await self._client.messages.create(
@@ -230,30 +230,7 @@ Only return recommendations if there are real risk concerns. If everything looks
 
         except json.JSONDecodeError as e:
             logger.error(f"AI response JSON parse error ({context}): {e}")
-            return self._mock_response(context)
+            raise
         except anthropic.APIError as e:
             logger.error(f"Anthropic API error ({context}): {e}")
-            return self._mock_response(context)
-        except Exception as e:
-            logger.error(f"Unexpected AI error ({context}): {e}")
-            return self._mock_response(context)
-
-    def _mock_response(self, context: str) -> dict:
-        """Fallback response when API is unavailable — used in demo/test mode."""
-        return {
-            "recommendations": [
-                {
-                    "type": "general",
-                    "title": "AI Analysis Unavailable",
-                    "summary": (
-                        "The AI analysis service is currently unavailable. "
-                        "Your portfolio rules engine is still active and monitoring risk. "
-                        "Check the dashboard for rule-based recommendations."
-                    ),
-                    "confidence": "low",
-                    "risk_level": "low",
-                }
-            ],
-            "weekly_summary": "AI summary unavailable. Please configure your Anthropic API key.",
-            "overall_risk_assessment": "unknown",
-        }
+            raise

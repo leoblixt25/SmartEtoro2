@@ -20,6 +20,8 @@ Commands:
   /approve <rule_id> – Approve and execute a pending action
   /sync              – Trigger an eToro data sync now
   /pause             – Emergency stop all automation rules
+  /scout             – Run AI Market Scout now
+  /swap <old> <new>  – Execute a trader swap recommended by Scout
 
 Environment variables:
   TELEGRAM_BOT_TOKEN       – Bot token from @BotFather
@@ -95,13 +97,15 @@ class TelegramBot:
         BotCommand("approve", "Approve & execute a pending action"),
         BotCommand("sync", "Force eToro sync now"),
         BotCommand("pause", "Emergency stop all automation"),
+        BotCommand("scout", "Run AI Market Scout now"),
+        BotCommand("swap", "Execute a trader swap from Scout recommendation"),
     ]
 
     MAIN_KEYBOARD = [
         ["/status", "/traders"],
         ["/portfolio", "/risk"],
         ["/pending", "/alerts"],
-        ["/sync", "/pause"],
+        ["/sync", "/scout"],
     ]
 
     async def setup_commands(self) -> None:
@@ -180,6 +184,8 @@ class TelegramBot:
             "/approve": self._cmd_approve,
             "/sync": self._cmd_sync,
             "/pause": self._cmd_pause,
+            "/scout": self._cmd_scout,
+            "/swap": self._cmd_swap,
         }
         handler = handlers.get(command)
         if handler:
@@ -201,7 +207,9 @@ class TelegramBot:
             "/pending – Pending approvals\n"
             "/approve <id> – Approve action\n"
             "/sync – Sync eToro now\n"
-            "/pause – Emergency stop"
+            "/pause – Emergency stop\n"
+            "/scout – Run AI Market Scout\n"
+            "/swap <old> <new> – Execute Scout swap"
         )
         await self._reply(update, text, parse_mode="Markdown")
 
@@ -491,6 +499,146 @@ class TelegramBot:
         except Exception as e:
             logger.error(f"/pause error: {e}")
             await self._reply(update, f"Error: {e}")
+
+    async def _cmd_scout(self, update: Update, args: list[str]) -> None:
+        """Run AI Market Scout on demand via Telegram."""
+        from backend.database.connection import db_session
+        from backend.database.models import Portfolio
+        from backend.services.market_data import get_current_holdings, fetch_market_news, discover_top_traders
+        from backend.ai.gemini_scout import GeminiScout
+
+        await self._reply(update, "🔍 Running AI Market Scout... (this may take 10-20s)")
+
+        scout = GeminiScout()
+        if not scout.enabled:
+            await self._reply(update, "❌ Gemini Scout is not configured. Set GEMINI_API_KEY.")
+            return
+
+        try:
+            news = await fetch_market_news()
+            candidates = await discover_top_traders()
+
+            with db_session() as db:
+                p = db.query(Portfolio).first()
+                if not p:
+                    await self._reply(update, "No portfolio found.")
+                    return
+                holdings = get_current_holdings(db, p.id)
+                if not holdings:
+                    await self._reply(update, "No active copied traders found.")
+                    return
+
+                result = await scout.evaluate(holdings, news, candidates)
+
+                if result["action_required"]:
+                    text = (
+                        f"⚠️ *AI Scout Alert*\n\n"
+                        f"*Flagged Trader:* {result['flagged_trader']}\n\n"
+                        f"*Reasoning:* {result['reasoning']}\n\n"
+                        f"*Recommended Swap:* {result['recommended_swap']}\n\n"
+                        f"Reply `/swap {result['flagged_trader']} {result['recommended_swap']}` to execute."
+                    )
+                else:
+                    text = f"✅ *AI Scout: All Clear*\n\n{result['reasoning']}"
+
+                await self._reply(update, text, parse_mode="Markdown")
+
+        except Exception as e:
+            logger.error(f"/scout error: {e}")
+            await self._reply(update, f"❌ Scout failed: {e}")
+
+    async def _cmd_swap(self, update: Update, args: list[str]) -> None:
+        """Execute a trader swap: stop copying old, start copying new.
+
+        Usage: /swap <old_trader_username> <new_trader_username>
+        """
+        if len(args) < 2:
+            await self._reply(update,
+                "Usage: `/swap <old_username> <new_username>`\n\n"
+                "Example: `/swap booker03 ConsistentCapital`\n"
+                "Run /scout first to get a recommendation.",
+                parse_mode="Markdown",
+            )
+            return
+
+        old_username = args[0]
+        new_username = args[1]
+
+        from backend.database.connection import db_session
+        from backend.database.models import Portfolio, CopiedTrader, Alert, AlertType
+        from backend.services.etoro_service import EToroSyncService
+
+        await self._reply(update, f"⚙️ Processing swap: *{old_username}* → *{new_username}*...", parse_mode="Markdown")
+
+        sync_service = EToroSyncService()
+        client = sync_service.client
+
+        if not client.enabled:
+            await self._reply(update, "❌ eToro API not configured. Set ETORO_API_KEY and ETORO_API_SECRET.")
+            return
+
+        try:
+            with db_session() as db:
+                p = db.query(Portfolio).first()
+                if not p:
+                    await self._reply(update, "No portfolio found.")
+                    return
+
+                # Find the old trader in our DB
+                old_trader = (
+                    db.query(CopiedTrader)
+                    .filter(
+                        CopiedTrader.portfolio_id == p.id,
+                        CopiedTrader.trader_username == old_username,
+                        CopiedTrader.is_active.is_(True),
+                    )
+                    .first()
+                )
+                if not old_trader:
+                    await self._reply(update, f"❌ Active trader '{old_username}' not found.")
+                    return
+
+                mirror_id = int(old_trader.trader_id) if old_trader.trader_id and old_trader.trader_id.isdigit() else None
+
+                if mirror_id:
+                    # Step 1: Close the old mirror position
+                    await self._reply(update, f"⏳ Closing copy of {old_username}...")
+                    close_result = await client.execute_close_mirror(mirror_id, is_simulation=p.is_simulation)
+                    if close_result and close_result.get("error"):
+                        detail = close_result.get("detail", "Unknown error")
+                        await self._reply(update, f"❌ Failed to close {old_username}: {detail}")
+                        return
+
+                # Step 2: Mark old trader as inactive in DB
+                old_trader.is_active = False
+                old_trader.is_paused = True
+                old_trader.paused_reason = f"Swapped to {new_username} via Scout"
+
+                # Step 3: Log the swap as an alert
+                db.add(Alert(
+                    portfolio_id=p.id,
+                    alert_type=AlertType.AI_SCOUT,
+                    title=f"🔄 Swap Executed: {old_username} → {new_username}",
+                    message=(
+                        f"Copy of {old_username} closed and marked inactive.\n"
+                        f"To start copying {new_username}, use the eToro UI or add via the dashboard."
+                    ),
+                    severity="info",
+                ))
+                db.commit()
+
+                await self._reply(update,
+                    f"✅ *Swap Complete*\n\n"
+                    f"❌ Stopped copying *{old_username}*\n"
+                    f"➡️ Ready to copy *{new_username}*\n\n"
+                    f"Note: Starting a new copy must be done via the eToro UI "
+                    f"or by adding the trader through the dashboard.",
+                    parse_mode="Markdown",
+                )
+
+        except Exception as e:
+            logger.error(f"/swap error: {e}")
+            await self._reply(update, f"❌ Swap failed: {e}")
 
     # ── Webhook helpers ──────────────────────────
 

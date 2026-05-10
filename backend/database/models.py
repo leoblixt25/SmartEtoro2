@@ -47,6 +47,7 @@ class AlertType(str, enum.Enum):
     IMBALANCE = "imbalance"
     AUTOMATION = "automation"
     WEEKLY_SUMMARY = "weekly_summary"
+    AI_SCOUT = "ai_scout"
 
 
 class Portfolio(Base):

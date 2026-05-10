@@ -83,8 +83,16 @@ class SchedulerService:
             name="Weekly AI Summary",
         )
 
+        # AI Market Scout evaluation every 6 hours
+        self._scheduler.add_job(
+            self._market_scout_job,
+            CronTrigger(hour="*/6", minute=15),
+            id="market_scout",
+            name="AI Market Scout Evaluation",
+        )
+
         self._scheduler.start()
-        logger.info("Scheduler started with 6 jobs")
+        logger.info("Scheduler started with 7 jobs")
 
     def stop(self):
         if self._scheduler:
@@ -228,6 +236,85 @@ class SchedulerService:
                     f"Weekly summaries generated for {len(portfolios)} portfolios")
         except Exception as e:
             logger.error(f"Weekly summary job failed: {e}")
+
+    async def _market_scout_job(self):
+        """Run AI Market Scout — evaluate portfolio against news.
+
+        Uses Gemini Pro to check if any copied trader is holding
+        toxic assets or underperforming. If risk is detected,
+        sends a Telegram alert with a /swap recommendation.
+
+        Never executes trades — only reports findings.
+        """
+        from backend.database.connection import db_session
+        from backend.database.models import Portfolio, Alert, AlertType
+        from backend.services.market_data import get_current_holdings, fetch_market_news, discover_top_traders
+        from backend.ai.gemini_scout import GeminiScout
+
+        scout = GeminiScout()
+        if not scout.enabled:
+            logger.info("Market scout job skipped — Gemini not configured")
+            return
+
+        try:
+            news = await fetch_market_news()
+            candidates = await discover_top_traders()
+
+            with db_session() as db:
+                portfolios = db.query(Portfolio).all()
+                for portfolio in portfolios:
+                    holdings = get_current_holdings(db, portfolio.id)
+                    if not holdings:
+                        continue
+
+                    result = await scout.evaluate(holdings, news, candidates)
+
+                    # Persist as an Alert regardless of outcome
+                    alert_type = AlertType.AI_SCOUT
+                    if result["action_required"]:
+                        title = f"⚠️ AI Scout Alert: {result['flagged_trader']}"
+                        message = (
+                            f"Risk detected in {result['flagged_trader']}'s portfolio.\n"
+                            f"Reasoning: {result['reasoning']}\n"
+                            f"Recommended swap: {result['recommended_swap']}\n"
+                            f"Reply /swap {result['flagged_trader']} {result['recommended_swap']} to execute."
+                        )
+                        severity = "warning"
+                    else:
+                        title = "✅ AI Scout: All Clear"
+                        message = result.get("reasoning", "No issues detected.")
+                        severity = "info"
+
+                    db.add(Alert(
+                        portfolio_id=portfolio.id,
+                        alert_type=alert_type,
+                        title=title,
+                        message=message,
+                        severity=severity,
+                    ))
+                    db.commit()
+
+                    # Send Telegram alert if action required
+                    if result["action_required"]:
+                        from backend.services.telegram_service import TelegramBot
+                        bot = TelegramBot()
+                        if bot.enabled:
+                            await bot.send_message(
+                                f"⚠️ *AI Scout Alert*\n\n"
+                                f"Risk detected in *{result['flagged_trader']}*'s portfolio.\n\n"
+                                f"*Reasoning:* {result['reasoning']}\n\n"
+                                f"*Recommend swapping to:* {result['recommended_swap']}\n\n"
+                                f"Reply `/swap {result['flagged_trader']} {result['recommended_swap']}` to execute.",
+                                show_keyboard=True,
+                            )
+
+                    logger.info(
+                        f"Market scout {'flagged' if result['action_required'] else 'cleared'} "
+                        f"portfolio {portfolio.id}"
+                    )
+
+        except Exception as e:
+            logger.error(f"Market scout job failed: {e}")
 
     async def _etoro_sync_job(self):
         """Sync portfolio data from eToro API."""
