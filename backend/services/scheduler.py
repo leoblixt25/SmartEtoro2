@@ -318,16 +318,16 @@ class SchedulerService:
                         bot = TelegramBot()
                         if bot.enabled:
                             msg = (
-                                f"⚠️ *AI Scout Alert*\n\n"
-                                f"Risk detected in *{result['flagged_trader']}*'s portfolio.\n\n"
-                                f"*Reasoning:* {result['reasoning']}\n\n"
-                                f"*Recommend swapping to:* {result['recommended_swap']}\n\n"
-                                f"Reply `/swap {result['flagged_trader']} {result['recommended_swap']}` to execute."
+                                f"⚠️ <b>AI Scout Alert</b>\n\n"
+                                f"Risk detected in <b>{result['flagged_trader']}</b>'s portfolio.\n\n"
+                                f"<b>Reasoning:</b> {result['reasoning']}\n\n"
+                                f"<b>Recommend swapping to:</b> {result['recommended_swap']}\n\n"
+                                f"Reply <code>/swap {result['flagged_trader']} {result['recommended_swap']}</code> to execute."
                             )
                             if allocation.get(TARGET_KEY):
-                                msg += "\n\n📊 *AI Allocation Plan*\n"
+                                msg += "\n\n📊 <b>AI Allocation Plan</b>\n"
                                 for a in allocation.get(TARGET_KEY, []):
-                                    msg += f"• *{a['username']}* — {a['allocation_pct']}%\n"
+                                    msg += f"• <b>{a['username']}</b> — {a['allocation_pct']}%\n"
                             await bot.send_message(msg, show_keyboard=True)
 
                     logger.info(

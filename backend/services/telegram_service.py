@@ -140,7 +140,7 @@ class TelegramBot:
         if not target:
             return
         try:
-            kwargs = {"chat_id": target, "text": text, "parse_mode": "Markdown"}
+            kwargs = {"chat_id": target, "text": text, "parse_mode": "HTML"}
             if show_keyboard:
                 kwargs["reply_markup"] = self._keyboard()
             await self._bot.send_message(**kwargs)
@@ -540,14 +540,14 @@ class TelegramBot:
                 lines = []
                 if result["action_required"]:
                     lines.append(
-                        f"⚠️ *AI Scout Alert*\n\n"
-                        f"*Flagged Trader:* {result['flagged_trader']}\n\n"
-                        f"*Reasoning:* {result['reasoning']}\n\n"
-                        f"*Recommended Swap:* {result['recommended_swap']}\n\n"
-                        f"Reply `/swap {result['flagged_trader']} {result['recommended_swap']}` to execute."
+                        f"⚠️ <b>AI Scout Alert</b>\n\n"
+                        f"<b>Flagged Trader:</b> {result['flagged_trader']}\n\n"
+                        f"<b>Reasoning:</b> {result['reasoning']}\n\n"
+                        f"<b>Recommended Swap:</b> {result['recommended_swap']}\n\n"
+                        f"Reply <code>/swap {result['flagged_trader']} {result['recommended_swap']}</code> to execute."
                     )
                 else:
-                    lines.append(f"✅ *AI Scout: All Clear*\n\n{result['reasoning']}")
+                    lines.append(f"✅ <b>AI Scout: All Clear</b>\n\n{result['reasoning']}")
 
                 # 3-trader allocation recommendation
                 allocation = await scout.evaluate_portfolio_with_gemini(holdings, news, candidates)
@@ -559,23 +559,23 @@ class TelegramBot:
                     ]
                     orders = calculate_rebalance_orders(p.total_value or 0, current_positions, allocation)
 
-                    lines.append(f"\n---\n*📊 AI Allocation Plan*")
+                    lines.append(f"\n---\n<b>📊 AI Allocation Plan</b>")
                     for a in allocation.get(TARGET_KEY, []):
-                        lines.append(f"• *{a['username']}* — {a['allocation_pct']}%")
+                        lines.append(f"• <b>{a['username']}</b> — {a['allocation_pct']}%")
                         if a.get("reasoning"):
-                            lines.append(f"  _{a['reasoning']}_")
-                    lines.append(f"\n*Sentiment:* {allocation['market_sentiment']}")
+                            lines.append(f"  <i>{a['reasoning']}</i>")
+                    lines.append(f"\n<b>Sentiment:</b> {allocation['market_sentiment']}")
                     if orders.get("warnings"):
                         for w in orders["warnings"]:
                             lines.append(f"⚠️ {w}")
                     if orders.get("orders"):
-                        lines.append(f"\n*Rebalance Orders:*")
+                        lines.append(f"\n<b>Rebalance Orders:</b>")
                         for o in orders["orders"][:5]:
                             icon = {"buy": "🟢", "sell": "🔴", "hold": "⚪"}.get(o["action"], "⚪")
                             lines.append(f"{icon} {o['action'].upper()} {o['username']}: ${o['amount']:.2f}")
 
                 text = "\n".join(lines)
-                await self._reply(update, text, parse_mode="Markdown")
+                await self._reply(update, text, parse_mode="HTML")
 
         except Exception as e:
             logger.error(f"/scout error: {e}")
