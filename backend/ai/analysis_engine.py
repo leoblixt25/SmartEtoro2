@@ -77,7 +77,7 @@ class AIAnalysisEngine:
                     import google.generativeai as genai
                     genai.configure(api_key=gemini_key)
                     self._gemini_model = genai.GenerativeModel(
-                        model_name="gemini-2.0-flash",
+                        model_name="gemini-1.5-flash",
                         system_instruction=SYSTEM_PROMPT,
                     )
                     logger.info("AI analysis: using Gemini")

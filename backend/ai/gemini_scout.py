@@ -91,9 +91,23 @@ class GeminiScout:
         if not key:
             logger.info("GEMINI_API_KEY not set — Gemini scout disabled")
             self.enabled = False
+            self._api_key = None
         else:
+            self._api_key = key
+            self._model = None               # created lazily by _ensure_genai()
+            self._allocation_model = None    # created lazily by _ensure_genai()
+            self._genai = None               # module reference, populated on first use
+            self.enabled = True
+            logger.info("Gemini scout enabled (model will init on first call)")
+
+    # ── Lazy initialiser ─────────────────────────────────────────────
+    def _ensure_genai(self):
+        """Import google.generativeai, configure, and create models — once."""
+        if self._genai is not None:
+            return self._genai
+        try:
             import google.generativeai as genai
-            genai.configure(api_key=key)
+            genai.configure(api_key=self._api_key)
             self._model = genai.GenerativeModel(
                 model_name="gemini-1.5-flash",
                 system_instruction=SYSTEM_PROMPT,
@@ -102,8 +116,17 @@ class GeminiScout:
                 model_name="gemini-1.5-flash",
                 system_instruction=ALLOCATION_PROMPT,
             )
-            self.enabled = True
-            logger.info("Gemini scout initialized with gemini-1.5-flash")
+            self._genai = genai
+            logger.info("Gemini genai module initialised")
+            return genai
+        except ImportError as e:
+            logger.error(f"Gemini SDK import failed: {e} — falling back")
+            self.enabled = False
+            raise
+        except Exception as e:
+            logger.error(f"Gemini model init failed: {e}")
+            self.enabled = False
+            raise
 
     async def evaluate(
         self,
@@ -129,6 +152,7 @@ class GeminiScout:
                 "recommended_swap": None,
             }
 
+        self._ensure_genai()
         prompt = self._build_prompt(holdings_data, news_data, top_traders)
 
         try:
@@ -170,13 +194,7 @@ class GeminiScout:
         if not self.enabled:
             return {TARGET_KEY: [], "total_risk_score": 0, "market_sentiment": "unknown"}
 
-        if not self._allocation_model:
-            import google.generativeai as genai
-            self._allocation_model = genai.GenerativeModel(
-                model_name="gemini-1.5-flash",
-                system_instruction=ALLOCATION_PROMPT,
-            )
-
+        self._ensure_genai()
         prompt = self._build_allocation_prompt(holdings_data, news_data, top_traders)
 
         try:

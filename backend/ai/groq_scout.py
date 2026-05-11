@@ -84,6 +84,9 @@ class GroqScout:
 
     It mirrors the GeminiScout API: ``evaluate`` for risk alerts and
     ``evaluate_portfolio`` for a 3‑trader allocation recommendation.
+
+    The Groq SDK import is deferred to call time so a broken or
+    missing groq package never crashes the app at startup.
     """
 
     def __init__(self, api_key: Optional[str] = None):
@@ -91,11 +94,30 @@ class GroqScout:
         if not key:
             logger.info("GROQ_API_KEY not set — Groq scout disabled")
             self.enabled = False
+            self._api_key = None
         else:
-            from groq import Groq
-            self.client = Groq(api_key=key)
+            self._api_key = key
+            self._client = None       # created lazily by _ensure_client()
             self.enabled = True
-            logger.info("Groq scout initialized with llama-3.3-70b-versatile")
+            logger.info("Groq scout enabled (client will init on first call)")
+
+    def _ensure_client(self):
+        """Import groq and create the client on first use."""
+        if self._client is not None:
+            return self._client
+        try:
+            from groq import Groq
+            self._client = Groq(api_key=self._api_key)
+            logger.info("Groq client initialized")
+            return self._client
+        except ImportError as e:
+            logger.error(f"Groq SDK import failed: {e} — falling back")
+            self.enabled = False
+            raise
+        except Exception as e:
+            logger.error(f"Groq client init failed: {e}")
+            self.enabled = False
+            raise
 
     async def evaluate(
         self,
@@ -117,7 +139,7 @@ class GroqScout:
 
         prompt = self._build_prompt(holdings_data, news_data, top_traders)
         try:
-            # Groq SDK is synchronous; run in a thread to avoid blocking the event loop
+            client = self._ensure_client()
             import asyncio
 
             def _call():
@@ -156,10 +178,11 @@ class GroqScout:
 
         prompt = self._build_allocation_prompt(holdings_data, news_data, top_traders)
         try:
+            client = self._ensure_client()
             import asyncio
 
             def _call():
-                return self.client.chat.completions.create(
+                return client.chat.completions.create(
                     model="llama-3.3-70b-versatile",
                     messages=[{"role": "system", "content": ALLOCATION_PROMPT}, {"role": "user", "content": prompt}],
                     temperature=0,
