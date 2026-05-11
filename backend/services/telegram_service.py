@@ -101,6 +101,7 @@ class TelegramBot:
         BotCommand("swap", "Execute a trader swap from Scout recommendation"),
         BotCommand("db_check", "Verify database persistence"),
         BotCommand("db_status", "Database status overview"),
+        BotCommand("mode", "Toggle simulation/real mode"),
     ]
 
     MAIN_KEYBOARD = [
@@ -190,6 +191,7 @@ class TelegramBot:
             "/swap": self._cmd_swap,
             "/db_check": self._cmd_db_check,
             "/db_status": self._cmd_db_status,
+            "/mode": self._cmd_mode,
         }
         handler = handlers.get(command)
         if handler:
@@ -215,7 +217,8 @@ class TelegramBot:
             "/scout – Run AI Market Scout\n"
             "/swap <old> <new> – Execute Scout swap\n"
             "/db_check – Database diagnostics\n"
-            "/db_status – Database status overview"
+            "/db_status – Database status overview\n"
+            "/mode <real|simulation> – Toggle live/simulation mode"
         )
         await self._reply(update, text, parse_mode="Markdown")
 
@@ -296,6 +299,48 @@ class TelegramBot:
             db.close()
 
         await self._reply(update, "\n".join(lines), parse_mode="HTML")
+
+    async def _cmd_mode(self, update: Update, args: list[str]) -> None:
+        """Toggle between simulation and real (live) trading mode.
+
+        Usage: /mode real      → disables simulation, enables live trading
+               /mode simulation → enables simulation (safe for testing)
+        """
+        if not args or args[0].lower() not in ("real", "simulation"):
+            await self._reply(update,
+                "Usage: <code>/mode real</code> or <code>/mode simulation</code>",
+                parse_mode="HTML",
+            )
+            return
+
+        from backend.database.connection import db_session
+        from backend.database.models import Portfolio
+
+        target_sim = args[0].lower() == "simulation"
+
+        try:
+            with db_session() as db:
+                p = db.query(Portfolio).first()
+                if not p:
+                    await self._reply(update, "No portfolio found.")
+                    return
+
+                old_mode = p.is_simulation
+                p.is_simulation = target_sim
+                db.commit()
+
+                mode_label = "🧪 SIMULATION" if target_sim else "🔴 LIVE"
+                await self._reply(update,
+                    f"<b>Mode Changed</b>\n\n"
+                    f"Was: {'Simulation' if old_mode else 'Live'}\n"
+                    f"Now: {mode_label}\n\n"
+                    f"{'⚠️ Live trades will execute on eToro.' if not target_sim else '✅ Safe — no real trades.'}",
+                    parse_mode="HTML",
+                )
+                logger.info(f"Portfolio mode changed: simulation={old_mode} → {target_sim}")
+        except Exception as e:
+            logger.error(f"/mode error: {e}")
+            await self._reply(update, f"Error: {e}")
 
     async def _cmd_status(self, update: Update, args: list[str]) -> None:
         from backend.database.connection import db_session
