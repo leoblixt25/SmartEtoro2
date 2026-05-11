@@ -238,68 +238,17 @@ class SchedulerService:
             logger.error(f"Weekly summary job failed: {e}")
 
     async def _market_scout_job(self):
-        """Run AI Market Scout — evaluate portfolio against news.
+        """Run Growth Scout — evaluate portfolio using deterministic scoring.
 
-        Uses Gemini Pro to check if any copied trader is holding
-        toxic assets or underperforming. If risk is detected,
-        sends a Telegram alert with a /swap recommendation.
+        Primary:   Pure math scoring engine (always works, no deps).
+        Secondary: If AI is configured, append a 1‑sentence plain‑English summary.
 
         Never executes trades — only reports findings.
         """
         from backend.database.connection import db_session
         from backend.database.models import Portfolio, Alert, AlertType
         from backend.services.market_data import get_current_holdings, fetch_market_news, discover_top_traders
-
-        # Lazy-load scouts so an ImportError in one doesn't kill the entire job
-        TARGET_KEY = "target_portfolio"
-        try:
-            from backend.ai.gemini_scout import GeminiScout
-        except ImportError as e:
-            logger.warning(f"GeminiScout import failed: {e}")
-            GeminiScout = None
-        try:
-            from backend.ai.groq_scout import GroqScout
-        except ImportError as e:
-            logger.warning(f"GroqScout import failed: {e}")
-            GroqScout = None
-
-        # Instantiate scouts (lazily — import error means that scout is unavailable)
-        groq_scout = None
-        if GroqScout is not None:
-            try:
-                groq_scout = GroqScout()
-            except ImportError as e:
-                logger.warning(f"GroqScout init failed (import error): {e}")
-        gemini_scout = None
-        if GeminiScout is not None:
-            try:
-                gemini_scout = GeminiScout()
-            except ImportError as e:
-                logger.warning(f"GeminiScout init failed (import error): {e}")
-
-        if groq_scout and groq_scout.enabled:
-            scout = groq_scout
-        elif gemini_scout and gemini_scout.enabled:
-            scout = gemini_scout
-        else:
-            logger.info("No AI API configured — using mathematical fallback allocation")
-            class FallbackScout:
-                enabled = True
-                async def evaluate(self, holdings, news, candidates):
-                    return {"action_required": False, "flagged_trader": None,
-                            "reasoning": "Mathematical fallback — no AI available",
-                            "recommended_swap": None}
-                async def evaluate_portfolio(self, holdings, news, candidates):
-                    top = sorted(holdings, key=lambda h: h.get("total_return_pct", 0) or 0, reverse=True)[:3]
-                    if not top:
-                        return {TARGET_KEY: [], "total_risk_score": 0, "market_sentiment": "unknown"}
-                    pct = round(100 / len(top), 1)
-                    return {
-                        TARGET_KEY: [{"username": t["username"], "allocation_pct": pct,
-                                      "reasoning": "Fallback — equal weight"} for t in top],
-                        "total_risk_score": 5.0, "market_sentiment": "neutral",
-                    }
-            scout = FallbackScout()
+        from backend.ai.scoring_engine import generate_scout_report
 
         try:
             news = await fetch_market_news()
@@ -312,40 +261,90 @@ class SchedulerService:
                     if not holdings:
                         continue
 
-                    result = await scout.evaluate(holdings, news, candidates)
+                    # ── Step 1: Deterministic growth scoring — ALWAYS runs ──
+                    report = generate_scout_report(holdings, candidates)
 
-                    # Persist as an Alert regardless of outcome
+                    # ── Step 2: Optional AI narrator (1 sentence only) ──
+                    ai_summary = None
+                    try:
+                        from backend.ai.groq_scout import GroqScout
+                        groq = GroqScout()
+                        if groq.enabled:
+                            prompt = (
+                                "Summarise this portfolio scout report in ONE plain-English sentence "
+                                "(max 20 words). No formatting, no JSON.\n\n"
+                                f"Weakest trader: {report['weakest']['username']} "
+                                f"(score {report['weakest']['score']}/100).\n"
+                                f"Best swap: {report['top_swaps'][0]['username']} "
+                                f"(score {report['top_swaps'][0]['score']}/100).\n"
+                                f"Portfolio avg score: {report['avg_score']}/100."
+                            )
+                            import asyncio
+                            def _call():
+                                return groq._ensure_client().chat.completions.create(
+                                    model="llama-3.3-70b-versatile",
+                                    messages=[{"role": "user", "content": prompt}],
+                                    temperature=0,
+                                    max_tokens=40,
+                                )
+                            resp = await asyncio.to_thread(_call)
+                            ai_summary = resp.choices[0].message.content.strip()
+                    except Exception as e:
+                        logger.info(f"AI narrator unavailable (non‑fatal): {e}")
+
+                    # ── Step 3: Build alert ──────────────────────────────
                     alert_type = AlertType.AI_SCOUT
-                    if result["action_required"]:
-                        title = f"⚠️ AI Scout Alert: {result['flagged_trader']}"
-                        message = (
-                            f"Risk detected in {result['flagged_trader']}'s portfolio.\n"
-                            f"Reasoning: {result['reasoning']}\n"
-                            f"Recommended swap: {result['recommended_swap']}\n"
-                            f"Reply /swap {result['flagged_trader']} {result['recommended_swap']} to execute."
-                        )
+                    if report["action_required"]:
+                        w = report["weakest"]
+                        title = f"⚠️ Growth Scout Alert: {w['username']} ({w['score']}/100)"
+                        message_parts = [
+                            f"Weakest link in portfolio.",
+                            f"Score: {w['score']}/100",
+                        ]
+                        for pnl in w.get("penalties", []):
+                            message_parts.append(f"⚠ {pnl}")
+                        if report["top_swaps"]:
+                            message_parts.append(
+                                f"Recommended swap: {report['top_swaps'][0]['username']} "
+                                f"(score {report['top_swaps'][0]['score']}/100, "
+                                f"delta +{report['top_swaps'][0]['delta']})"
+                            )
                         severity = "warning"
                     else:
-                        title = "✅ AI Scout: All Clear"
-                        message = result.get("reasoning", "No issues detected.")
+                        title = f"✅ Growth Scout: All Clear (avg {report['avg_score']}/100)"
+                        message_parts = [f"All traders score ≥ 50/100. Portfolio avg: {report['avg_score']}/100."]
                         severity = "info"
 
-                    # 3-trader allocation recommendation
-                    allocation = await scout.evaluate_portfolio(holdings, news, candidates)
-                    if allocation.get(TARGET_KEY):
+                    if ai_summary:
+                        message_parts.append(f"\n🤖 {ai_summary}")
+                    message = "\n".join(message_parts)
+
+                    # ── Step 4: Allocation plan (deterministic) ──────────
+                    top_by_score = sorted(
+                        report["scored_holdings"], key=lambda x: x["score"], reverse=True
+                    )[:3]
+                    if top_by_score:
+                        eq_pct = round(100 / len(top_by_score), 1)
+                        allocs = [
+                            {"username": t["username"], "allocation_pct": eq_pct}
+                            for t in top_by_score
+                        ]
                         from backend.services.rebalance_service import calculate_rebalance_orders
                         current_positions = [
-                            {"username": h["username"], "current_value": h.get("allocation_pct", 0) * 0.01 * (portfolio.total_value or 10000)}
+                            {"username": h["username"],
+                             "current_value": h.get("allocation_pct", 0) * 0.01 * (portfolio.total_value or 10000)}
                             for h in holdings
                         ]
-                        orders = calculate_rebalance_orders(portfolio.total_value or 0, current_positions, allocation)
+                        orders = calculate_rebalance_orders(
+                            portfolio.total_value or 0, current_positions,
+                            {"target_portfolio": allocs}
+                        )
                         alloc_lines = []
-                        for a in allocation.get(TARGET_KEY, []):
+                        for a in allocs:
                             alloc_lines.append(f"• {a['username']} — {a['allocation_pct']}%")
-                        alloc_lines.append(f"Sentiment: {allocation['market_sentiment']}")
                         if orders.get("warnings"):
                             alloc_lines.extend([f"⚠️ {w}" for w in orders["warnings"]])
-                        message += "\n\n📊 AI Allocation Plan:\n" + "\n".join(alloc_lines)
+                        message += "\n\n📊 Allocation Plan:\n" + "\n".join(alloc_lines)
                         title += " + Allocation Plan"
 
                     db.add(Alert(
@@ -358,25 +357,30 @@ class SchedulerService:
                     db.commit()
 
                     # Send Telegram alert if action required
-                    if result["action_required"]:
+                    if report["action_required"]:
                         from backend.services.telegram_service import TelegramBot
                         bot = TelegramBot()
                         if bot.enabled:
                             msg = (
-                                f"⚠️ <b>AI Scout Alert</b>\n\n"
-                                f"Risk detected in <b>{result['flagged_trader']}</b>'s portfolio.\n\n"
-                                f"<b>Reasoning:</b> {result['reasoning']}\n\n"
-                                f"<b>Recommend swapping to:</b> {result['recommended_swap']}\n\n"
-                                f"Reply <code>/swap {result['flagged_trader']} {result['recommended_swap']}</code> to execute."
+                                f"⚠️ <b>Growth Scout Alert</b>\n\n"
+                                f"Weakest link: <b>{report['weakest']['username']}</b> "
+                                f"(score {report['weakest']['score']}/100)\n\n"
                             )
-                            if allocation.get(TARGET_KEY):
-                                msg += "\n\n📊 <b>AI Allocation Plan</b>\n"
-                                for a in allocation.get(TARGET_KEY, []):
-                                    msg += f"• <b>{a['username']}</b> — {a['allocation_pct']}%\n"
+                            for pnl in report["weakest"].get("penalties", []):
+                                msg += f"⚠️ {pnl}\n"
+                            if report["top_swaps"]:
+                                msg += (
+                                    f"\n<b>Top swap:</b> {report['top_swaps'][0]['username']} "
+                                    f"(score {report['top_swaps'][0]['score']}/100, "
+                                    f"delta +{report['top_swaps'][0]['delta']})\n\n"
+                                    f"Reply <code>/swap {report['flagged_trader']} {report['top_swaps'][0]['username']}</code>"
+                                )
+                            if ai_summary:
+                                msg += f"\n\n🤖 <i>{ai_summary}</i>"
                             await bot.send_message(msg, show_keyboard=True)
 
                     logger.info(
-                        f"Market scout {'flagged' if result['action_required'] else 'cleared'} "
+                        f"Growth scout {'flagged' if report['action_required'] else 'cleared'} "
                         f"portfolio {portfolio.id}"
                     )
 

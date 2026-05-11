@@ -501,76 +501,22 @@ class TelegramBot:
             await self._reply(update, f"Error: {e}")
 
     async def _cmd_scout(self, update: Update, args: list[str]) -> None:
-        """Run AI Market Scout on demand via Telegram."""
+        """Run Deterministic Growth Scout on demand via Telegram.
+
+        Primary:   Pure math scoring engine (always works, no deps).
+        Secondary: If AI is configured, append a 1‑sentence plain‑English summary.
+        """
         from backend.database.connection import db_session
         from backend.database.models import Portfolio
         from backend.services.market_data import get_current_holdings, fetch_market_news, discover_top_traders
+        from backend.ai.scoring_engine import generate_scout_report, rank_candidates, scout_holdings
 
-        # Lazy-load scouts so an ImportError in one doesn't kill the entire command
-        TARGET_KEY = "target_portfolio"
-        try:
-            from backend.ai.gemini_scout import GeminiScout
-        except ImportError as e:
-            logger.warning(f"GeminiScout import failed: {e}")
-            GeminiScout = None
-        try:
-            from backend.ai.groq_scout import GroqScout
-        except ImportError as e:
-            logger.warning(f"GroqScout import failed: {e}")
-            GroqScout = None
-
-        # Run AI Market Scout with Groq first, fallback to Gemini, then to mathematical fallback
-        await self._reply(update, "🔍 Running AI Market Scout... (this may take 10-20s)")
-
-        # Instantiate scouts (lazily — import error means that scout is unavailable)
-        groq_scout = None
-        if GroqScout is not None:
-            try:
-                groq_scout = GroqScout()
-            except ImportError as e:
-                logger.warning(f"GroqScout init failed (import error): {e}")
-        gemini_scout = None
-        if GeminiScout is not None:
-            try:
-                gemini_scout = GeminiScout()
-            except ImportError as e:
-                logger.warning(f"GeminiScout init failed (import error): {e}")
-
-        # Determine primary scout — hard fallback if both down
-        if groq_scout and groq_scout.enabled:
-            primary_scout = groq_scout
-        elif gemini_scout and gemini_scout.enabled:
-            primary_scout = gemini_scout
-        else:
-            logger.info("No AI API configured — using mathematical fallback allocation")
-            # Inline fallback scout: pure math, no API calls needed
-            class FallbackScout:
-                enabled = True
-                async def evaluate(self, holdings, news, candidates):
-                    return {"action_required": False, "flagged_trader": None,
-                            "reasoning": "Mathematical fallback — no AI available",
-                            "recommended_swap": None}
-                async def evaluate_portfolio(self, holdings, news, candidates):
-                    top = sorted(holdings, key=lambda h: h.get("total_return_pct", 0) or 0, reverse=True)[:3]
-                    if not top:
-                        return {TARGET_KEY: [], "total_risk_score": 0, "market_sentiment": "unknown"}
-                    pct = round(100 / len(top), 1)
-                    return {
-                        TARGET_KEY: [{"username": t["username"], "allocation_pct": pct,
-                                      "reasoning": "Fallback — equal weight"} for t in top],
-                        "total_risk_score": 5.0, "market_sentiment": "neutral",
-                    }
-            primary_scout = FallbackScout()
+        await self._reply(update, "🔍 Running Growth Scout...")
 
         try:
             news = await fetch_market_news()
             candidates = await discover_top_traders()
-
-            logger.info(f"Scout pipeline: {len(news)} news headlines, {len(candidates)} candidate traders")
-            if news:
-                logger.info(f"Scout news sample: {news[0]['title'][:100]}")
-            if candidates:
-                logger.info(f"Scout candidates sample: {candidates[0]['username']}")
+            logger.info(f"Scout: {len(news)} news, {len(candidates)} candidates")
 
             with db_session() as db:
                 p = db.query(Portfolio).first()
@@ -582,47 +528,111 @@ class TelegramBot:
                     await self._reply(update, "No active copied traders found.")
                     return
 
-                # Evaluate risk alerts
-                result = await primary_scout.evaluate(holdings, news, candidates)
+                # ── Step 1: Deterministic growth scoring — ALWAYS runs ──
+                report = generate_scout_report(holdings, candidates)
 
-                # Allocation – use the appropriate method based on the scout type
-                allocation = await primary_scout.evaluate_portfolio(holdings, news, candidates)
+                # ── Step 2: Optional AI narrator (1 sentence only) ──
+                ai_summary = None
+                try:
+                    from backend.ai.groq_scout import GroqScout
+                    groq = GroqScout()
+                    if groq.enabled:
+                        prompt = (
+                            "Summarise this portfolio scout report in ONE plain-English sentence "
+                            "(max 20 words). No formatting, no JSON, no commentary.\n\n"
+                            f"Weakest trader: {report['weakest']['username']} "
+                            f"(score {report['weakest']['score']}/100).\n"
+                            f"Best swap: {report['top_swaps'][0]['username']} "
+                            f"(score {report['top_swaps'][0]['score']}/100, "
+                            f"delta +{report['top_swaps'][0]['delta']}).\n"
+                            f"Portfolio avg score: {report['avg_score']}/100."
+                        )
+                        import asyncio
+                        def _call():
+                            return groq._ensure_client().chat.completions.create(
+                                model="llama-3.3-70b-versatile",
+                                messages=[{"role": "user", "content": prompt}],
+                                temperature=0,
+                                max_tokens=40,
+                            )
+                        resp = await asyncio.to_thread(_call)
+                        ai_summary = resp.choices[0].message.content.strip()
+                except Exception as e:
+                    logger.info(f"AI narrator unavailable (non‑fatal): {e}")
+                    ai_summary = None
 
+                # ── Step 3: Build message ───────────────────────────
                 lines = []
-                if result["action_required"]:
+
+                # Score table
+                lines.append("<b>📊 Growth Scores</b>")
+                for s in report["scored_holdings"]:
+                    icon = "🟢" if s["score"] >= 60 else ("🟡" if s["score"] >= 30 else "🔴")
                     lines.append(
-                        f"⚠️ <b>AI Scout Alert</b>\n\n"
-                        f"<b>Flagged Trader:</b> {result['flagged_trader']}\n\n"
-                        f"<b>Reasoning:</b> {result['reasoning']}\n\n"
-                        f"<b>Recommended Swap:</b> {result['recommended_swap']}\n\n"
-                        f"Reply <code>/swap {result['flagged_trader']} {result['recommended_swap']}</code> to execute."
+                        f"{icon} <b>{s['username']}</b> — {s['score']}/100 "
+                        f"(alloc {s['allocation_pct']:.1f}%)"
+                    )
+                lines.append(f"\n<b>Portfolio Avg:</b> {report['avg_score']}/100")
+
+                # AI narrator (optional)
+                if ai_summary:
+                    lines.append(f"\n🤖 <i>{ai_summary}</i>")
+
+                # Weakest link
+                if report["action_required"]:
+                    w = report["weakest"]
+                    lines.append(
+                        f"\n⚠️ <b>Weakest Link:</b> {w['username']} ({w['score']}/100)"
+                    )
+                    for pnl in w.get("penalties", []):
+                        lines.append(f"  {pnl}")
+
+                    # Top swaps
+                    lines.append(f"\n<b>Top Swap Recommendations</b>")
+                    for i, swap in enumerate(report["top_swaps"], 1):
+                        lines.append(
+                            f"{i}. <b>{swap['username']}</b> — score {swap['score']}/100 "
+                            f"(delta +{swap['delta']})"
+                        )
+                    lines.append(
+                        f"\nReply <code>/swap {report['flagged_trader']} {report['top_swaps'][0]['username']}</code> "
+                        f"to execute the top swap."
                     )
                 else:
-                    lines.append(f"✅ <b>AI Scout: All Clear</b>\n\n{result['reasoning']}")
+                    lines.append(f"\n✅ <b>Portfolio Healthy</b> — all traders score ≥ 50/100")
+                    if report["top_swaps"]:
+                        lines.append(
+                            f"\n<b>Top Discovery:</b> {report['top_swaps'][0]['username']} "
+                            f"(score {report['top_swaps'][0]['score']}/100)"
+                        )
 
-                # 3‑trader allocation recommendation
-                if allocation.get(TARGET_KEY):
+                # ── Step 4: Allocation plan (deterministic) ──────────
+                top_by_score = sorted(
+                    report["scored_holdings"], key=lambda x: x["score"], reverse=True
+                )[:3]
+                if top_by_score:
+                    eq_pct = round(100 / len(top_by_score), 1)
+                    allocs = [
+                        {"username": t["username"], "allocation_pct": eq_pct,
+                         "reasoning": f"Growth score {t['score']}/100"}
+                        for t in top_by_score
+                    ]
                     from backend.services.rebalance_service import calculate_rebalance_orders
                     current_positions = [
-                        {"username": h["username"], "current_value": h.get("allocation_pct", 0) * 0.01 * (p.total_value or 10000)}
+                        {"username": h["username"],
+                         "current_value": h.get("allocation_pct", 0) * 0.01 * (p.total_value or 10000)}
                         for h in holdings
                     ]
-                    orders = calculate_rebalance_orders(p.total_value or 0, current_positions, allocation)
-
-                    lines.append(f"\n---\n<b>📊 AI Allocation Plan</b>")
-                    for a in allocation.get(TARGET_KEY, []):
+                    orders = calculate_rebalance_orders(
+                        p.total_value or 0, current_positions,
+                        {"target_portfolio": allocs}
+                    )
+                    lines.append(f"\n---\n<b>📊 Allocation Plan</b>")
+                    for a in allocs:
                         lines.append(f"• <b>{a['username']}</b> — {a['allocation_pct']}%")
-                        if a.get("reasoning"):
-                            lines.append(f"  <i>{a['reasoning']}</i>")
-                    lines.append(f"\n<b>Sentiment:</b> {allocation['market_sentiment']}")
                     if orders.get("warnings"):
                         for w in orders["warnings"]:
                             lines.append(f"⚠️ {w}")
-                    if orders.get("orders"):
-                        lines.append(f"\n<b>Rebalance Orders:</b>")
-                        for o in orders["orders"][:5]:
-                            icon = {"buy": "🟢", "sell": "🔴", "hold": "⚪"}.get(o["action"], "⚪")
-                            lines.append(f"{icon} {o['action'].upper()} {o['username']}: ${o['amount']:.2f}")
 
                 text = "\n".join(lines)
                 await self._reply(update, text, parse_mode="HTML")
@@ -631,13 +641,11 @@ class TelegramBot:
             logger.error(f"/scout error: {e}")
             err_str = str(e)
             if "rate" in err_str.lower() or "429" in err_str or "quota" in err_str.lower():
-                await self._reply(update, "⚠️ AI Scout Error: Rate limit exceeded. Please wait a moment before retrying.")
+                await self._reply(update, "⚠️ Scout Error: Rate limit exceeded.")
             elif "api" in err_str.lower() or "401" in err_str or "403" in err_str or "not found" in err_str.lower():
-                await self._reply(update, "⚠️ AI Scout Error: API configuration issue. Check your API keys.")
+                await self._reply(update, "⚠️ Scout Error: API configuration issue.")
             elif "timeout" in err_str.lower() or "timed out" in err_str.lower():
-                await self._reply(update, "⚠️ AI Scout Error: Request timed out. Try again later.")
-            elif "Groq" in err_str or "Gemini" in err_str:
-                await self._reply(update, "⚠️ AI Scout Error: Unable to reach AI service. Please check API configuration.")
+                await self._reply(update, "⚠️ Scout Error: Request timed out.")
             else:
                 await self._reply(update, f"❌ Scout failed: {e}")
 
