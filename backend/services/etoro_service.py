@@ -128,7 +128,7 @@ class EToroAPIClient:
         Uses the same auth headers (x-api-key, x-user-key, x-request-id)
         as the read endpoint. Demo/real selection matches the account type.
 
-        eToro 2026 API: DELETE /api/v1/sub-portfolios/{id}
+        eToro API: DELETE /api/v1/sub-portfolios/{env}/{mirror_id}
         """
         if not self.enabled:
             return None
@@ -140,7 +140,7 @@ class EToroAPIClient:
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.delete(
-                    f"{self.BASE_URL}/api/v1/trading/sub-portfolios/{env}/{mirror_id}",
+                    f"{self.BASE_URL}/api/v1/sub-portfolios/{env}/{mirror_id}",
                     headers=self._get_headers(),
                 )
                 response.raise_for_status()

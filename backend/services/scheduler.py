@@ -210,8 +210,22 @@ class SchedulerService:
                                 f"LOW DIVERSIFICATION + 1 trader detected — "
                                 f"initiating seed-list rebalance for portfolio {portfolio.id}"
                             )
+                            # Look up the real equal_rebalance rule so log_execution
+                            # doesn't fail with rule_id=0 FK violation.
+                            # If no rule is configured, skip the bridge entirely.
+                            from backend.database.models import AutomationRule
+                            eq_rule = db.query(AutomationRule).filter(
+                                AutomationRule.portfolio_id == portfolio.id,
+                                AutomationRule.rule_type == "equal_rebalance",
+                            ).first()
+                            if not eq_rule:
+                                logger.warning(
+                                    "No equal_rebalance rule configured — "
+                                    "cannot execute risk bridge rebalance"
+                                )
+                                continue
                             seed_action = engine._eval_equal_rebalance(
-                                None, portfolio, active_traders, scored_data=None
+                                eq_rule, portfolio, active_traders, scored_data=None
                             )
                             if seed_action:
                                 sync_service = EToroSyncService()
