@@ -144,12 +144,16 @@ class AutomationEngine:
         )
         db.add(log_entry)
 
-        # Update rule trigger count and cooldown timestamp only on success
-        if success:
-            rule = db.query(AutomationRule).filter(AutomationRule.id == action.rule_id).first()
-            if rule:
+        rule = db.query(AutomationRule).filter(AutomationRule.id == action.rule_id).first()
+        if rule:
+            if success:
                 rule.last_triggered = datetime.utcnow()
                 rule.trigger_count += 1
+            else:
+                # On failure, set a 5-minute cooldown to avoid spamming eToro API.
+                # _in_cooldown checks: last_triggered + cooldown_hours > now.
+                # Setting last_triggered = now - cooldown_hours + 5min gives exactly 5 min of cooldown.
+                rule.last_triggered = datetime.utcnow() - timedelta(hours=rule.cooldown_hours) + timedelta(minutes=5)
 
         db.commit()
         status = "SUCCESS" if success else "FAILED"

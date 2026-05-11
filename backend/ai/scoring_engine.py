@@ -286,29 +286,40 @@ def generate_scout_report(holdings: list[dict], candidates: list[dict]) -> dict:
 
 
 def rank_combined(holdings: list[dict], candidates: list[dict], top_n: int = 3) -> list[dict]:
-    """Score both holdings and discovery candidates and return the top N.
+    """Return the top N discovery candidates for the allocation plan.
 
-    This is used for the equal‑weight allocation plan — the top 3 scorers
-    (regardless of whether they are currently copied or discovered) get
-    33.3% each.
+    The allocation plan ALWAYS prioritises discovery candidates — even
+    if a current holding scores higher, the plan recommends switching
+    to the best discovery traders. This ensures the Equal-Weight Plan
+    always shows actionable swaps rather than "keep everything".
     """
-    combined = []
-    for h in holdings:
-        result = calculate_growth_score(h)
-        combined.append({
-            "username": h.get("username", "?"),
-            "allocation_pct": h.get("allocation_pct", 0),
-            "source": "current",
-            **result,
-        })
+    discovery_scored = []
     for c in candidates:
         result = calculate_growth_score(c)
-        combined.append({
+        discovery_scored.append({
             "username": c.get("username", "?"),
             "allocation_pct": 0,
             "source": "discovery",
             **result,
         })
+    discovery_scored.sort(key=lambda x: x["score"], reverse=True)
 
-    combined.sort(key=lambda x: x["score"], reverse=True)
-    return combined[:top_n]
+    # Always return top N discovery traders if enough exist
+    if len(discovery_scored) >= top_n:
+        return discovery_scored[:top_n]
+
+    # If fewer than top_n discovery candidates, fill from current holdings
+    holdings_scored = []
+    for h in holdings:
+        result = calculate_growth_score(h)
+        holdings_scored.append({
+            "username": h.get("username", "?"),
+            "allocation_pct": h.get("allocation_pct", 0),
+            "source": "current",
+            **result,
+        })
+    holdings_scored.sort(key=lambda x: x["score"], reverse=True)
+
+    result = discovery_scored[:]
+    result.extend(holdings_scored[:top_n - len(result)])
+    return result
