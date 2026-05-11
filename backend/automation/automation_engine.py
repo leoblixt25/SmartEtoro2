@@ -359,14 +359,14 @@ class AutomationEngine:
 
                 results = []
 
-                # Step 1: Close the current mirror
+                # Step 1: Close the current mirror (non-fatal — start may still work)
                 logger.info(f"EqualRebalance step 1/4: closing mirror {current_trader_id} ({current_trader})")
                 close_resp = await etoro_client.execute_close_mirror(
                     int(current_trader_id), is_simulation=is_sim
                 )
                 if close_resp and close_resp.get("error"):
-                    logger.error(f"EqualRebalance failed at step 1 (close): {close_resp.get('detail')}")
-                    return {"error": True, "step": "close", "detail": close_resp.get("detail")}
+                    logger.warning(f"EqualRebalance close failed (continuing): {close_resp.get('detail')}")
+                    close_resp = close_resp
                 results.append({"step": "close", "username": current_trader, "response": close_resp})
 
                 # Step 2: Safety delay — wait 60s for Available Cash to settle
@@ -374,7 +374,7 @@ class AutomationEngine:
                 import asyncio
                 await asyncio.sleep(60)
 
-                # Mark old trader inactive in DB
+                # Mark old trader inactive in DB regardless of close success
                 db.query(CopiedTrader).filter(
                     CopiedTrader.portfolio_id == portfolio.id,
                     CopiedTrader.trader_username == current_trader,
