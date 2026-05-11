@@ -485,9 +485,17 @@ class EToroSyncService:
             mirror_equity = initial_investment + m.get("closedPositionsNetProfit", 0.0) + unrealized_pnl_mirror
             
             mirror_id = m.get("agentPortfolioId") or m.get("AgentPortfolioID") or m.get("mirrorId") or m.get("portfolioId") or 0
+            if not mirror_id or mirror_id <= 0:
+                logger.warning(
+                    f"Skipping mirror for {m.get('parentUsername', 'Unknown')}: "
+                    f"invalid AgentPortfolioID=0. Full mirror data: { {k: m.get(k) for k in ('agentPortfolioId', 'AgentPortfolioID', 'mirrorId', 'portfolioId', 'parentUsername')} }"
+                )
+                continue
+
+            username = m.get("parentUsername", "Unknown")
             result.append({
                 "trader_id": str(mirror_id),
-                "username": m.get("parentUsername", "Unknown"),
+                "username": username,
                 "allocation_pct": (mirror_equity / max(total_value, 1.0)) * 100,
                 "avg_return": 0.0,
                 "max_drawdown": 0.0,
@@ -495,6 +503,7 @@ class EToroSyncService:
                 "risk_score": 5.0,
                 "total_return_pct": (total_pnl / max(initial_investment, 1.0)) * 100,
             })
+        logger.info(f"Extracted {len(result)} valid traders from {len(mirrors)} mirrors")
         return result
 
     def _sync_traders(self, db, portfolio_id: int, traders_data: List[Dict], total_equity: float):

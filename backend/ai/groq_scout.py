@@ -143,7 +143,7 @@ class GroqScout:
             import asyncio
 
             def _call():
-                return self.client.chat.completions.create(
+                return client.chat.completions.create(
                     model="llama-3.3-70b-versatile",
                     messages=[{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": prompt}],
                     temperature=0,
