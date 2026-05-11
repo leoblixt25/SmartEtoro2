@@ -486,6 +486,7 @@ class EToroSyncService:
             
             import json
             raw_id = (
+                m.get("mirrorID") or
                 m.get("agentPortfolioId") or m.get("AgentPortfolioID") or
                 m.get("mirrorId") or m.get("portfolioId") or
                 m.get("id") or m.get("Id") or m.get("ID") or
