@@ -269,6 +269,10 @@ class EToroAPIClient:
         if not self.enabled:
             return {"error": True, "detail": "eToro API not configured"}
 
+        if amount < 200:
+            logger.error(f"Cannot start mirror for {username}: amount ${amount:,.2f} is below eToro's $200 minimum")
+            return {"error": True, "detail": f"Amount ${amount:,.2f} is below eToro's $200 minimum copy amount"}
+
         env = self._resolve_env(is_simulation)
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
