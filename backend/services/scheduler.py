@@ -254,10 +254,29 @@ class SchedulerService:
 
         groq_scout = GroqScout()
         gemini_scout = GeminiScout()
-        scout = groq_scout if groq_scout.enabled else (gemini_scout if gemini_scout.enabled else None)
-        if not scout:
-            logger.info("Market scout job skipped — no AI scout configured")
-            return
+        if groq_scout.enabled:
+            scout = groq_scout
+        elif gemini_scout.enabled:
+            scout = gemini_scout
+        else:
+            logger.info("No AI API configured — using mathematical fallback allocation")
+            class FallbackScout:
+                enabled = True
+                async def evaluate(self, holdings, news, candidates):
+                    return {"action_required": False, "flagged_trader": None,
+                            "reasoning": "Mathematical fallback — no AI available",
+                            "recommended_swap": None}
+                async def evaluate_portfolio(self, holdings, news, candidates):
+                    top = sorted(holdings, key=lambda h: h.get("total_return_pct", 0) or 0, reverse=True)[:3]
+                    if not top:
+                        return {TARGET_KEY: [], "total_risk_score": 0, "market_sentiment": "unknown"}
+                    pct = round(100 / len(top), 1)
+                    return {
+                        TARGET_KEY: [{"username": t["username"], "allocation_pct": pct,
+                                      "reasoning": "Fallback — equal weight"} for t in top],
+                        "total_risk_score": 5.0, "market_sentiment": "neutral",
+                    }
+            scout = FallbackScout()
 
         try:
             news = await fetch_market_news()

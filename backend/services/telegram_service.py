@@ -514,11 +514,31 @@ class TelegramBot:
         # Instantiate scouts
         groq_scout = GroqScout()
         gemini_scout = GeminiScout()
-        # Determine primary scout
-        primary_scout = groq_scout if groq_scout.enabled else (gemini_scout if gemini_scout.enabled else None)
-        if not primary_scout:
-            await self._reply(update, "❌ No AI scout is configured. Set GROQ_API_KEY or GEMINI_API_KEY.")
-            return
+        # Determine primary scout — hard fallback if both down
+        if groq_scout.enabled:
+            primary_scout = groq_scout
+        elif gemini_scout.enabled:
+            primary_scout = gemini_scout
+        else:
+            logger.info("No AI API configured — using mathematical fallback allocation")
+            # Inline fallback scout: pure math, no API calls needed
+            class FallbackScout:
+                enabled = True
+                async def evaluate(self, holdings, news, candidates):
+                    return {"action_required": False, "flagged_trader": None,
+                            "reasoning": "Mathematical fallback — no AI available",
+                            "recommended_swap": None}
+                async def evaluate_portfolio(self, holdings, news, candidates):
+                    top = sorted(holdings, key=lambda h: h.get("total_return_pct", 0) or 0, reverse=True)[:3]
+                    if not top:
+                        return {TARGET_KEY: [], "total_risk_score": 0, "market_sentiment": "unknown"}
+                    pct = round(100 / len(top), 1)
+                    return {
+                        TARGET_KEY: [{"username": t["username"], "allocation_pct": pct,
+                                      "reasoning": "Fallback — equal weight"} for t in top],
+                        "total_risk_score": 5.0, "market_sentiment": "neutral",
+                    }
+            primary_scout = FallbackScout()
 
         try:
             news = await fetch_market_news()
