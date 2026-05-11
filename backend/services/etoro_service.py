@@ -484,11 +484,23 @@ class EToroSyncService:
             # Mirror equity = initialInvestment + closedPositionsNetProfit + unrealizedPnL
             mirror_equity = initial_investment + m.get("closedPositionsNetProfit", 0.0) + unrealized_pnl_mirror
             
-            mirror_id = m.get("agentPortfolioId") or m.get("AgentPortfolioID") or m.get("mirrorId") or m.get("portfolioId") or 0
+            import json
+            raw_id = (
+                m.get("agentPortfolioId") or m.get("AgentPortfolioID") or
+                m.get("mirrorId") or m.get("portfolioId") or
+                m.get("id") or m.get("Id") or m.get("ID") or
+                m.get("cid") or m.get("subPortfolioId") or
+                0
+            )
+            try:
+                mirror_id = int(raw_id)
+            except (ValueError, TypeError):
+                mirror_id = 0
             if not mirror_id or mirror_id <= 0:
                 logger.warning(
                     f"Skipping mirror for {m.get('parentUsername', 'Unknown')}: "
-                    f"invalid AgentPortfolioID=0. Full mirror data: { {k: m.get(k) for k in ('agentPortfolioId', 'AgentPortfolioID', 'mirrorId', 'portfolioId', 'parentUsername')} }"
+                    f"all ID fields are None/0. Raw mirror JSON:\n"
+                    f"{json.dumps(m, indent=2, default=str)}"
                 )
                 continue
 
@@ -511,10 +523,23 @@ class EToroSyncService:
         from backend.database.models import CopiedTrader
 
         for info in traders_data:
+            trader_id = info.get("trader_id")
+            username = info.get("username")
+
             trader = db.query(CopiedTrader).filter(
                 CopiedTrader.portfolio_id == portfolio_id,
-                CopiedTrader.trader_id == info.get("trader_id"),
+                CopiedTrader.trader_id == trader_id,
             ).first()
+
+            # Fallback: match by username if trader_id didn't match any existing record
+            if not trader and username:
+                trader = db.query(CopiedTrader).filter(
+                    CopiedTrader.portfolio_id == portfolio_id,
+                    CopiedTrader.trader_username == username,
+                ).first()
+                if trader:
+                    logger.info(f"Matched {username} by username — updating trader_id from {trader.trader_id} to {trader_id}")
+                    trader.trader_id = trader_id
 
             if trader:
                 trader.trader_username = info.get("username", trader.trader_username)
