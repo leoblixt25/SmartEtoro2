@@ -51,10 +51,10 @@ class SchedulerService:
             name="eToro Portfolio Sync",
         )
 
-        # Automation rule evaluation every 10 minutes
+        # Automation rule evaluation every 1 minute (accelerated for initial rebalance)
         self._scheduler.add_job(
             self._automation_eval_job,
-            IntervalTrigger(minutes=10),
+            IntervalTrigger(minutes=1),
             id="automation_eval",
             name="Automation Rule Evaluation",
         )

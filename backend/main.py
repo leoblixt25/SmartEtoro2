@@ -86,7 +86,7 @@ async def lifespan(app: FastAPI):
                 total_value=10000.0,
                 invested_amount=10000.0,
                 available_cash=10000.0,
-                is_simulation=True
+                is_simulation=False
             )
             db.add(default_portfolio)
             db.commit()
@@ -188,6 +188,10 @@ async def broadcast(event: str, data: dict):
 # ──────────────────────────────────────────────
 # Health check
 # ──────────────────────────────────────────────
+
+@app.get("/")
+async def root():
+    return {"status": "online", "portfolio": "active"}
 
 @app.get("/health")
 def health_check():
@@ -552,14 +556,6 @@ def get_automation_logs(
         .limit(limit)
         .all()
     )
-
-
-@app.post("/api/automation/logs/{log_id}/reverse")
-def reverse_action(log_id: int, portfolio_id: int, db: Session = Depends(get_db)):
-    success = automation_engine.reverse_action(db, log_id, portfolio_id)
-    if not success:
-        raise HTTPException(status_code=404, detail="Log entry not found")
-    return {"message": "Action reversed successfully", "log_id": log_id}
 
 
 # ──────────────────────────────────────────────
