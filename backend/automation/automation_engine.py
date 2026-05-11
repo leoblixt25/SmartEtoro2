@@ -56,6 +56,7 @@ class AutomationEngine:
         "reduce_on_drawdown": "Reduce allocation after drawdown",
         "pause_copy_on_loss": "Pause copy relationship after repeated losses",
         "reduce_on_volatility": "Reduce exposure during high volatility",
+        "growth_swap": "Swap low-score trader for high-score discovery",
     }
 
     def evaluate_rules(
@@ -63,10 +64,15 @@ class AutomationEngine:
         db: Session,
         portfolio: Portfolio,
         traders: List[CopiedTrader],
+        scored_data: Optional[dict] = None,
     ) -> List[ProposedAction]:
         """
         Evaluate all enabled automation rules.
         Returns proposed actions — does not execute them.
+
+        Args:
+            scored_data: Optional output from generate_scout_report().
+                         Used by the growth_swap rule to identify swaps.
         """
         rules = (
             db.query(AutomationRule)
@@ -85,7 +91,7 @@ class AutomationEngine:
                 logger.debug(f"Rule '{rule.name}' skipped — in cooldown")
                 continue
 
-            action = self._evaluate_rule(rule, portfolio, traders)
+            action = self._evaluate_rule(rule, portfolio, traders, scored_data=scored_data)
             if action:
                 proposed.append(action)
 
@@ -264,6 +270,62 @@ class AutomationEngine:
                             logger.error(f"Failed to rebalance mirror {mirror.trader_id}: {resp.get('detail')}")
                 return {"action": "rebalance", "results": results}
 
+            elif action_type == "swap":
+                old_username = action.details.get("old_username")
+                new_username = action.details.get("new_username")
+                mirror_id = action.details.get("mirror_id")
+                new_amount = action.details.get("new_amount", 0)
+
+                if not old_username or not new_username or not mirror_id:
+                    return {"error": True, "detail": "swap missing old_username, new_username, or mirror_id"}
+
+                # Step 1: Close the old mirror
+                logger.info(f"Swap step 1/3: closing mirror {mirror_id} ({old_username})")
+                close_resp = await etoro_client.execute_close_mirror(
+                    int(mirror_id), is_simulation=is_sim
+                )
+                if close_resp and close_resp.get("error"):
+                    logger.error(f"Swap failed at step 1 (close): {close_resp.get('detail')}")
+                    return {"error": True, "step": "close", "detail": close_resp.get("detail")}
+
+                # Step 2: Safety delay — wait 60s for Available Cash to settle
+                logger.info("Swap step 2/3: waiting 60s for cash to settle")
+                import asyncio
+                await asyncio.sleep(60)
+
+                # Mark old trader inactive
+                db.query(CopiedTrader).filter(
+                    CopiedTrader.portfolio_id == portfolio.id,
+                    CopiedTrader.trader_username == old_username,
+                ).update({"is_active": False, "is_paused": True,
+                          "paused_reason": f"Swapped to {new_username} via growth_swap"})
+                db.commit()
+
+                # Step 3: Start the new mirror
+                logger.info(f"Swap step 3/3: starting mirror for {new_username} with ${new_amount:,.2f}")
+                start_resp = await etoro_client.execute_start_mirror(
+                    new_username, new_amount, is_simulation=is_sim
+                )
+                if start_resp and start_resp.get("error"):
+                    logger.warning(f"Swap step 3 completed with warning: {start_resp.get('detail')}")
+                    return {
+                        "action": "swap",
+                        "step_1_close": "ok",
+                        "step_2_delay": "ok",
+                        "step_3_start": start_resp,
+                        "warning": start_resp.get("detail"),
+                    }
+
+                logger.info(f"Swap complete: {old_username} → {new_username}")
+                return {
+                    "action": "swap",
+                    "old_username": old_username,
+                    "new_username": new_username,
+                    "close_response": close_resp,
+                    "start_response": start_resp,
+                    "new_amount": new_amount,
+                }
+
             else:
                 return {"error": True, "detail": f"Unknown action type: {action_type}"}
 
@@ -334,6 +396,7 @@ class AutomationEngine:
         rule: AutomationRule,
         portfolio: Portfolio,
         traders: List[CopiedTrader],
+        scored_data: Optional[dict] = None,
     ) -> Optional[ProposedAction]:
         evaluators = {
             "take_profit": self._eval_take_profit,
@@ -342,12 +405,15 @@ class AutomationEngine:
             "reduce_on_drawdown": self._eval_reduce_on_drawdown,
             "pause_copy_on_loss": self._eval_pause_copy,
             "reduce_on_volatility": self._eval_reduce_on_volatility,
+            "growth_swap": self._eval_growth_swap,
         }
         evaluator = evaluators.get(rule.rule_type)
         if not evaluator:
             logger.warning(f"Unknown rule type: {rule.rule_type}")
             return None
 
+        if rule.rule_type == "growth_swap":
+            return evaluator(rule, portfolio, traders, scored_data)
         return evaluator(rule, portfolio, traders)
 
     def _eval_take_profit(
@@ -525,6 +591,58 @@ class AutomationEngine:
                 severity="warning",
                 requires_approval=rule.requires_approval,
             )
+        return None
+
+    def _eval_growth_swap(
+        self,
+        rule: AutomationRule,
+        portfolio: Portfolio,
+        traders: List,
+        scored_data: Optional[dict] = None,
+    ) -> Optional[ProposedAction]:
+        """Evaluate if any discovery candidate is 15+ pts better than a current trader.
+
+        Uses scored_data (from generate_scout_report) if provided, otherwise
+        falls back to static default candidates.
+        """
+        delta_threshold = rule.config.get("delta_threshold", 15.0)
+
+        if scored_data and scored_data.get("top_swaps"):
+            # Check if the best swap delta exceeds threshold
+            best = scored_data["top_swaps"][0]
+            if best.get("delta", 0) >= delta_threshold and scored_data.get("weakest"):
+                w = scored_data["weakest"]
+                mirror_id = None
+                for t in traders:
+                    if t.trader_username == w["username"]:
+                        mirror_id = t.trader_id
+                        break
+
+                total_value = portfolio.total_value or 10000
+                new_amount = total_value / 3
+
+                return ProposedAction(
+                    rule_id=rule.id,
+                    rule_name=rule.name,
+                    action_type="swap",
+                    description=(
+                        f"Swap {w['username']} (score {w['score']}/100) → "
+                        f"{best['username']} (score {best['score']}/100, "
+                        f"delta +{best['delta']}). Amount: ${new_amount:,.2f}"
+                    ),
+                    details={
+                        "old_username": w["username"],
+                        "new_username": best["username"],
+                        "mirror_id": str(mirror_id) if mirror_id else None,
+                        "new_amount": round(new_amount, 2),
+                        "old_score": w["score"],
+                        "new_score": best["score"],
+                        "delta": best["delta"],
+                    },
+                    severity="info",
+                    requires_approval=rule.requires_approval,
+                )
+
         return None
 
     # ── Helpers ──────────────────────────────────

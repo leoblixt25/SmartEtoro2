@@ -216,6 +216,40 @@ class EToroAPIClient:
             logger.error(f"Unexpected error unpausing mirror {mirror_id}: {e}")
             return {"error": True, "detail": str(e)}
 
+    async def execute_start_mirror(self, username: str, amount: float, is_simulation: bool = True) -> Dict:
+        """Start copying a trader on eToro.
+
+        eToro API: POST /api/v1/trading/mirrors
+        Body: {"username": "<trader>", "amount": <usd>, "isDemo": <bool>}
+
+        Falls back to a guided message in live mode if the endpoint
+        is not available on the current plan.
+        """
+        if not self.enabled:
+            return {"error": True, "detail": "eToro API not configured"}
+
+        env = "demo" if is_simulation else "real"
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    f"{self.BASE_URL}/api/v1/trading/mirrors",
+                    headers=self._get_headers(),
+                    json={"username": username, "amount": amount, "isDemo": is_simulation},
+                )
+                response.raise_for_status()
+                result = response.json()
+                logger.info(f"Started mirror for {username} on eToro ({env}): {result}")
+                return result
+        except httpx.HTTPStatusError as e:
+            logger.error(f"eToro start-mirror error {e.response.status_code}: {e.response.text}")
+            return {"error": True, "status": e.response.status_code, "detail": e.response.text}
+        except httpx.RequestError as e:
+            logger.error(f"Network error starting mirror for {username}: {e}")
+            return {"error": True, "detail": str(e)}
+        except Exception as e:
+            logger.error(f"Unexpected error starting mirror for {username}: {e}")
+            return {"error": True, "detail": str(e)}
+
     def _get_mock_account_summary(self) -> Dict:
         import random
         base_value = 15000 + random.uniform(-2000, 3000)

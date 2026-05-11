@@ -210,11 +210,13 @@ def scout_holdings(holdings: list[dict]) -> dict:
     return {"scored": scored, "weakest": weakest, "top": top, "avg_score": avg_score}
 
 
-def rank_candidates(holdings: list[dict], candidates: list[dict], top_n: int = 3) -> list[dict]:
+def rank_candidates(holdings: list[dict], candidates: list[dict], top_n: int = 10) -> list[dict]:
     """Score discovery candidates and return best swaps by score delta.
 
     The delta is measured against the weakest current holding.
     If no holdings, delta = candidate score.
+
+    Returns top_n candidates (default 10) for expanded discovery.
     """
     holdings_result = scout_holdings(holdings)
     weakest_score = holdings_result["weakest"]["score"] if holdings_result["weakest"] else 0.0
@@ -281,3 +283,32 @@ def generate_scout_report(holdings: list[dict], candidates: list[dict]) -> dict:
         "top_swaps": top_swaps,
         "avg_score": hs["avg_score"],
     }
+
+
+def rank_combined(holdings: list[dict], candidates: list[dict], top_n: int = 3) -> list[dict]:
+    """Score both holdings and discovery candidates and return the top N.
+
+    This is used for the equal‑weight allocation plan — the top 3 scorers
+    (regardless of whether they are currently copied or discovered) get
+    33.3% each.
+    """
+    combined = []
+    for h in holdings:
+        result = calculate_growth_score(h)
+        combined.append({
+            "username": h.get("username", "?"),
+            "allocation_pct": h.get("allocation_pct", 0),
+            "source": "current",
+            **result,
+        })
+    for c in candidates:
+        result = calculate_growth_score(c)
+        combined.append({
+            "username": c.get("username", "?"),
+            "allocation_pct": 0,
+            "source": "discovery",
+            **result,
+        })
+
+    combined.sort(key=lambda x: x["score"], reverse=True)
+    return combined[:top_n]

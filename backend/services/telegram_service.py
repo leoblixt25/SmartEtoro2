@@ -509,7 +509,8 @@ class TelegramBot:
         from backend.database.connection import db_session
         from backend.database.models import Portfolio
         from backend.services.market_data import get_current_holdings, fetch_market_news, discover_top_traders
-        from backend.ai.scoring_engine import generate_scout_report, rank_candidates, scout_holdings
+        from backend.ai.scoring_engine import generate_scout_report, rank_candidates, scout_holdings, rank_combined
+        from backend.services.allocation_logic import calculate_equal_weight_target
 
         await self._reply(update, "🔍 Running Growth Scout...")
 
@@ -600,23 +601,21 @@ class TelegramBot:
                     )
                 else:
                     lines.append(f"\n✅ <b>Portfolio Healthy</b> — all traders score ≥ 50/100")
-                    if report["top_swaps"]:
+
+                # Top 3 Discovery Candidates (always shown)
+                scored_candidates = rank_candidates(holdings, candidates, top_n=3)
+                if scored_candidates:
+                    lines.append(f"\n<b>🔍 Top 3 Discovery Candidates</b>")
+                    for i, c in enumerate(scored_candidates, 1):
                         lines.append(
-                            f"\n<b>Top Discovery:</b> {report['top_swaps'][0]['username']} "
-                            f"(score {report['top_swaps'][0]['score']}/100)"
+                            f"{i}. <b>{c['username']}</b> — score {c['score']}/100 "
+                            f"(risk {c.get('risk_score','?')}, Δ {c['delta']:+.1f})"
                         )
 
-                # ── Step 4: Allocation plan (deterministic) ──────────
-                top_by_score = sorted(
-                    report["scored_holdings"], key=lambda x: x["score"], reverse=True
-                )[:3]
-                if top_by_score:
-                    eq_pct = round(100 / len(top_by_score), 1)
-                    allocs = [
-                        {"username": t["username"], "allocation_pct": eq_pct,
-                         "reasoning": f"Growth score {t['score']}/100"}
-                        for t in top_by_score
-                    ]
+                # ── Step 4: 33.3% Equal‑Weight Allocation Plan ──────────
+                top3_combined = rank_combined(holdings, candidates, top_n=3)
+                if top3_combined:
+                    target = calculate_equal_weight_target(top3_combined, p.total_value or 10000)
                     from backend.services.rebalance_service import calculate_rebalance_orders
                     current_positions = [
                         {"username": h["username"],
@@ -624,12 +623,16 @@ class TelegramBot:
                         for h in holdings
                     ]
                     orders = calculate_rebalance_orders(
-                        p.total_value or 0, current_positions,
-                        {"target_portfolio": allocs}
+                        p.total_value or 0, current_positions, target
                     )
-                    lines.append(f"\n---\n<b>📊 Allocation Plan</b>")
-                    for a in allocs:
-                        lines.append(f"• <b>{a['username']}</b> — {a['allocation_pct']}%")
+                    lines.append(f"\n---\n<b>📊 33.3% Equal‑Weight Plan</b>")
+                    for a in target["target_portfolio"]:
+                        src = "discovery" if a["username"] not in {h["username"] for h in holdings} else "current"
+                        icon = "🆕" if src == "discovery" else "🔄"
+                        lines.append(
+                            f"{icon} <b>{a['username']}</b> — {a['allocation_pct']}% "
+                            f"({src})"
+                        )
                     if orders.get("warnings"):
                         for w in orders["warnings"]:
                             lines.append(f"⚠️ {w}")

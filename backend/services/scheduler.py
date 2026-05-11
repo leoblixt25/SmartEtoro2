@@ -131,9 +131,24 @@ class SchedulerService:
         try:
             with db_session() as db:
                 portfolios = db.query(Portfolio).all()
+
+                # Fetch discovery candidates for growth_swap evaluation
+                scored_data = None
+                try:
+                    from backend.services.market_data import discover_top_traders
+                    from backend.ai.scoring_engine import generate_scout_report
+                    from backend.services.market_data import get_current_holdings
+                    discovery = await discover_top_traders()
+                    if discovery and portfolios:
+                        holdings = get_current_holdings(db, portfolios[0].id)
+                        if holdings:
+                            scored_data = generate_scout_report(holdings, discovery)
+                except Exception as e:
+                    logger.info(f"Scout data unavailable for rule eval (non-fatal): {e}")
+
                 for portfolio in portfolios:
                     traders = [t for t in portfolio.copied_traders if t.is_active and not t.is_paused]
-                    actions = engine.evaluate_rules(db, portfolio, traders)
+                    actions = engine.evaluate_rules(db, portfolio, traders, scored_data=scored_data)
                     for action in actions:
                         if action.requires_approval:
                             # Create pending alert — user must approve via Telegram or UI
