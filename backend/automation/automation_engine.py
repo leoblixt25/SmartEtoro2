@@ -184,6 +184,11 @@ class AutomationEngine:
                     results.append({"mirror_id": m.trader_id, "response": resp})
                     if resp and resp.get("error"):
                         logger.error(f"Failed to close mirror {m.trader_id}: {resp.get('detail')}")
+                if any(r.get("response", {}).get("error") for r in results):
+                    errors = [r for r in results if r.get("response", {}).get("error")]
+                    return {"error": True, "action": "take_profit", "results": results,
+                            "detail": f"{len(errors)}/{len(results)} mirrors failed",
+                            "errors": errors}
                 return {"action": "take_profit", "results": results}
 
             elif action_type == "partial_profit_lock":

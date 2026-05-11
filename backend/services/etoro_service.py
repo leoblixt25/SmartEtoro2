@@ -99,7 +99,7 @@ class EToroAPIClient:
         Uses the same auth headers (x-api-key, x-user-key, x-request-id)
         as the read endpoint. Demo/real selection matches the account type.
 
-        eToro API: POST /api/v1/trading/mirrors/{mirrorId}/close
+        eToro 2026 API: DELETE /api/v1/sub-portfolios/{id}
         """
         if not self.enabled:
             return None
@@ -107,13 +107,12 @@ class EToroAPIClient:
         env = "demo" if is_simulation else "real"
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(
-                    f"{self.BASE_URL}/api/v1/trading/mirrors/{mirror_id}/close",
+                response = await client.delete(
+                    f"{self.BASE_URL}/api/v1/sub-portfolios/{mirror_id}",
                     headers=self._get_headers(),
-                    json={"mirrorId": mirror_id},
                 )
                 response.raise_for_status()
-                result = response.json()
+                result = response.json() if response.text else {}
                 logger.info(f"Closed mirror {mirror_id} on eToro ({env}): {result}")
                 return result
         except httpx.HTTPStatusError as e:
@@ -410,8 +409,9 @@ class EToroSyncService:
             # Mirror equity = initialInvestment + closedPositionsNetProfit + unrealizedPnL
             mirror_equity = initial_investment + m.get("closedPositionsNetProfit", 0.0) + unrealized_pnl_mirror
             
+            mirror_id = m.get("agentPortfolioId") or m.get("AgentPortfolioID") or m.get("mirrorId") or m.get("portfolioId") or 0
             result.append({
-                "trader_id": str(m.get("mirrorId", 0)),
+                "trader_id": str(mirror_id),
                 "username": m.get("parentUsername", "Unknown"),
                 "allocation_pct": (mirror_equity / max(total_value, 1.0)) * 100,
                 "avg_return": 0.0,
