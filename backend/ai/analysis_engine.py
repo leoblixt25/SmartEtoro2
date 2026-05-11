@@ -1,24 +1,14 @@
 """
-AI Analysis Module — Claude Integration
+AI Analysis Module — Groq + Gemini Fallback
 ────────────────────────────────────────────────────────────────────
-Wraps the Anthropic API to generate safe, explainable investment
-analysis. Every response includes a confidence score and avoids
-emotional or hyped language.
-
-Design principles:
-- NEVER recommend actions without confidence scores
-- ALWAYS explain reasoning in plain language
-- NEVER encourage high-risk or leveraged positions
-- Always prioritize capital preservation language
+Provides portfolio, trader, and weekly analysis using Groq (primary)
+with Gemini as backup. Both are free-tier friendly.
 """
 
 from __future__ import annotations
 import json
 import logging
 from typing import Optional
-import anthropic
-from backend.database.models import Portfolio, CopiedTrader
-from backend.analytics.portfolio_analytics import PortfolioHealthResult
 
 logger = logging.getLogger(__name__)
 
@@ -62,60 +52,118 @@ Format your responses as structured JSON with these fields:
 
 
 class AIAnalysisEngine:
-    """
-    Wraps Claude API for portfolio and trader analysis.
-    All outputs are structured and confidence-scored.
-    """
+    """Portfolio analysis using Groq (primary) → Gemini (fallback)."""
 
     def __init__(self, api_key: Optional[str] = None):
         import os
-        key = api_key or os.getenv("ANTHROPIC_API_KEY")
-        if not key:
-            logger.warning("ANTHROPIC_API_KEY not set — AI analysis will return mock data")
-            self._client = None
-        else:
-            self._client = anthropic.AsyncAnthropic(api_key=key)
+        self._groq_client = None
+        self._gemini_model = None
 
-    # ── Public analysis methods ──────────────────
+        # Try Groq first
+        groq_key = api_key or os.getenv("GROQ_API_KEY")
+        if groq_key:
+            try:
+                from groq import Groq
+                self._groq_client = Groq(api_key=groq_key)
+                logger.info("AI analysis: using Groq")
+            except Exception:
+                logger.warning("Groq import failed, trying Gemini")
+
+        # Fall back to Gemini
+        if not self._groq_client:
+            gemini_key = os.getenv("GEMINI_API_KEY")
+            if gemini_key:
+                try:
+                    import google.generativeai as genai
+                    genai.configure(api_key=gemini_key)
+                    self._gemini_model = genai.GenerativeModel(
+                        model_name="gemini-2.0-flash",
+                        system_instruction=SYSTEM_PROMPT,
+                    )
+                    logger.info("AI analysis: using Gemini")
+                except Exception:
+                    logger.warning("Gemini init failed — AI analysis unavailable")
+
+        if not self._groq_client and not self._gemini_model:
+            logger.warning("No AI provider available — AI analysis returns mock data")
 
     async def analyze_portfolio(
         self,
-        portfolio: Portfolio,
-        health_result: PortfolioHealthResult,
+        portfolio,
+        health_result,
     ) -> dict:
-        """Full portfolio health analysis with recommendations."""
         prompt = self._build_portfolio_prompt(portfolio, health_result)
-        return await self._call_claude(prompt, context="portfolio_analysis")
+        return await self._call_ai(prompt, context="portfolio_analysis")
 
-    async def analyze_trader(self, trader: CopiedTrader) -> dict:
-        """Deep-dive analysis of a single copied trader."""
+    async def analyze_trader(self, trader) -> dict:
         prompt = self._build_trader_prompt(trader)
-        return await self._call_claude(prompt, context="trader_analysis")
+        return await self._call_ai(prompt, context="trader_analysis")
 
     async def generate_weekly_summary(
         self,
-        portfolio: Portfolio,
-        traders: list[CopiedTrader],
+        portfolio,
+        traders: list,
     ) -> dict:
-        """Weekly performance summary for Telegram/dashboard."""
         prompt = self._build_weekly_prompt(portfolio, traders)
-        return await self._call_claude(prompt, context="weekly_summary")
+        return await self._call_ai(prompt, context="weekly_summary")
 
     async def check_risk_alerts(
         self,
-        portfolio: Portfolio,
-        health_result: PortfolioHealthResult,
+        portfolio,
+        health_result,
     ) -> dict:
-        """Focused risk check — returns only alerts, not full analysis."""
         prompt = self._build_risk_check_prompt(portfolio, health_result)
-        return await self._call_claude(prompt, context="risk_check")
+        return await self._call_ai(prompt, context="risk_check")
 
-    # ── Prompt builders ──────────────────────────
+    async def _call_ai(self, prompt: str, context: str = "analysis") -> dict:
+        """Call Groq first, fall back to Gemini, then mock."""
+        if self._groq_client:
+            try:
+                response = self._groq_client.chat.completions.create(
+                    model="llama3-70b-8192",
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.3,
+                    max_tokens=1500,
+                )
+                raw = response.choices[0].message.content
+                return self._parse_response(raw, context)
+            except Exception as e:
+                logger.error(f"Groq analysis failed ({context}): {e}")
+
+        if self._gemini_model:
+            try:
+                response = await self._gemini_model.generate_content_async(prompt)
+                raw = response.text
+                return self._parse_response(raw, context)
+            except Exception as e:
+                logger.error(f"Gemini analysis failed ({context}): {e}")
+
+        logger.warning(f"All AI providers failed for {context} — returning mock")
+        return self._mock_response()
+
+    def _parse_response(self, raw_text: str, context: str) -> dict:
+        text = raw_text.strip()
+        if text.startswith("```"):
+            text = text.split("```")[1]
+            if text.startswith("json"):
+                text = text[4:]
+        try:
+            return json.loads(text.strip())
+        except json.JSONDecodeError as e:
+            logger.error(f"AI response JSON parse error ({context}): {e}")
+            return self._mock_response()
+
+    def _mock_response(self) -> dict:
+        return {
+            "recommendations": [],
+            "weekly_summary": "AI analysis is currently unavailable. Using cached data.",
+            "overall_risk_assessment": "medium",
+        }
 
     def _build_portfolio_prompt(
         self,
-        portfolio: Portfolio,
-        health: PortfolioHealthResult,
+        portfolio,
+        health,
     ) -> str:
         return f"""Analyze this eToro portfolio and provide actionable recommendations.
 
@@ -144,7 +192,7 @@ EXISTING RECOMMENDATIONS FROM RULES ENGINE:
 
 Based on this data, provide your analysis and recommendations. Focus on risk management and long-term portfolio stability."""
 
-    def _build_trader_prompt(self, trader: CopiedTrader) -> str:
+    def _build_trader_prompt(self, trader) -> str:
         return f"""Analyze this copied trader's performance and risk profile for an eToro investor.
 
 TRADER: {trader.trader_username}
@@ -165,8 +213,8 @@ Provide an honest assessment of whether to continue copying this trader, adjust 
 
     def _build_weekly_prompt(
         self,
-        portfolio: Portfolio,
-        traders: list[CopiedTrader],
+        portfolio,
+        traders: list,
     ) -> str:
         trader_summary = "\n".join([
             f"  - {t.trader_username}: {t.total_return_pct:+.1f}% return, "
@@ -187,8 +235,8 @@ Provide a concise weekly summary suitable for a Telegram notification. Keep it u
 
     def _build_risk_check_prompt(
         self,
-        portfolio: Portfolio,
-        health: PortfolioHealthResult,
+        portfolio,
+        health,
     ) -> str:
         return f"""Quick risk check for this portfolio. Flag only genuine concerns.
 
@@ -199,38 +247,3 @@ Provide a concise weekly summary suitable for a Telegram notification. Keep it u
 - Monthly PnL: ${portfolio.monthly_pnl:+,.2f}
 
 Only return recommendations if there are real risk concerns. If everything looks acceptable, say so clearly."""
-
-    # ── Claude API call ──────────────────────────
-
-    async def _call_claude(self, prompt: str, context: str = "analysis") -> dict:
-        """
-        Call Claude API and return structured JSON response.
-        Raises an exception if API is unavailable.
-        """
-        if self._client is None:
-            raise RuntimeError("ANTHROPIC_API_KEY not configured — Claude unavailable")
-
-        try:
-            response = await self._client.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=1500,
-                system=SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            raw_text = response.content[0].text
-
-            # Strip markdown code fences if present
-            cleaned = raw_text.strip()
-            if cleaned.startswith("```"):
-                cleaned = cleaned.split("```")[1]
-                if cleaned.startswith("json"):
-                    cleaned = cleaned[4:]
-
-            return json.loads(cleaned.strip())
-
-        except json.JSONDecodeError as e:
-            logger.error(f"AI response JSON parse error ({context}): {e}")
-            raise
-        except anthropic.APIError as e:
-            logger.error(f"Anthropic API error ({context}): {e}")
-            raise

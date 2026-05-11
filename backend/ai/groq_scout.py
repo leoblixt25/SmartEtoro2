@@ -18,7 +18,7 @@ TARGET_KEY = "target_portfolio"
 
 # Attempt to import Groq SDK
 try:
-    import groq
+    from groq import Groq
     GROQ_AVAILABLE = True
 except ImportError:
     GROQ_AVAILABLE = False
@@ -43,7 +43,7 @@ class GroqScout:
             logger.warning("GROQ_API_KEY not set — Groq scout disabled")
             self.enabled = False
         else:
-            self.client = groq.Groq(api_key=key)
+            self.client = Groq(api_key=key)
             self.enabled = True
             logger.info("Groq scout initialized with llama-3.3-70b-versatile")
 

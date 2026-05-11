@@ -544,10 +544,7 @@ class TelegramBot:
                 result = await primary_scout.evaluate(holdings, news, candidates)
 
                 # Allocation – use the appropriate method based on the scout type
-                if isinstance(primary_scout, GroqScout):
-                    allocation = await primary_scout.evaluate_portfolio(holdings, news, candidates)
-                else:
-                    allocation = await primary_scout.evaluate_portfolio_with_gemini(holdings, news, candidates)
+                allocation = await primary_scout.evaluate_portfolio(holdings, news, candidates)
 
                 lines = []
                 if result["action_required"]:
@@ -591,7 +588,13 @@ class TelegramBot:
         except Exception as e:
             logger.error(f"/scout error: {e}")
             err_str = str(e)
-            if "Groq" in err_str or "Gemini" in err_str:
+            if "rate" in err_str.lower() or "429" in err_str or "quota" in err_str.lower():
+                await self._reply(update, "⚠️ AI Scout Error: Rate limit exceeded. Please wait a moment before retrying.")
+            elif "api" in err_str.lower() or "401" in err_str or "403" in err_str or "not found" in err_str.lower():
+                await self._reply(update, "⚠️ AI Scout Error: API configuration issue. Check your API keys.")
+            elif "timeout" in err_str.lower() or "timed out" in err_str.lower():
+                await self._reply(update, "⚠️ AI Scout Error: Request timed out. Try again later.")
+            elif "Groq" in err_str or "Gemini" in err_str:
                 await self._reply(update, "⚠️ AI Scout Error: Unable to reach AI service. Please check API configuration.")
             else:
                 await self._reply(update, f"❌ Scout failed: {e}")
