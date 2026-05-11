@@ -210,20 +210,30 @@ class SchedulerService:
                                 f"LOW DIVERSIFICATION + 1 trader detected — "
                                 f"initiating seed-list rebalance for portfolio {portfolio.id}"
                             )
-                            # Look up the real equal_rebalance rule so log_execution
-                            # doesn't fail with rule_id=0 FK violation.
-                            # If no rule is configured, skip the bridge entirely.
-                            from backend.database.models import AutomationRule
+                            # Look up (or auto-create) the equal_rebalance rule
+                            # so log_execution doesn't fail with FK violation.
+                            from backend.database.models import AutomationRule, AutomationStatus
                             eq_rule = db.query(AutomationRule).filter(
                                 AutomationRule.portfolio_id == portfolio.id,
                                 AutomationRule.rule_type == "equal_rebalance",
                             ).first()
                             if not eq_rule:
-                                logger.warning(
-                                    "No equal_rebalance rule configured — "
-                                    "cannot execute risk bridge rebalance"
+                                eq_rule = AutomationRule(
+                                    portfolio_id=portfolio.id,
+                                    name="Risk-Bridge Equal Rebalance",
+                                    rule_type="equal_rebalance",
+                                    status=AutomationStatus.ENABLED,
+                                    threshold=0,
+                                    cooldown_hours=0,
+                                    requires_approval=False,
+                                    config={},
                                 )
-                                continue
+                                db.add(eq_rule)
+                                db.commit()
+                                logger.info(
+                                    f"Auto-created equal_rebalance rule for risk bridge "
+                                    f"(portfolio {portfolio.id})"
+                                )
                             seed_action = engine._eval_equal_rebalance(
                                 eq_rule, portfolio, active_traders, scored_data=None
                             )
