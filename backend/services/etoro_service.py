@@ -158,13 +158,11 @@ class EToroAPIClient:
     async def execute_close_mirror(self, mirror_id: int, is_simulation: bool = True) -> Optional[Dict]:
         """Close a copy-trade mirror position on eToro.
 
-        Two-step process:
-          1. GET /api/v1/agent-portfolios → find entry with matching mirrorId
-          2. DELETE /api/v1/agent-portfolios/{agentPortfolioId}
-
-        The agent-portfolios endpoint uses UUIDs (agentPortfolioId) to identify
-        copies, while the rest of the API uses numeric mirror IDs. The GET
-        response includes both fields so we can bridge the two.
+        Tries two methods in order:
+          1. DELETE /api/v1/agent-portfolios/{agentPortfolioId}
+             — needs agent-portfolios scope on the API key (may 403)
+          2. DELETE /api/v1/trading/mirrors/{env}/{mirrorId}
+             — fallback using the same path family as pause/start
         """
         if not self.enabled:
             return None
@@ -172,34 +170,50 @@ class EToroAPIClient:
         if not self._validate_mirror_id(mirror_id, "close_mirror"):
             return {"error": True, "detail": f"Invalid mirror_id={mirror_id} — cannot close"}
 
-        # Step 1: resolve mirror_id → agentPortfolioId (UUID)
+        # Method 1: resolve mirror_id → agentPortfolioId (UUID) via agent-portfolios API
         agent_portfolios = await self.get_agent_portfolios()
-        target = None
-        for ap in agent_portfolios:
-            ap_mirror_id = ap.get("mirrorId")
-            if ap_mirror_id is not None and int(ap_mirror_id) == mirror_id:
-                target = ap
-                break
+        if agent_portfolios:
+            target = None
+            for ap in agent_portfolios:
+                ap_mirror_id = ap.get("mirrorId")
+                if ap_mirror_id is not None and int(ap_mirror_id) == mirror_id:
+                    target = ap
+                    break
 
-        if not target:
-            logger.error(f"Agent-portfolio not found for mirror_id={mirror_id}")
-            return {"error": True, "detail": f"Agent-portfolio not found for mirror_id={mirror_id}"}
+            if target:
+                agent_portfolio_id = target.get("agentPortfolioId")
+                if agent_portfolio_id:
+                    try:
+                        async with httpx.AsyncClient(timeout=30.0) as client:
+                            response = await client.delete(
+                                f"{self.BASE_URL}/api/v1/agent-portfolios/{agent_portfolio_id}",
+                                headers=self._get_headers(),
+                            )
+                            response.raise_for_status()
+                            result = response.json() if response.text else {}
+                            logger.info(f"Closed mirror {mirror_id} via agent-portfolio {agent_portfolio_id}: {result}")
+                            return result
+                    except httpx.HTTPStatusError as e:
+                        logger.error(f"eToro agent-portfolio delete error {e.response.status_code}: {e.response.text}")
+                        return {"error": True, "status": e.response.status_code, "detail": e.response.text}
+                    except httpx.RequestError as e:
+                        logger.error(f"Network error deleting agent-portfolio {agent_portfolio_id}: {e}")
+                        return {"error": True, "detail": str(e)}
 
-        agent_portfolio_id = target.get("agentPortfolioId")
-        if not agent_portfolio_id:
-            logger.error(f"agentPortfolioId is empty for mirror_id={mirror_id}")
-            return {"error": True, "detail": f"agentPortfolioId empty for mirror_id={mirror_id}"}
-
-        # Step 2: delete the agent-portfolio (stops the copy mirror)
+        # Method 2: fallback — DELETE /trading/mirrors/{env}/{mirrorId}
+        # This uses the same path prefix as pause/unpause/start which the
+        # current API key scopes allow.
+        env = self._resolve_env(is_simulation)
+        logger.info(f"Closing mirror {mirror_id} via /trading/mirrors/{env}/{mirror_id} (fallback)")
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.delete(
-                    f"{self.BASE_URL}/api/v1/agent-portfolios/{agent_portfolio_id}",
+                    f"{self.BASE_URL}/api/v1/trading/mirrors/{env}/{mirror_id}",
                     headers=self._get_headers(),
                 )
                 response.raise_for_status()
                 result = response.json() if response.text else {}
-                logger.info(f"Closed mirror {mirror_id} via agent-portfolio {agent_portfolio_id}: {result}")
+                logger.info(f"Closed mirror {mirror_id} via /trading/mirrors ({env}): {result}")
                 return result
         except httpx.HTTPStatusError as e:
             logger.error(f"eToro close-mirror error {e.response.status_code}: {e.response.text}")
