@@ -12,20 +12,73 @@ import logging
 import os
 from typing import Optional
 
+from groq import Groq
+
 logger = logging.getLogger(__name__)
 
 TARGET_KEY = "target_portfolio"
 
-# Attempt to import Groq SDK
-try:
-    from groq import Groq
-    GROQ_AVAILABLE = True
-except ImportError as e:
-    logger.error(f"Failed to import groq: {e}")
-    GROQ_AVAILABLE = False
+SYSTEM_PROMPT = """You are the Chief Risk Officer for an eToro copy-trading portfolio.
 
-# Re‑use prompts from Gemini Scout for consistency
-from backend.ai.gemini_scout import SYSTEM_PROMPT, ALLOCATION_PROMPT
+Your job is to:
+1. Read the provided market news headlines.
+2. Review each copied trader's stock holdings and performance metrics.
+3. Flag any trader whose portfolio contains assets that are negatively impacted by current news events.
+4. Flag any trader whose drawdown or return metrics are critically underperforming.
+5. If a trader is flagged, recommend a specific replacement from the provided top-trader candidates.
+
+Rules:
+- Only flag a trader if the evidence is clear (don't cry wolf).
+- Your reasoning must cite specific news items or metric thresholds.
+- You may only recommend replacements from the provided candidate list.
+- If everything looks safe, set action_required to false.
+
+Respond with ONLY valid JSON, no markdown fences, no commentary:
+
+{
+  "action_required": true,
+  "flagged_trader": "username_of_flagged_trader",
+  "reasoning": "Clear explanation citing specific news or metrics",
+  "recommended_swap": "username_from_candidates"
+}
+
+If no action is needed:
+{
+  "action_required": false,
+  "flagged_trader": null,
+  "reasoning": "All traders look healthy relative to current market conditions",
+  "recommended_swap": null
+}
+"""
+
+
+ALLOCATION_PROMPT = """You are a portfolio allocation optimizer for eToro copy-trading.
+Your only job is to construct a 3-trader target portfolio from the data below.
+
+You are a macro-level quantitative evaluator. Detailed stock holdings are intentionally abstracted. DO NOT mention missing or unknown holdings. You must evaluate traders solely based on their Return %, Risk Score, and how their general trading style aligns with current Macro News.
+
+CRITICAL: You MUST select exactly 3 traders for the target_portfolio.
+If specific stock holdings are unknown, you must base your decision on their historical return, risk score, and overall market sentiment. Do not allocate 100% to a single trader.
+
+Rules:
+- You MUST output exactly 3 traders. No more, no fewer.
+- Allocations MUST sum to exactly 100%.
+- You may select existing traders, the provided candidates, or a mix of both.
+- ONLY select from traders appearing in CURRENT PORTFOLIO or CANDIDATES below.
+- If insufficient context is available, choose the top 3 by return and risk.
+
+AVAILABLE CANDIDATES (Choose 3 from this list or the CURRENT PORTFOLIO list):
+{available_candidates}
+
+Output your analysis in the following JSON schema:
+{
+  "target_portfolio": [
+    {"username": "trader_1", "allocation_pct": 50, "reasoning": "Performance is resilient."},
+    {"username": "trader_2", "allocation_pct": 25, "reasoning": "Low risk hedge."},
+    {"username": "trader_3", "allocation_pct": 25, "reasoning": "Diversification."}
+  ]
+}
+"""
 
 
 class GroqScout:
@@ -37,11 +90,8 @@ class GroqScout:
 
     def __init__(self, api_key: Optional[str] = None):
         key = api_key or os.getenv("GROQ_API_KEY")
-        if not GROQ_AVAILABLE:
-            logger.warning("groq package not installed — Groq scout disabled")
-            self.enabled = False
-        elif not key:
-            logger.warning("GROQ_API_KEY not set — Groq scout disabled")
+        if not key:
+            logger.info("GROQ_API_KEY not set — Groq scout disabled")
             self.enabled = False
         else:
             self.client = Groq(api_key=key)

@@ -20,12 +20,7 @@ logger = logging.getLogger(__name__)
 
 TARGET_KEY = "target_portfolio"
 
-try:
-    import google.generativeai as genai
-    GEMINI_AVAILABLE = True
-except ImportError as e:
-    logger.error(f"Failed to import google.generativeai: {e}")
-    GEMINI_AVAILABLE = False
+import google.generativeai as genai
 
 
 SYSTEM_PROMPT = """You are the Chief Risk Officer for an eToro copy-trading portfolio.
@@ -96,11 +91,8 @@ class GeminiScout:
 
     def __init__(self, api_key: Optional[str] = None):
         key = api_key or os.getenv("GEMINI_API_KEY")
-        if not GEMINI_AVAILABLE:
-            logger.warning("google-generativeai not installed — Gemini scout disabled")
-            self.enabled = False
-        elif not key:
-            logger.warning("GEMINI_API_KEY not set — Gemini scout disabled")
+        if not key:
+            logger.info("GEMINI_API_KEY not set — Gemini scout disabled")
             self.enabled = False
         else:
             genai.configure(api_key=key)
