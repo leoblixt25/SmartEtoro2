@@ -293,7 +293,14 @@ async def discover_top_traders() -> List[Dict]:
 
 
 def _parse_etoro_discovery(data: dict) -> List[Dict]:
-    """Extract relevant fields from eToro discovery API response."""
+    """Extract relevant fields from eToro discovery API response.
+
+    Applies mandatory filters:
+      - is_copiable == True (skip traders who aren't accepting new copiers)
+      - min_copy_amount <= 200 (capital constraint)
+    If a field is missing from the API, assumes copiable with a $200 minimum
+    and logs a warning.
+    """
     raw_list = []
     if isinstance(data, list):
         raw_list = data
@@ -301,15 +308,41 @@ def _parse_etoro_discovery(data: dict) -> List[Dict]:
         raw_list = data.get("data", data.get("results", data.get("PopularCopyTraders", [])))
 
     candidates = []
-    for entry in raw_list[:15]:
-        if isinstance(entry, dict):
-            candidates.append({
-                "username": entry.get("Username") or entry.get("username", "unknown"),
-                "risk_score": entry.get("RiskScore") or entry.get("risk_score", 5),
-                "total_return_pct": entry.get("TotalReturn") or entry.get("total_return_pct", 0),
-                "copiers": entry.get("Copiers") or entry.get("copiers", 0),
-            })
-    return candidates
+    for entry in raw_list[:30]:  # fetch extra to account for filter
+        if not isinstance(entry, dict):
+            continue
+
+        # ── is_copiable check ───────────────────────────────────────
+        is_copiable = entry.get("IsCopiable") or entry.get("is_copiable")
+        if is_copiable is None:
+            logger.warning(
+                f"Discovery entry {entry.get('Username', entry.get('username', '?'))} "
+                "missing 'is_copiable' — assuming True, min_copy_amount=$200"
+            )
+            is_copiable = True
+            min_amount = 200.0
+        else:
+            is_copiable = bool(is_copiable)
+            min_amount = entry.get("MinCopyAmount") or entry.get("min_copy_amount") or 200.0
+
+        if not is_copiable:
+            logger.debug(f"Skipping {entry.get('Username','?')}: not copiable")
+            continue
+        if min_amount > 200:
+            logger.debug(f"Skipping {entry.get('Username','?')}: min_copy_amount ${min_amount} > $200")
+            continue
+
+        candidates.append({
+            "username": entry.get("Username") or entry.get("username", "unknown"),
+            "risk_score": entry.get("RiskScore") or entry.get("risk_score", 5),
+            "total_return_pct": entry.get("TotalReturn") or entry.get("total_return_pct", 0),
+            "copiers": entry.get("Copiers") or entry.get("copiers", 0),
+            "is_copiable": is_copiable,
+            "min_copy_amount": min_amount,
+        })
+
+    logger.info(f"Discovery: {len(candidates)} qualified candidates after filter")
+    return candidates[:15]
 
 
 def _default_trader_candidates() -> List[Dict]:
@@ -319,9 +352,9 @@ def _default_trader_candidates() -> List[Dict]:
     These are real, verified eToro usernames for testing.
     """
     return [
-        {"username": "cphequities",     "risk_score": 4, "total_return_pct": 14.2, "copiers": 8500},
-        {"username": "JeppeKirkBonde",  "risk_score": 3, "total_return_pct": 11.8, "copiers": 6200},
-        {"username": "Jaynemesis",      "risk_score": 5, "total_return_pct": 18.5, "copiers": 4100},
-        {"username": "OmarAlmsaddi",    "risk_score": 4, "total_return_pct": 9.2,  "copiers": 5300},
-        {"username": "OliviaTrades",    "risk_score": 3, "total_return_pct": 10.5, "copiers": 3800},
+        {"username": "cphequities",     "risk_score": 4, "total_return_pct": 14.2, "copiers": 8500, "is_copiable": True, "min_copy_amount": 200},
+        {"username": "JeppeKirkBonde",  "risk_score": 3, "total_return_pct": 11.8, "copiers": 6200, "is_copiable": True, "min_copy_amount": 200},
+        {"username": "Jaynemesis",      "risk_score": 5, "total_return_pct": 18.5, "copiers": 4100, "is_copiable": True, "min_copy_amount": 200},
+        {"username": "OmarAlmsaddi",    "risk_score": 4, "total_return_pct": 9.2,  "copiers": 5300, "is_copiable": True, "min_copy_amount": 200},
+        {"username": "OliviaTrades",    "risk_score": 3, "total_return_pct": 10.5, "copiers": 3800, "is_copiable": True, "min_copy_amount": 200},
     ]

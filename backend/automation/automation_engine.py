@@ -56,7 +56,8 @@ class AutomationEngine:
         "reduce_on_drawdown": "Reduce allocation after drawdown",
         "pause_copy_on_loss": "Pause copy relationship after repeated losses",
         "reduce_on_volatility": "Reduce exposure during high volatility",
-        "growth_swap": "Swap low-score trader for high-score discovery",
+            "growth_swap": "Swap low-score trader for high-score discovery",
+            "equal_rebalance": "Transition 1 trader → 3-way equal split",
     }
 
     def evaluate_rules(
@@ -326,6 +327,71 @@ class AutomationEngine:
                     "new_amount": new_amount,
                 }
 
+            elif action_type == "equal_rebalance":
+                current_trader = action.details.get("current_trader")
+                current_trader_id = action.details.get("current_trader_id")
+                new_traders = action.details.get("new_traders", [])
+                amount_per = action.details.get("amount_per_trader", 0)
+
+                if not current_trader or len(new_traders) < 2 or not current_trader_id:
+                    return {"error": True, "detail": "equal_rebalance missing required fields"}
+
+                results = []
+
+                # Step 1: Close the current mirror
+                logger.info(f"EqualRebalance step 1/4: closing mirror {current_trader_id} ({current_trader})")
+                close_resp = await etoro_client.execute_close_mirror(
+                    int(current_trader_id), is_simulation=is_sim
+                )
+                if close_resp and close_resp.get("error"):
+                    logger.error(f"EqualRebalance failed at step 1 (close): {close_resp.get('detail')}")
+                    return {"error": True, "step": "close", "detail": close_resp.get("detail")}
+                results.append({"step": "close", "username": current_trader, "response": close_resp})
+
+                # Step 2: Safety delay — wait 60s for Available Cash to settle
+                logger.info("EqualRebalance step 2/4: waiting 60s for cash to settle")
+                import asyncio
+                await asyncio.sleep(60)
+
+                # Mark old trader inactive in DB
+                db.query(CopiedTrader).filter(
+                    CopiedTrader.portfolio_id == portfolio.id,
+                    CopiedTrader.trader_username == current_trader,
+                ).update({
+                    "is_active": False,
+                    "is_paused": True,
+                    "paused_reason": "Rebalanced to 3-way equal split via equal_rebalance",
+                })
+                db.commit()
+
+                # Step 3: Start mirror for current trader at 33%
+                logger.info(f"EqualRebalance step 3/4: starting mirror for {current_trader} with ${amount_per:,.2f}")
+                start_current = await etoro_client.execute_start_mirror(
+                    current_trader, amount_per, is_simulation=is_sim
+                )
+                if start_current and start_current.get("error"):
+                    logger.warning(f"EqualRebalance warning restarting {current_trader}: {start_current.get('detail')}")
+                results.append({"step": "start_current", "username": current_trader, "response": start_current})
+
+                # Step 4: Start mirrors for 2 new traders at 33% each
+                for nt in new_traders:
+                    logger.info(f"EqualRebalance step 4/4: starting mirror for {nt} with ${amount_per:,.2f}")
+                    resp = await etoro_client.execute_start_mirror(
+                        nt, amount_per, is_simulation=is_sim
+                    )
+                    if resp and resp.get("error"):
+                        logger.warning(f"EqualRebalance warning starting {nt}: {resp.get('detail')}")
+                    results.append({"step": "start_new", "username": nt, "response": resp})
+
+                logger.info(f"EqualRebalance complete: {current_trader} + {new_traders}")
+                return {
+                    "action": "equal_rebalance",
+                    "current_trader": current_trader,
+                    "new_traders": new_traders,
+                    "amount_per_trader": amount_per,
+                    "results": results,
+                }
+
             else:
                 return {"error": True, "detail": f"Unknown action type: {action_type}"}
 
@@ -406,13 +472,14 @@ class AutomationEngine:
             "pause_copy_on_loss": self._eval_pause_copy,
             "reduce_on_volatility": self._eval_reduce_on_volatility,
             "growth_swap": self._eval_growth_swap,
+            "equal_rebalance": self._eval_equal_rebalance,
         }
         evaluator = evaluators.get(rule.rule_type)
         if not evaluator:
             logger.warning(f"Unknown rule type: {rule.rule_type}")
             return None
 
-        if rule.rule_type == "growth_swap":
+        if rule.rule_type in ("growth_swap", "equal_rebalance"):
             return evaluator(rule, portfolio, traders, scored_data)
         return evaluator(rule, portfolio, traders)
 
@@ -644,6 +711,62 @@ class AutomationEngine:
                 )
 
         return None
+
+    def _eval_equal_rebalance(
+        self,
+        rule: AutomationRule,
+        portfolio: Portfolio,
+        traders: List,
+        scored_data: Optional[dict] = None,
+    ) -> Optional[ProposedAction]:
+        """Evaluate if portfolio has 1 trader and 3+ qualified discovery candidates.
+
+        Triggers equal_rebalance action when:
+          - Exactly 1 active trader is in the portfolio
+          - At least 3 discovery candidates have been scored (in scored_data.top_swaps)
+
+        The action closes the current trader, waits 60s for cash settlement,
+        then starts copies for all 3 traders (current + 2 new) at 33.3% each.
+        """
+        if len(traders) != 1:
+            return None
+
+        if not scored_data:
+            return None
+
+        top_swaps = scored_data.get("top_swaps", [])
+        if len(top_swaps) < 3:
+            return None
+
+        current = traders[0]
+        total_value = portfolio.total_value or 10000
+        amount_per = round(total_value / 3, 2)
+
+        new_traders = [t["username"] for t in top_swaps[:2]]
+
+        return ProposedAction(
+            rule_id=rule.id,
+            rule_name=rule.name,
+            action_type="equal_rebalance",
+            description=(
+                f"Transition from 1 trader ({current.trader_username}) to 3-way equal split: "
+                f"keep {current.trader_username}, add {new_traders[0]} and "
+                f"{new_traders[1]} at ${amount_per:,.2f} each"
+            ),
+            details={
+                "current_trader": current.trader_username,
+                "current_trader_id": str(current.trader_id) if current.trader_id else None,
+                "new_traders": new_traders,
+                "amount_per_trader": amount_per,
+                "total_value": total_value,
+                "top_swap_scores": [
+                    {"username": t["username"], "score": t["score"]}
+                    for t in top_swaps[:2]
+                ],
+            },
+            severity="info",
+            requires_approval=rule.requires_approval,
+        )
 
     # ── Helpers ──────────────────────────────────
 

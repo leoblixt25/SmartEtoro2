@@ -101,6 +101,13 @@ async def lifespan(app: FastAPI):
                 f"Default portfolio created with ID: {default_portfolio.id}")
         else:
             logger.info(f"Found {portfolio_count} existing portfolio(s)")
+
+        # Log automation rule count
+        try:
+            rule_count = db.query(AutomationRule).count()
+            logger.info(f"Automation rules in database: {rule_count}")
+        except Exception as e:
+            logger.warning(f"Could not count automation rules: {e}")
     except Exception as e:
         logger.error(f"Error creating default portfolio: {e}")
     finally:
