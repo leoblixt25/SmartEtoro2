@@ -506,19 +506,24 @@ class TelegramBot:
         from backend.database.models import Portfolio
         from backend.services.market_data import get_current_holdings, fetch_market_news, discover_top_traders
         from backend.ai.gemini_scout import GeminiScout, TARGET_KEY
+from backend.ai.groq_scout import GroqScout
 
+        # Run AI Market Scout with Groq first, fallback to Gemini, then to mathematical fallback
         await self._reply(update, "🔍 Running AI Market Scout... (this may take 10-20s)")
 
-        scout = GeminiScout()
-        if not scout.enabled:
-            await self._reply(update, "❌ Gemini Scout is not configured. Set GEMINI_API_KEY.")
+        # Instantiate scouts
+        groq_scout = GroqScout()
+        gemini_scout = GeminiScout()
+        # Determine primary scout
+        primary_scout = groq_scout if groq_scout.enabled else (gemini_scout if gemini_scout.enabled else None)
+        if not primary_scout:
+            await self._reply(update, "❌ No AI scout is configured. Set GROQ_API_KEY or GEMINI_API_KEY.")
             return
 
         try:
             news = await fetch_market_news()
             candidates = await discover_top_traders()
 
-            # Trace data pipeline
             logger.info(f"Scout pipeline: {len(news)} news headlines, {len(candidates)} candidate traders")
             if news:
                 logger.info(f"Scout news sample: {news[0]['title'][:100]}")
@@ -535,7 +540,14 @@ class TelegramBot:
                     await self._reply(update, "No active copied traders found.")
                     return
 
-                result = await scout.evaluate(holdings, news, candidates)
+                # Evaluate risk alerts
+                result = await primary_scout.evaluate(holdings, news, candidates)
+
+                # Allocation – use the appropriate method based on the scout type
+                if isinstance(primary_scout, GroqScout):
+                    allocation = await primary_scout.evaluate_portfolio(holdings, news, candidates)
+                else:
+                    allocation = await primary_scout.evaluate_portfolio_with_gemini(holdings, news, candidates)
 
                 lines = []
                 if result["action_required"]:
@@ -549,8 +561,7 @@ class TelegramBot:
                 else:
                     lines.append(f"✅ <b>AI Scout: All Clear</b>\n\n{result['reasoning']}")
 
-                # 3-trader allocation recommendation
-                allocation = await scout.evaluate_portfolio_with_gemini(holdings, news, candidates)
+                # 3‑trader allocation recommendation
                 if allocation.get(TARGET_KEY):
                     from backend.services.rebalance_service import calculate_rebalance_orders
                     current_positions = [
@@ -580,10 +591,11 @@ class TelegramBot:
         except Exception as e:
             logger.error(f"/scout error: {e}")
             err_str = str(e)
-            if "Gemini" in err_str and ("model" in err_str or "API" in err_str):
-                await self._reply(update, "⚠️ AI Scout Error: Unable to reach Gemini API. Please check model configuration or try again later.")
+            if "Groq" in err_str or "Gemini" in err_str:
+                await self._reply(update, "⚠️ AI Scout Error: Unable to reach AI service. Please check API configuration.")
             else:
                 await self._reply(update, f"❌ Scout failed: {e}")
+
 
     async def _cmd_swap(self, update: Update, args: list[str]) -> None:
         """Execute a trader swap: stop copying old, start copying new.
