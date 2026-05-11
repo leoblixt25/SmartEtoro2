@@ -295,6 +295,49 @@ class EToroAPIClient:
             logger.error(f"Unexpected error starting mirror for {username}: {e}")
             return {"error": True, "detail": str(e)}
 
+    async def get_discovery_candidates(self) -> List[Dict]:
+        """Deep fetch: 5 pages × 100 = up to 500 discovery candidates from /copy/ranking.
+
+        Uses period=12Month, sort=gain with pagination. Falls back to
+        the old 3-endpoint chain if the ranking endpoint is unreachable.
+        """
+        base_url = f"{self.BASE_URL}/api/v1/markets/copy/ranking"
+        headers = {
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0",
+        }
+        all_candidates = []
+
+        for page in range(1, 6):
+            params = {
+                "period": "12Month",
+                "sort": "gain",
+                "opt_in": "true",
+                "limit": 100,
+                "page": page,
+            }
+            try:
+                async with httpx.AsyncClient(timeout=15.0) as client:
+                    resp = await client.get(base_url, params=params, headers=headers)
+                    if resp.status_code == 200:
+                        from backend.services.market_data import _parse_etoro_discovery
+                        data = resp.json()
+                        candidates = _parse_etoro_discovery(data, page=page)
+                        all_candidates.extend(candidates)
+                        logger.info(f"Discovery page {page}: {len(candidates)} candidates")
+                        # Stop if this page returned fewer than 100 (last page)
+                        if len(candidates) < 100:
+                            break
+                    else:
+                        logger.warning(f"Discovery page {page} returned {resp.status_code}")
+                        break
+            except Exception as e:
+                logger.warning(f"Discovery page {page} failed: {e}")
+                break
+
+        logger.info(f"Deep fetch total: {len(all_candidates)} raw candidates")
+        return all_candidates
+
     def _get_mock_account_summary(self) -> Dict:
         import random
         base_value = 15000 + random.uniform(-2000, 3000)

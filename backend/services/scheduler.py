@@ -186,6 +186,57 @@ class SchedulerService:
                                 logger.info(f"Auto-executed rule '{action.rule_name}': {action.description}")
                             else:
                                 logger.error(f"Auto-execution FAILED for rule '{action.rule_name}': {etoro_response.get('detail')}")
+
+                # ── Risk → Auto-Rebalance Bridge ──────────────────────────
+                # Check for insufficient_diversification violations and
+                # immediately trigger a seed-list rebalance without waiting
+                # for the 15-min risk check job cycle.
+                try:
+                    from backend.risk.risk_engine import RiskEngine
+                    risk_engine = RiskEngine()
+                    for portfolio in portfolios:
+                        from backend.database.models import RiskSettings
+                        settings = db.query(RiskSettings).filter(
+                            RiskSettings.portfolio_id == portfolio.id
+                        ).first()
+                        violations = risk_engine.check_all(db, portfolio, settings)
+                        low_div = [v for v in violations
+                                   if v.violation_type == "insufficient_diversification"]
+                        active_traders = [t for t in portfolio.copied_traders
+                                          if t.is_active and not t.is_paused]
+                        if low_div and len(active_traders) == 1:
+                            # Bridge: create an equal_rebalance action with the seed list
+                            logger.warning(
+                                f"LOW DIVERSIFICATION + 1 trader detected — "
+                                f"initiating seed-list rebalance for portfolio {portfolio.id}"
+                            )
+                            seed_action = engine._eval_equal_rebalance(
+                                None, portfolio, active_traders, scored_data=None
+                            )
+                            if seed_action:
+                                sync_service = EToroSyncService()
+                                etoro_response = await engine.execute_etoro_action(
+                                    sync_service.client, seed_action, portfolio, db
+                                )
+                                success = not (etoro_response or {}).get("error", False)
+                                engine.log_execution(
+                                    db, portfolio, seed_action,
+                                    approved_by="risk_bridge",
+                                    success=success,
+                                    etoro_response=etoro_response,
+                                )
+                                if success:
+                                    logger.info(
+                                        f"Risk → Rebalance bridge EXECUTED: "
+                                        f"{seed_action.description}"
+                                    )
+                                else:
+                                    logger.error(
+                                        f"Risk → Rebalance bridge FAILED: "
+                                        f"{etoro_response.get('detail')}"
+                                    )
+                except Exception as e:
+                    logger.error(f"Risk → Rebalance bridge error: {e}")
         except Exception as e:
             logger.error(f"Automation eval job failed: {e}")
 

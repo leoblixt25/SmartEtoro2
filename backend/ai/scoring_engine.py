@@ -26,13 +26,63 @@ logger = logging.getLogger(__name__)
 W_12M = 0.35
 W_6M = 0.25
 W_RISK = 0.15
-W_DRAWDOWN = 0.15
+W_MAX_DRAWDOWN = 0.15
 W_CONSISTENCY = 0.10
 
 # ── Penalties ──────────────────────────────────────────────────────
 PENALTY_RISK_HIGH = 30       # risk > 7
 PENALTY_DRAWDOWN_HIGH = 20   # max_drawdown > 25%
 GROWTH_FILTER_MIN_12M = 10.0 # if 12M return < 10%, score = 0
+
+
+def apply_constraints(candidates: list[dict]) -> list[dict]:
+    """Filter out candidates that fail constraint checks.
+
+    Disqualification rules (applied BEFORE scoring):
+      - max_drawdown > 15%  (excessive risk — eliminates before penalty)
+      - track_record_days < 365  (less than 1 year history)
+
+    Missing fields are treated as "pass" (no disqualification), except
+    max_drawdown which defaults to 0 (pass).
+    """
+    qualified = []
+    for c in candidates:
+        dd = float(c.get("max_drawdown", 0) or 0)
+        tr_days = int(c.get("track_record_days", 0) or 0)
+
+        reasons = []
+        if dd > 15:
+            reasons.append(f"max_drawdown {dd:.1f}% > 15%")
+        if tr_days > 0 and tr_days < 365:
+            reasons.append(f"track_record {tr_days}d < 365d")
+
+        if reasons:
+            logger.info(f"Disqualified {c.get('username', '?')}: {'; '.join(reasons)}")
+            continue
+
+        qualified.append(c)
+
+    rejected = len(candidates) - len(qualified)
+    if rejected:
+        logger.info(f"Constraints: {len(qualified)}/{len(candidates)} passed ({rejected} disqualified)")
+    return qualified
+
+
+def calculate_growth_efficiency_score(trader: dict) -> float:
+    """Compute Growth Efficiency = avg_monthly_return / max_drawdown, scaled 0-100.
+
+    Rewards traders who achieve strong monthly returns with lower drawdown
+    (risk-adjusted performance measure). A ratio of 0.5+ maps to 100.
+    """
+    avg_monthly = float(trader.get("avg_monthly_return", 0) or 0)
+    max_dd = float(trader.get("max_drawdown", 1) or 1)
+
+    if max_dd <= 0:
+        return 50.0  # neutral score when drawdown data is missing
+
+    ratio = avg_monthly / max_dd
+    score = min(100.0, max(0.0, ratio * 200))
+    return round(score, 1)
 
 
 def _get_return_12m(trader: dict) -> float:
@@ -120,6 +170,7 @@ def calculate_growth_score(trader: dict) -> dict:
                 "risk_score": risk,
                 "max_drawdown": dd,
                 "consistency": consistency,
+                "growth_efficiency": calculate_growth_efficiency_score(trader),
             },
             "penalties": [f"12M return {r12:.1f}% below 10% threshold — growth filter"],
             "growth_filter": True,
@@ -144,7 +195,7 @@ def calculate_growth_score(trader: dict) -> dict:
         r12_norm * W_12M +
         r6_norm * W_6M +
         risk_norm * W_RISK +
-        dd_norm * W_DRAWDOWN +
+        dd_norm * W_MAX_DRAWDOWN +
         cons_norm * W_CONSISTENCY
     )
 
@@ -168,6 +219,7 @@ def calculate_growth_score(trader: dict) -> dict:
             "risk_score": risk,
             "max_drawdown": dd,
             "consistency": round(consistency, 1),
+            "growth_efficiency": calculate_growth_efficiency_score(trader),
             "components": {
                 "r12_norm": round(r12_norm, 1),
                 "r6_norm": round(r6_norm, 1),
@@ -213,11 +265,13 @@ def scout_holdings(holdings: list[dict]) -> dict:
 def rank_candidates(holdings: list[dict], candidates: list[dict], top_n: int = 10) -> list[dict]:
     """Score discovery candidates and return best swaps by score delta.
 
-    The delta is measured against the weakest current holding.
-    If no holdings, delta = candidate score.
+    Applies constraint checks first (drawdown > 15% or track record
+    < 1 year disqualify). The delta is measured against the weakest
+    current holding. If no holdings, delta = candidate score.
 
     Returns top_n candidates (default 10) for expanded discovery.
     """
+    candidates = apply_constraints(candidates)
     holdings_result = scout_holdings(holdings)
     weakest_score = holdings_result["weakest"]["score"] if holdings_result["weakest"] else 0.0
 
@@ -293,6 +347,7 @@ def rank_combined(holdings: list[dict], candidates: list[dict], top_n: int = 3) 
     to the best discovery traders. This ensures the Equal-Weight Plan
     always shows actionable swaps rather than "keep everything".
     """
+    candidates = apply_constraints(candidates)
     discovery_scored = []
     for c in candidates:
         result = calculate_growth_score(c)

@@ -263,46 +263,32 @@ async def _fetch_news_fallback() -> List[Dict]:
 # ── 3. eToro Discovery (Top Traders) ─────────────────────────────
 
 
-DISCOVERY_ENDPOINTS = [
-    "https://public-api.etoro.com/api/v1/markets/copy/top",
-    "https://public-api.etoro.com/api/v1/markets/copy/ranking",
-    "https://public-api.etoro.com/api/v1/markets/popular",
-]
-
-
 async def discover_top_traders() -> List[Dict]:
-    """Fetch top-performing traders from eToro's public discovery API.
+    """Fetch top-performing traders using deep paginated discovery.
 
-    Tries multiple known endpoints in order (primary → 2026 ranking
-    → popular list). Falls back to static high-growth defaults if all
-    API calls return errors.
+    Uses EToroAPIClient.get_discovery_candidates() for a deep fetch
+    (5 pages × 100 raw candidates). Falls back to static high-growth
+    defaults if all API calls return errors.
 
-    Returns up to 15 trader candidates with username, risk, and return
-    data.
+    Returns up to 50 trader candidates with username, risk, return,
+    drawdown, and track-record data.
     """
-    headers = {
-        "Content-Type": "application/json",
-        "User-Agent": "Mozilla/5.0",
-    }
-
-    for url in DISCOVERY_ENDPOINTS:
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.get(url, headers=headers)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    logger.info(f"Scout: fetched top traders from {url}")
-                    return _parse_etoro_discovery(data)
-                logger.debug(f"Discovery endpoint {url} returned {resp.status_code}")
-        except Exception as e:
-            logger.debug(f"Discovery endpoint {url} failed: {e}")
-            continue
+    try:
+        from backend.services.etoro_service import EToroAPIClient
+        client = EToroAPIClient()
+        candidates = await client.get_discovery_candidates()
+        if candidates:
+            logger.info(f"Scout: fetched {len(candidates)} top traders via deep discovery")
+            return candidates
+        logger.warning("Deep discovery returned 0 candidates")
+    except Exception as e:
+        logger.warning(f"Deep discovery failed: {e}")
 
     logger.warning("All discovery endpoints failed — using static fallback list")
     return _default_trader_candidates()
 
 
-def _parse_etoro_discovery(data: dict) -> List[Dict]:
+def _parse_etoro_discovery(data: dict, page: int = 1) -> List[Dict]:
     """Extract relevant fields from eToro discovery API response.
 
     Applies mandatory filters:
@@ -310,6 +296,9 @@ def _parse_etoro_discovery(data: dict) -> List[Dict]:
       - min_copy_amount <= 200 (capital constraint)
     If a field is missing from the API, assumes copiable with a $200 minimum
     and logs a warning.
+
+    Optionally accepts a ``page`` parameter for logging which page the
+    candidates came from (used by deep-fetch pagination).
     """
     raw_list = []
     if isinstance(data, list):
@@ -318,7 +307,7 @@ def _parse_etoro_discovery(data: dict) -> List[Dict]:
         raw_list = data.get("data", data.get("results", data.get("PopularCopyTraders", [])))
 
     candidates = []
-    for entry in raw_list[:30]:  # fetch extra to account for filter
+    for entry in raw_list[:100]:  # fetch up to 100 per page
         if not isinstance(entry, dict):
             continue
 
@@ -349,29 +338,31 @@ def _parse_etoro_discovery(data: dict) -> List[Dict]:
             "copiers": entry.get("Copiers") or entry.get("copiers", 0),
             "is_copiable": is_copiable,
             "min_copy_amount": min_amount,
+            "max_drawdown": entry.get("MaxDrawdown") or entry.get("max_drawdown") or entry.get("MaxDrawdownRate") or 0,
+            "track_record_days": entry.get("TrackRecordDays") or entry.get("track_record_days") or entry.get("TrackRecord") or 0,
         })
 
-    logger.info(f"Discovery: {len(candidates)} qualified candidates after filter")
-    return candidates[:15]
+    logger.info(f"Discovery page {page}: {len(candidates)} qualified candidates after filter")
+    return candidates[:50]
 
 
 FALLBACK_TRADERS = [
-    "TrendTraderPro",
+    "JeppeKirkBonde",
+    "CPHequities",
     "Jaynemesis",
-    "WealthBuilderAI",
 ]
 
 
 def _default_trader_candidates() -> List[Dict]:
     """Static candidate list when eToro discovery API is unavailable.
 
-    Returns exactly the 3 hardcoded targets for the 3-way equal split.
-    These are real, verified eToro Popular Investors.
+    Returns exactly the 3 hardcoded seed targets for the 3-way equal split:
+    JeppeKirkBonde, CPHequities, Jaynemesis.
     """
     registry = {
-        "TrendTraderPro":  {"risk_score": 6, "total_return_pct": 21.0, "copiers": 3600},
-        "Jaynemesis":      {"risk_score": 5, "total_return_pct": 18.5, "copiers": 4100},
-        "WealthBuilderAI": {"risk_score": 3, "total_return_pct": 15.8, "copiers": 5500},
+        "JeppeKirkBonde": {"risk_score": 4, "total_return_pct": 18.2, "copiers": 2800},
+        "CPHequities":    {"risk_score": 5, "total_return_pct": 16.7, "copiers": 3200},
+        "Jaynemesis":     {"risk_score": 5, "total_return_pct": 18.5, "copiers": 4100},
     }
     return [
         {

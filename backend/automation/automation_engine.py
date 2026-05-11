@@ -341,10 +341,21 @@ class AutomationEngine:
                 current_trader = action.details.get("current_trader")
                 current_trader_id = action.details.get("current_trader_id")
                 new_traders = action.details.get("new_traders", [])
+                replacement_traders = action.details.get("replacement_traders")
                 amount_per = action.details.get("amount_per_trader", 0)
 
-                if not current_trader or len(new_traders) < 2 or not current_trader_id:
+                if not current_trader or not current_trader_id:
                     return {"error": True, "detail": "equal_rebalance missing required fields"}
+
+                # Determine target traders:
+                #   replacement_traders (risk path) → use all 3 from seed list
+                #   new_traders (scout path)         → keep current + 2 new
+                if replacement_traders:
+                    all_targets = replacement_traders
+                else:
+                    if len(new_traders) < 2:
+                        return {"error": True, "detail": "equal_rebalance missing new_traders"}
+                    all_targets = [current_trader] + new_traders
 
                 results = []
 
@@ -374,30 +385,22 @@ class AutomationEngine:
                 })
                 db.commit()
 
-                # Step 3: Start mirror for current trader at 33%
-                logger.info(f"EqualRebalance step 3/4: starting mirror for {current_trader} with ${amount_per:,.2f}")
-                start_current = await etoro_client.execute_start_mirror(
-                    current_trader, amount_per, is_simulation=is_sim
-                )
-                if start_current and start_current.get("error"):
-                    logger.warning(f"EqualRebalance warning restarting {current_trader}: {start_current.get('detail')}")
-                results.append({"step": "start_current", "username": current_trader, "response": start_current})
-
-                # Step 4: Start mirrors for 2 new traders at 33% each
-                for nt in new_traders:
-                    logger.info(f"EqualRebalance step 4/4: starting mirror for {nt} with ${amount_per:,.2f}")
+                # Step 3+4: Start ALL target traders at 33.3% each
+                for target in all_targets:
+                    logger.info(f"EqualRebalance step 3/4: starting mirror for {target} with ${amount_per:,.2f}")
                     resp = await etoro_client.execute_start_mirror(
-                        nt, amount_per, is_simulation=is_sim
+                        target, amount_per, is_simulation=is_sim
                     )
                     if resp and resp.get("error"):
-                        logger.warning(f"EqualRebalance warning starting {nt}: {resp.get('detail')}")
-                    results.append({"step": "start_new", "username": nt, "response": resp})
+                        logger.warning(f"EqualRebalance warning starting {target}: {resp.get('detail')}")
+                    results.append({"step": "start", "username": target, "response": resp})
 
-                logger.info(f"EqualRebalance complete: {current_trader} + {new_traders}")
+                logger.info(f"EqualRebalance complete: targets={all_targets}")
                 return {
                     "action": "equal_rebalance",
                     "current_trader": current_trader,
                     "new_traders": new_traders,
+                    "replacement_traders": replacement_traders,
                     "amount_per_trader": amount_per,
                     "results": results,
                 }
@@ -703,59 +706,88 @@ class AutomationEngine:
 
         return None
 
+    REBALANCE_SEED_LIST = ["JeppeKirkBonde", "CPHequities", "Jaynemesis"]
+
     def _eval_equal_rebalance(
         self,
-        rule: AutomationRule,
+        rule: Optional[AutomationRule],
         portfolio: Portfolio,
         traders: List,
         scored_data: Optional[dict] = None,
     ) -> Optional[ProposedAction]:
-        """Evaluate if portfolio has 1 trader and 3+ qualified discovery candidates.
+        """Evaluate if portfolio has 1 trader and 3+ qualified candidates.
 
-        Triggers equal_rebalance action when:
-          - Exactly 1 active trader is in the portfolio
-          - At least 3 discovery candidates have been scored (in scored_data.top_swaps)
+        Two trigger paths:
+          1. Scout-triggered:  scored_data has 3+ top_swaps → use discovery picks
+          2. Risk-triggered:   scored_data is None/missing → use REBALANCE_SEED_LIST
 
-        The action closes the current trader, waits 60s for cash settlement,
-        then starts copies for all 3 traders (current + 2 new) at 33.3% each.
+        Both paths close the current trader, wait 60s for cash settlement,
+        then start all 3 traders at 33.3% each (risk path replaces ALL three
+        with the seed list; scout path keeps current + 2 new).
         """
         if len(traders) != 1:
-            return None
-
-        if not scored_data:
-            return None
-
-        top_swaps = scored_data.get("top_swaps", [])
-        if len(top_swaps) < 3:
             return None
 
         current = traders[0]
         total_value = portfolio.total_value or 10000
         amount_per = round(total_value / 3, 2)
 
-        new_traders = [t["username"] for t in top_swaps[:2]]
+        top_swaps = (scored_data or {}).get("top_swaps", []) if scored_data else []
 
+        # rule can be None (called from risk bridge) — use safe defaults
+        rule_id = rule.id if rule else 0
+        rule_name = rule.name if rule else "equal_rebalance"
+
+        if len(top_swaps) >= 3:
+            # Path 1: Scout-triggered — keep current + 2 new from discovery
+            new_traders = [t["username"] for t in top_swaps[:2]]
+            return ProposedAction(
+                rule_id=rule_id,
+                rule_name=rule_name,
+                action_type="equal_rebalance",
+                description=(
+                    f"Transition from 1 trader ({current.trader_username}) to 3-way equal split: "
+                    f"keep {current.trader_username}, add {new_traders[0]} and "
+                    f"{new_traders[1]} at ${amount_per:,.2f} each"
+                ),
+                details={
+                    "current_trader": current.trader_username,
+                    "current_trader_id": str(current.trader_id) if current.trader_id else None,
+                    "new_traders": new_traders,
+                    "amount_per_trader": amount_per,
+                    "total_value": total_value,
+                    "top_swap_scores": [
+                        {"username": t["username"], "score": t["score"]}
+                        for t in top_swaps[:2]
+                    ],
+                },
+                severity="info",
+                requires_approval=False,
+            )
+
+        # Path 2: Risk-triggered — replace ALL 3 from REBALANCE_SEED_LIST
+        seed_list = self.REBALANCE_SEED_LIST[:3]
+        logger.info(
+            f"Risk-triggered rebalance: closing {current.trader_username}, "
+            f"splitting into {seed_list} at ${amount_per:,.2f} each"
+        )
         return ProposedAction(
-            rule_id=rule.id,
-            rule_name=rule.name,
+            rule_id=rule_id,
+            rule_name=rule_name,
             action_type="equal_rebalance",
             description=(
-                f"Transition from 1 trader ({current.trader_username}) to 3-way equal split: "
-                f"keep {current.trader_username}, add {new_traders[0]} and "
-                f"{new_traders[1]} at ${amount_per:,.2f} each"
+                f"Risk-triggered rebalance: close {current.trader_username}, "
+                f"split into {', '.join(seed_list)} at ${amount_per:,.2f} each"
             ),
             details={
                 "current_trader": current.trader_username,
                 "current_trader_id": str(current.trader_id) if current.trader_id else None,
-                "new_traders": new_traders,
                 "amount_per_trader": amount_per,
                 "total_value": total_value,
-                "top_swap_scores": [
-                    {"username": t["username"], "score": t["score"]}
-                    for t in top_swaps[:2]
-                ],
+                "replacement_traders": seed_list,
+                "trigger": "risk_insufficient_diversification",
             },
-            severity="info",
+            severity="warning",
             requires_approval=False,
         )
 
