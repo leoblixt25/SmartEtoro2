@@ -506,7 +506,7 @@ class TelegramBot:
         from backend.database.models import Portfolio
         from backend.services.market_data import get_current_holdings, fetch_market_news, discover_top_traders
         from backend.ai.gemini_scout import GeminiScout, TARGET_KEY
-from backend.ai.groq_scout import GroqScout
+        from backend.ai.groq_scout import GroqScout
 
         # Run AI Market Scout with Groq first, fallback to Gemini, then to mathematical fallback
         await self._reply(update, "🔍 Running AI Market Scout... (this may take 10-20s)")
