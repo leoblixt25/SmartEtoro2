@@ -122,14 +122,15 @@ class EToroAPIClient:
         logger.error(f"eToro API failed after 3 attempts: {last_error}")
         return None
 
-    async def get_sub_portfolios(self) -> List[Dict]:
-        """Fetch all sub-portfolios (agent portfolios) for the authenticated user.
+    async def get_agent_portfolios(self) -> List[Dict]:
+        """Fetch all agent-portfolios for the authenticated user.
 
-        Each sub-portfolio item contains:
-          - subPortfolioId (UUID) — used to delete/stop the copy mirror
-          - mirrorId (integer)    — the numeric mirror ID used elsewhere
+        Each agent-portfolio item contains:
+          - agentPortfolioId (UUID) — used to delete/stop the copy mirror
+          - mirrorId (integer)      — the numeric mirror ID used elsewhere
 
-        eToro API: GET /api/v1/sub-portfolios
+        eToro API: GET /api/v1/agent-portfolios
+        Response: { "agentPortfolios": [{ agentPortfolioId, mirrorId, ... }] }
         """
         if not self.enabled:
             return []
@@ -137,32 +138,33 @@ class EToroAPIClient:
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.get(
-                    f"{self.BASE_URL}/api/v1/sub-portfolios",
+                    f"{self.BASE_URL}/api/v1/agent-portfolios",
                     headers=self._get_headers(),
                 )
                 response.raise_for_status()
                 data = response.json()
-                items = data if isinstance(data, list) else data.get("items", data.get("data", []))
-                logger.info(f"Fetched {len(items)} sub-portfolios")
+                items = data.get("agentPortfolios", []) if isinstance(data, dict) else data
+                logger.info(f"Fetched {len(items)} agent-portfolios")
                 return items
         except httpx.HTTPStatusError as e:
-            logger.error(f"eToro sub-portfolios error {e.response.status_code}: {e.response.text}")
+            logger.warning(f"eToro agent-portfolios error {e.response.status_code}: {e.response.text}")
             return []
         except httpx.RequestError as e:
-            logger.error(f"Network error fetching sub-portfolios: {e}")
+            logger.warning(f"Network error fetching agent-portfolios: {e}")
             return []
         except Exception as e:
-            logger.error(f"Unexpected error fetching sub-portfolios: {e}")
+            logger.warning(f"Unexpected error fetching agent-portfolios: {e}")
             return []
 
     async def execute_close_mirror(self, mirror_id: int, is_simulation: bool = True) -> Optional[Dict]:
         """Close a copy-trade mirror position on eToro.
 
-        Resolves mirror_id → subPortfolioId (UUID) via GET /sub-portfolios,
-        then deletes the sub-portfolio via DELETE /sub-portfolios/{uuid}.
+        Resolves mirror_id → agentPortfolioId (UUID) via GET /agent-portfolios,
+        then deletes via DELETE /agent-portfolios/{uuid}.
 
-        Per the eToro Public API spec, agent portfolios (sub-portfolios) are
-        the documented way to manage copy mirrors programmatically.
+        The agent-portfolios API is the only documented way to stop a copy
+        mirror. Requires the API key (user token) to have the agent-portfolios
+        scope — regenerate keys at eToro Settings > Trading if you get 403.
         """
         if not self.enabled:
             return None
@@ -170,34 +172,38 @@ class EToroAPIClient:
         if not self._validate_mirror_id(mirror_id, "close_mirror"):
             return {"error": True, "detail": f"Invalid mirror_id={mirror_id} — cannot close"}
 
-        # Step 1: resolve mirror_id → subPortfolioId (UUID)
-        sub_portfolios = await self.get_sub_portfolios()
+        # Step 1: resolve mirror_id → agentPortfolioId (UUID)
+        agent_portfolios = await self.get_agent_portfolios()
         target = None
-        for sp in sub_portfolios:
-            sp_mirror_id = sp.get("mirrorId")
-            if sp_mirror_id is not None and int(sp_mirror_id) == mirror_id:
-                target = sp
+        for ap in agent_portfolios:
+            ap_mirror_id = ap.get("mirrorId")
+            if ap_mirror_id is not None and int(ap_mirror_id) == mirror_id:
+                target = ap
                 break
 
         if not target:
-            logger.error(f"Sub-portfolio not found for mirror_id={mirror_id}")
-            return {"error": True, "detail": f"Sub-portfolio not found for mirror_id={mirror_id}"}
+            logger.error(
+                f"Agent-portfolio not found for mirror_id={mirror_id}. "
+                "If GET /agent-portfolios returned 403, regenerate API keys "
+                "at eToro Settings > Trading with the agent-portfolios scope."
+            )
+            return {"error": True, "detail": f"agent-portfolios API returned empty or 403 for mirror_id={mirror_id}"}
 
-        sub_portfolio_id = target.get("subPortfolioId")
-        if not sub_portfolio_id:
-            logger.error(f"subPortfolioId is empty for mirror_id={mirror_id}")
-            return {"error": True, "detail": f"subPortfolioId empty for mirror_id={mirror_id}"}
+        agent_portfolio_id = target.get("agentPortfolioId")
+        if not agent_portfolio_id:
+            logger.error(f"agentPortfolioId is empty for mirror_id={mirror_id}")
+            return {"error": True, "detail": f"agentPortfolioId empty for mirror_id={mirror_id}"}
 
-        # Step 2: delete the sub-portfolio (stops the copy mirror)
+        # Step 2: delete the agent-portfolio (stops the copy mirror)
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.delete(
-                    f"{self.BASE_URL}/api/v1/sub-portfolios/{sub_portfolio_id}",
+                    f"{self.BASE_URL}/api/v1/agent-portfolios/{agent_portfolio_id}",
                     headers=self._get_headers(),
                 )
                 response.raise_for_status()
                 result = response.json() if response.text else {}
-                logger.info(f"Closed mirror {mirror_id} via sub-portfolio {sub_portfolio_id}: {result}")
+                logger.info(f"Closed mirror {mirror_id} via agent-portfolio {agent_portfolio_id}: {result}")
                 return result
         except httpx.HTTPStatusError as e:
             logger.error(f"eToro close-mirror error {e.response.status_code}: {e.response.text}")
