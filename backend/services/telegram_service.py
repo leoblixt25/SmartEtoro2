@@ -99,6 +99,7 @@ class TelegramBot:
         BotCommand("pause", "Emergency stop all automation"),
         BotCommand("scout", "Run AI Market Scout now"),
         BotCommand("swap", "Execute a trader swap from Scout recommendation"),
+        BotCommand("db_check", "Verify database persistence"),
     ]
 
     MAIN_KEYBOARD = [
@@ -186,6 +187,7 @@ class TelegramBot:
             "/pause": self._cmd_pause,
             "/scout": self._cmd_scout,
             "/swap": self._cmd_swap,
+            "/db_check": self._cmd_db_check,
         }
         handler = handlers.get(command)
         if handler:
@@ -215,6 +217,60 @@ class TelegramBot:
 
     async def _cmd_ping(self, update: Update, args: list[str]) -> None:
         await self._reply(update, "✅ CopyVault Bot is active!")
+
+    async def _cmd_db_check(self, update: Update, args: list[str]) -> None:
+        """Diagnostic: verify database persistence."""
+        from backend.database.connection import DATABASE_URL
+        from backend.database.connection import engine
+        from sqlalchemy import text
+        import os
+
+        db_type = "PostgreSQL" if DATABASE_URL.startswith("postgresql") else "SQLite"
+        lines = [f"<b>🔍 Database Diagnostics</b>\n"]
+        lines.append(f"<b>Type:</b> {db_type}")
+
+        # Rule count
+        try:
+            from backend.database.connection import SessionLocal
+            db = SessionLocal()
+            from backend.database.models import AutomationRule, AppSetting
+            rule_count = db.query(AutomationRule).count()
+            lines.append(f"<b>Rules in DB:</b> {rule_count}")
+
+            # Test write/read
+            test_key = "_db_check_test"
+            existing = db.query(AppSetting).filter(AppSetting.key == test_key).first()
+            if existing:
+                db.delete(existing)
+                db.commit()
+
+            test = AppSetting(key=test_key, value="ok")
+            db.add(test)
+            db.commit()
+
+            re_read = db.query(AppSetting).filter(AppSetting.key == test_key).first()
+            if re_read and re_read.value == "ok":
+                lines.append(f"<b>Write/Read:</b> ✅ passed")
+            else:
+                lines.append(f"<b>Write/Read:</b> ❌ failed — value mismatch")
+
+            db.delete(re_read)
+            db.commit()
+        except Exception as e:
+            lines.append(f"<b>Write/Read:</b> ❌ FAILED — {e}")
+        finally:
+            db.close()
+
+        # Connection check
+        try:
+            with engine.connect() as conn:
+                result = conn.execute(text("SELECT 1"))
+                result.scalar()
+            lines.append(f"<b>Connection:</b> ✅ OK")
+        except Exception as e:
+            lines.append(f"<b>Connection:</b> ❌ FAILED — {e}")
+
+        await self._reply(update, "\n".join(lines), parse_mode="HTML")
 
     async def _cmd_status(self, update: Update, args: list[str]) -> None:
         from backend.database.connection import db_session
