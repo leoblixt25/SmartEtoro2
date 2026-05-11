@@ -185,13 +185,19 @@ class AutomationEngine:
                 ).all()
                 results = []
                 for m in mirrors:
+                    mirror_id = int(m.trader_id) if m.trader_id and m.trader_id.isdigit() and int(m.trader_id) > 0 else None
+                    if mirror_id is None:
+                        logger.warning(f"Skipping mirror for {m.trader_username}: invalid trader_id={m.trader_id}. Run /sync first.")
+                        results.append({"mirror_id": m.trader_id, "skipped": True,
+                                        "detail": "Invalid mirror ID — run /sync first"})
+                        continue
                     resp = await etoro_client.execute_close_mirror(
-                        int(m.trader_id), is_simulation=is_sim
+                        mirror_id, is_simulation=is_sim
                     )
                     results.append({"mirror_id": m.trader_id, "response": resp})
                     if resp and resp.get("error"):
                         logger.error(f"Failed to close mirror {m.trader_id}: {resp.get('detail')}")
-                if any(r.get("response", {}).get("error") for r in results):
+                if any(r.get("response", {}).get("error") for r in results if "response" in r):
                     errors = [r for r in results if r.get("response", {}).get("error")]
                     return {"error": True, "action": "take_profit", "results": results,
                             "detail": f"{len(errors)}/{len(results)} mirrors failed",
