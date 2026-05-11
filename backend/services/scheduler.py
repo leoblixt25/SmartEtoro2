@@ -250,10 +250,13 @@ class SchedulerService:
         from backend.database.models import Portfolio, Alert, AlertType
         from backend.services.market_data import get_current_holdings, fetch_market_news, discover_top_traders
         from backend.ai.gemini_scout import GeminiScout, TARGET_KEY
+        from backend.ai.groq_scout import GroqScout
 
-        scout = GeminiScout()
-        if not scout.enabled:
-            logger.info("Market scout job skipped — Gemini not configured")
+        groq_scout = GroqScout()
+        gemini_scout = GeminiScout()
+        scout = groq_scout if groq_scout.enabled else (gemini_scout if gemini_scout.enabled else None)
+        if not scout:
+            logger.info("Market scout job skipped — no AI scout configured")
             return
 
         try:
@@ -286,7 +289,7 @@ class SchedulerService:
                         severity = "info"
 
                     # 3-trader allocation recommendation
-                    allocation = await scout.evaluate_portfolio_with_gemini(holdings, news, candidates)
+                    allocation = await scout.evaluate_portfolio(holdings, news, candidates)
                     if allocation.get(TARGET_KEY):
                         from backend.services.rebalance_service import calculate_rebalance_orders
                         current_positions = [

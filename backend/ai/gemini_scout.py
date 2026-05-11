@@ -105,15 +105,15 @@ class GeminiScout:
         else:
             genai.configure(api_key=key)
             self._model = genai.GenerativeModel(
-                model_name="gemini-2.0-flash",
+                model_name="gemini-1.5-flash",
                 system_instruction=SYSTEM_PROMPT,
             )
             self._allocation_model = genai.GenerativeModel(
-                model_name="gemini-2.0-flash",
+                model_name="gemini-1.5-flash",
                 system_instruction=ALLOCATION_PROMPT,
             )
             self.enabled = True
-            logger.info("Gemini scout initialized with gemini-2.0-flash")
+            logger.info("Gemini scout initialized with gemini-1.5-flash")
 
     async def evaluate(
         self,
@@ -161,6 +161,15 @@ class GeminiScout:
                 "recommended_swap": None,
             }
 
+    async def evaluate_portfolio(
+        self,
+        holdings_data: list[dict],
+        news_data: list[dict],
+        top_traders: list[dict],
+    ) -> dict:
+        """Alias for evaluate_portfolio_with_gemini — matches GroqScout interface."""
+        return await self.evaluate_portfolio_with_gemini(holdings_data, news_data, top_traders)
+
     async def evaluate_portfolio_with_gemini(
         self,
         holdings_data: list[dict],
@@ -173,7 +182,7 @@ class GeminiScout:
 
         if not self._allocation_model:
             self._allocation_model = genai.GenerativeModel(
-                model_name="gemini-2.0-flash",
+                model_name="gemini-1.5-flash",
                 system_instruction=ALLOCATION_PROMPT,
             )
 
