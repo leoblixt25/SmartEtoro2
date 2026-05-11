@@ -20,7 +20,8 @@ TARGET_KEY = "target_portfolio"
 try:
     from groq import Groq
     GROQ_AVAILABLE = True
-except ImportError:
+except ImportError as e:
+    logger.error(f"Failed to import groq: {e}")
     GROQ_AVAILABLE = False
 
 # Re‑use prompts from Gemini Scout for consistency

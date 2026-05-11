@@ -17,11 +17,12 @@ SessionLocal = get_session_factory(engine)
 def init_db():
     """Initialize database tables on startup."""
     create_tables(engine)
-    # Enable WAL mode for concurrent reads+writes without locking
-    from sqlalchemy import text
-    with engine.connect() as conn:
-        conn.execute(text("PRAGMA journal_mode=WAL;"))
-        conn.commit()
+    # Enable WAL mode for SQLite (PostgreSQL handles this natively)
+    if DATABASE_URL.startswith("sqlite"):
+        from sqlalchemy import text
+        with engine.connect() as conn:
+            conn.execute(text("PRAGMA journal_mode=WAL;"))
+            conn.commit()
 
 
 def get_db() -> Generator[Session, None, None]:

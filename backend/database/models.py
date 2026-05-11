@@ -1,6 +1,6 @@
 """
-SQLite database models using SQLAlchemy ORM.
-Structured for easy migration to PostgreSQL.
+SQLite / PostgreSQL database models using SQLAlchemy ORM.
+Set DATABASE_URL to a PostgreSQL connection string for production.
 """
 
 from datetime import datetime
@@ -257,7 +257,7 @@ class RiskSettings(Base):
 # ──────────────────────────────────────────────
 
 def get_engine(database_url: str = "sqlite:///./etoro_platform.db"):
-    """Create SQLAlchemy engine. Swap URL for PostgreSQL in production."""
+    """Create SQLAlchemy engine. Use DATABASE_URL for PostgreSQL in production."""
     connect_args = {"check_same_thread": False, "timeout": 15} if database_url.startswith(
         "sqlite") else {}
     return create_engine(database_url, connect_args=connect_args)

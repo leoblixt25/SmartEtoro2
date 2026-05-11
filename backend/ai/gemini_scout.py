@@ -23,7 +23,8 @@ TARGET_KEY = "target_portfolio"
 try:
     import google.generativeai as genai
     GEMINI_AVAILABLE = True
-except ImportError:
+except ImportError as e:
+    logger.error(f"Failed to import google.generativeai: {e}")
     GEMINI_AVAILABLE = False
 
 
