@@ -135,16 +135,31 @@ class SchedulerService:
                 # Fetch discovery candidates for growth_swap evaluation
                 scored_data = None
                 try:
-                    from backend.services.market_data import discover_top_traders
+                    from backend.services.market_data import discover_top_traders, _default_trader_candidates
                     from backend.ai.scoring_engine import generate_scout_report
                     from backend.services.market_data import get_current_holdings
                     discovery = await discover_top_traders()
+                    # Force fallback if API returned fewer than 3 candidates
+                    if not discovery or len(discovery) < 3:
+                        logger.warning("Discovery returned < 3 candidates — forcing static fallback")
+                        discovery = _default_trader_candidates()
                     if discovery and portfolios:
                         holdings = get_current_holdings(db, portfolios[0].id)
                         if holdings:
                             scored_data = generate_scout_report(holdings, discovery)
                 except Exception as e:
-                    logger.info(f"Scout data unavailable for rule eval (non-fatal): {e}")
+                    logger.info(f"Scout data unavailable for rule eval, using fallback (non-fatal): {e}")
+                    try:
+                        from backend.services.market_data import _default_trader_candidates
+                        from backend.ai.scoring_engine import generate_scout_report
+                        from backend.services.market_data import get_current_holdings
+                        discovery = _default_trader_candidates()
+                        if discovery and portfolios:
+                            holdings = get_current_holdings(db, portfolios[0].id)
+                            if holdings:
+                                scored_data = generate_scout_report(holdings, discovery)
+                    except Exception:
+                        pass
 
                 for portfolio in portfolios:
                     traders = [t for t in portfolio.copied_traders if t.is_active and not t.is_paused]

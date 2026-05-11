@@ -106,6 +106,10 @@ async def lifespan(app: FastAPI):
         try:
             rule_count = db.query(AutomationRule).count()
             logger.info(f"Automation rules in database: {rule_count}")
+            # Reset cooldowns so rules can fire immediately after deploy
+            cleared = automation_engine.reset_cooldowns(db, 1)
+            if cleared:
+                logger.info(f"Cooldowns reset for {cleared} rules — rebalance can fire immediately")
         except Exception as e:
             logger.warning(f"Could not count automation rules: {e}")
     except Exception as e:

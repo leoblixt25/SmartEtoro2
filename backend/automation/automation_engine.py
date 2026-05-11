@@ -759,6 +759,23 @@ class AutomationEngine:
             requires_approval=False,
         )
 
+    def reset_cooldowns(self, db: Session, portfolio_id: int) -> int:
+        """Clear last_triggered for all rules in a portfolio — 0 cooldown."""
+        rules = (
+            db.query(AutomationRule)
+            .filter(AutomationRule.portfolio_id == portfolio_id)
+            .all()
+        )
+        count = 0
+        for rule in rules:
+            if rule.last_triggered is not None:
+                rule.last_triggered = None
+                count += 1
+        if count:
+            db.commit()
+            logger.info(f"Reset cooldown for {count} rules in portfolio {portfolio_id}")
+        return count
+
     # ── Helpers ──────────────────────────────────
 
     def _in_cooldown(self, rule: AutomationRule) -> bool:
