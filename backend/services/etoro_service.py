@@ -122,49 +122,15 @@ class EToroAPIClient:
         logger.error(f"eToro API failed after 3 attempts: {last_error}")
         return None
 
-    async def get_agent_portfolios(self) -> List[Dict]:
-        """Fetch all agent-portfolios for the authenticated user.
-
-        Each agent-portfolio item contains:
-          - agentPortfolioId (UUID) — used to delete/stop the copy mirror
-          - mirrorId (integer)      — the numeric mirror ID used elsewhere
-
-        eToro API: GET /api/v1/agent-portfolios
-        Response: { "agentPortfolios": [{ agentPortfolioId, mirrorId, ... }] }
-        """
-        if not self.enabled:
-            return []
-
-        try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(
-                    f"{self.BASE_URL}/api/v1/agent-portfolios",
-                    headers=self._get_headers(),
-                )
-                response.raise_for_status()
-                data = response.json()
-                items = data.get("agentPortfolios", []) if isinstance(data, dict) else data
-                logger.info(f"Fetched {len(items)} agent-portfolios")
-                return items
-        except httpx.HTTPStatusError as e:
-            logger.warning(f"eToro agent-portfolios error {e.response.status_code}: {e.response.text}")
-            return []
-        except httpx.RequestError as e:
-            logger.warning(f"Network error fetching agent-portfolios: {e}")
-            return []
-        except Exception as e:
-            logger.warning(f"Unexpected error fetching agent-portfolios: {e}")
-            return []
-
     async def execute_close_mirror(self, mirror_id: int, is_simulation: bool = True) -> Optional[Dict]:
-        """Close a copy-trade mirror position on eToro.
+        """Close a copy-trade mirror position on eToro using the retail API.
 
-        Resolves mirror_id → agentPortfolioId (UUID) via GET /agent-portfolios,
-        then deletes via DELETE /agent-portfolios/{uuid}.
+        Uses DELETE /api/v1/trading/mirrors/{env}/{mirrorId} — the standard
+        retail endpoint for stopping a copy relationship.
 
-        The agent-portfolios API is the only documented way to stop a copy
-        mirror. Requires the API key (user token) to have the agent-portfolios
-        scope — regenerate keys at eToro Settings > Trading if you get 403.
+        If the endpoint returns 404 RouteNotFound, mirror closing is not
+        available on this API plan. The method will log the reason and return
+        an error without crashing.
         """
         if not self.enabled:
             return None
@@ -172,48 +138,48 @@ class EToroAPIClient:
         if not self._validate_mirror_id(mirror_id, "close_mirror"):
             return {"error": True, "detail": f"Invalid mirror_id={mirror_id} — cannot close"}
 
-        # Step 1: resolve mirror_id → agentPortfolioId (UUID)
-        agent_portfolios = await self.get_agent_portfolios()
-        target = None
-        for ap in agent_portfolios:
-            ap_mirror_id = ap.get("mirrorId")
-            if ap_mirror_id is not None and int(ap_mirror_id) == mirror_id:
-                target = ap
-                break
+        env = self._resolve_env(is_simulation)
+        url = f"{self.BASE_URL}/api/v1/trading/mirrors/{env}/{mirror_id}"
+        logger.info(f"Closing mirror via DELETE {url}")
 
-        if not target:
-            logger.error(
-                f"Agent-portfolio not found for mirror_id={mirror_id}. "
-                "If GET /agent-portfolios returned 403, regenerate API keys "
-                "at eToro Settings > Trading with the agent-portfolios scope."
-            )
-            return {"error": True, "detail": f"agent-portfolios API returned empty or 403 for mirror_id={mirror_id}"}
-
-        agent_portfolio_id = target.get("agentPortfolioId")
-        if not agent_portfolio_id:
-            logger.error(f"agentPortfolioId is empty for mirror_id={mirror_id}")
-            return {"error": True, "detail": f"agentPortfolioId empty for mirror_id={mirror_id}"}
-
-        # Step 2: delete the agent-portfolio (stops the copy mirror)
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.delete(
-                    f"{self.BASE_URL}/api/v1/agent-portfolios/{agent_portfolio_id}",
-                    headers=self._get_headers(),
-                )
+                response = await client.delete(url, headers=self._get_headers())
+                if response.status_code == 404:
+                    detail = (
+                        f"DELETE {url} returned 404 RouteNotFound — mirror closing "
+                        "not available on retail/demo API plan. This feature requires "
+                        "eToro Agent API access which is not available."
+                    )
+                    logger.error(detail)
+                    return {
+                        "error": True,
+                        "status": 404,
+                        "detail": detail,
+                        "endpoint": url,
+                    }
                 response.raise_for_status()
                 result = response.json() if response.text else {}
-                logger.info(f"Closed mirror {mirror_id} via agent-portfolio {agent_portfolio_id}: {result}")
+                logger.info(f"Closed mirror {mirror_id} ({env}): {result}")
                 return result
         except httpx.HTTPStatusError as e:
-            logger.error(f"eToro close-mirror error {e.response.status_code}: {e.response.text}")
-            return {"error": True, "status": e.response.status_code, "detail": e.response.text}
+            resp_body = e.response.text[:500]
+            logger.error(
+                f"eToro close-mirror error {e.response.status_code} "
+                f"on {url}: {resp_body}"
+            )
+            return {
+                "error": True,
+                "status": e.response.status_code,
+                "detail": f"HTTP {e.response.status_code} closing mirror {mirror_id}: {resp_body}",
+                "endpoint": url,
+            }
         except httpx.RequestError as e:
-            logger.error(f"Network error closing mirror {mirror_id}: {e}")
-            return {"error": True, "detail": str(e)}
+            logger.error(f"Network error closing mirror {mirror_id} via {url}: {e}")
+            return {"error": True, "detail": str(e), "endpoint": url}
         except Exception as e:
             logger.error(f"Unexpected error closing mirror {mirror_id}: {e}")
-            return {"error": True, "detail": str(e)}
+            return {"error": True, "detail": str(e), "endpoint": url}
 
     async def execute_change_mirror_amount(self, mirror_id: int, new_amount: float, is_simulation: bool = True) -> Optional[Dict]:
         """Change the allocated amount of a copy-trade mirror on eToro.
@@ -316,13 +282,15 @@ class EToroAPIClient:
             return {"error": True, "detail": str(e)}
 
     async def execute_start_mirror(self, username: str, amount: float, is_simulation: bool = True) -> Dict:
-        """Start copying a trader on eToro.
+        """Start copying a trader on eToro via the retail API.
 
-        eToro API: POST /api/v1/trading/mirrors
-        Body: {"username": "<trader>", "amount": <usd>, "isDemo": <bool>}
+        Tries multiple endpoint formats since the retail/demo API may not
+        support programmatic mirror creation:
+          1. POST /api/v1/trading/mirrors/{env}  (original, may 404)
+          2. POST /api/v1/trading/mirrors          (without env segment)
 
-        Falls back to a guided message in live mode if the endpoint
-        is not available on the current plan.
+        If both return 404 RouteNotFound, the feature is not available on
+        the current API plan. Returns an error instead of silent failure.
         """
         if not self.enabled:
             return {"error": True, "detail": "eToro API not configured"}
@@ -332,68 +300,145 @@ class EToroAPIClient:
             return {"error": True, "detail": f"Amount ${amount:,.2f} is below eToro's $200 minimum copy amount"}
 
         env = self._resolve_env(is_simulation)
-        try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(
-                    f"{self.BASE_URL}/api/v1/trading/mirrors/{env}",
-                    headers=self._get_headers(),
-                    json={"username": username, "amount": amount, "isDemo": is_simulation},
-                )
-                response.raise_for_status()
-                result = response.json()
-                logger.info(f"Started mirror for {username} on eToro ({env}): {result}")
-                return result
-        except httpx.HTTPStatusError as e:
-            logger.error(f"eToro start-mirror error {e.response.status_code}: {e.response.text}")
-            return {"error": True, "status": e.response.status_code, "detail": e.response.text}
-        except httpx.RequestError as e:
-            logger.error(f"Network error starting mirror for {username}: {e}")
-            return {"error": True, "detail": str(e)}
-        except Exception as e:
-            logger.error(f"Unexpected error starting mirror for {username}: {e}")
-            return {"error": True, "detail": str(e)}
+        body = {"username": username, "amount": amount, "isDemo": is_simulation}
+
+        # Attempt 1: POST /api/v1/trading/mirrors/{env}
+        urls_to_try = [
+            f"{self.BASE_URL}/api/v1/trading/mirrors/{env}",
+            f"{self.BASE_URL}/api/v1/trading/mirrors",
+        ]
+
+        last_error = None
+        for url in urls_to_try:
+            logger.info(f"Starting mirror for {username} via POST {url}")
+            try:
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    response = await client.post(url, headers=self._get_headers(), json=body)
+                    if response.status_code == 404:
+                        logger.warning(f"POST {url} returned 404 — trying next endpoint format")
+                        last_error = {
+                            "status": 404,
+                            "detail": f"POST {url} — 404 RouteNotFound. Endpoint not available on retail/demo API plan.",
+                            "endpoint_tried": url,
+                        }
+                        continue
+                    response.raise_for_status()
+                    result = response.json()
+                    logger.info(f"Started mirror for {username} via {url}: {result}")
+                    return result
+            except httpx.HTTPStatusError as e:
+                resp_body = e.response.text[:500]
+                logger.warning(f"POST {url} failed ({e.response.status_code}): {resp_body}")
+                last_error = {
+                    "status": e.response.status_code,
+                    "detail": f"HTTP {e.response.status_code} on {url}: {resp_body}",
+                    "endpoint_tried": url,
+                }
+                continue
+            except httpx.RequestError as e:
+                logger.warning(f"Network error on {url}: {e}")
+                last_error = {"error": True, "detail": str(e), "endpoint_tried": url}
+                continue
+            except Exception as e:
+                logger.warning(f"Unexpected error on {url}: {e}")
+                last_error = {"error": True, "detail": str(e), "endpoint_tried": url}
+                continue
+
+        logger.error(
+            f"All start-mirror endpoints failed for {username}. "
+            f"Last error: {last_error}"
+        )
+        return {
+            "error": True,
+            "detail": (
+                f"Cannot start copy of {username}: mirror creation endpoint "
+                f"not available on retail/demo API plan. "
+                f"Use the eToro UI to start copying manually. "
+                f"Last attempt: {last_error.get('endpoint_tried', 'unknown')} "
+                f"→ {last_error.get('detail', 'unknown')}"
+            ),
+            "attempts": len(urls_to_try),
+            "last_error": last_error,
+        }
 
     async def get_discovery_candidates(self) -> List[Dict]:
-        """Deep fetch: 5 pages × 100 = up to 500 discovery candidates from /copy/ranking.
+        """Fetch discovery candidates from /copy/ranking.
 
-        Uses period=12Month, sort=gain with pagination. Falls back to
-        the old 3-endpoint chain if the ranking endpoint is unreachable.
+        Tries multiple parameter name formats (snake_case, camelCase) because
+        the eToro API may reject certain parameter names with 422.
+        Returns empty list if all formats fail — caller handles fallback.
         """
         base_url = f"{self.BASE_URL}/api/v1/markets/copy/ranking"
         headers = {
             "Content-Type": "application/json",
             "User-Agent": "Mozilla/5.0",
         }
-        all_candidates = []
 
-        for page in range(1, 6):
-            params = {
-                "period": "12Month",
-                "sort": "gain",
-                "opt_in": "true",
-                "limit": 100,
-                "page": page,
-            }
+        # Try different parameter naming conventions
+        param_formats = [
+            # Format 1: original snake_case
+            {"period": "12M", "sort": "Gain", "limit": 100, "offset": 0},
+            # Format 2: camelCase
+            {"Period": "12M", "Sort": "Gain", "Limit": 100, "Offset": 0},
+            # Format 3: minimal params
+            {"period": "12M", "limit": 100},
+            # Format 4: no params at all
+            {},
+        ]
+
+        all_candidates = []
+        used_format = None
+
+        for fmt_index, params in enumerate(param_formats):
+            logger.info(f"Discovery attempt format {fmt_index + 1}/{len(param_formats)}: params={params}")
             try:
                 async with httpx.AsyncClient(timeout=15.0) as client:
                     resp = await client.get(base_url, params=params, headers=headers)
+                    resp_body = resp.text[:1000]
+                    logger.info(
+                        f"Discovery format {fmt_index + 1}: "
+                        f"status={resp.status_code}, "
+                        f"body_preview={resp_body[:200]}"
+                    )
                     if resp.status_code == 200:
                         from backend.services.market_data import _parse_etoro_discovery
                         data = resp.json()
-                        candidates = _parse_etoro_discovery(data, page=page)
+                        candidates = _parse_etoro_discovery(data, page=1)
                         all_candidates.extend(candidates)
-                        logger.info(f"Discovery page {page}: {len(candidates)} candidates")
-                        # Stop if this page returned fewer than 100 (last page)
-                        if len(candidates) < 100:
-                            break
-                    else:
-                        logger.warning(f"Discovery page {page} returned {resp.status_code}")
+                        used_format = fmt_index
+                        logger.info(f"Discovery format {fmt_index + 1}: {len(candidates)} candidates")
                         break
+                    elif resp.status_code == 422:
+                        logger.warning(
+                            f"Discovery format {fmt_index + 1} returned 422: params={params}. "
+                            f"Response: {resp_body[:300]}"
+                        )
+                        continue
+                    else:
+                        logger.warning(
+                            f"Discovery format {fmt_index + 1} returned {resp.status_code}: "
+                            f"{resp_body[:300]}"
+                        )
+                        continue
+            except httpx.HTTPStatusError as e:
+                logger.warning(
+                    f"Discovery format {fmt_index + 1} HTTP error {e.response.status_code}: "
+                    f"{e.response.text[:300]}"
+                )
+                continue
             except Exception as e:
-                logger.warning(f"Discovery page {page} failed: {e}")
-                break
+                logger.warning(f"Discovery format {fmt_index + 1} failed: {e}")
+                continue
 
-        logger.info(f"Deep fetch total: {len(all_candidates)} raw candidates")
+        if all_candidates:
+            logger.info(f"Discovery total: {len(all_candidates)} candidates (used format {used_format})")
+        else:
+            logger.warning(
+                "All discovery parameter formats failed. "
+                "The /copy/ranking endpoint may require different parameters "
+                "or may not be available on this API plan. "
+                "Caller should use static fallback list."
+            )
         return all_candidates
 
     def _get_mock_account_summary(self) -> Dict:

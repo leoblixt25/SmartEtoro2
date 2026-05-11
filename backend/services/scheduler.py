@@ -35,12 +35,20 @@ class SchedulerService:
 
         self._scheduler = AsyncIOScheduler()
 
+        # Common kwargs to prevent overlaps on all interval jobs
+        interval_kwargs = {
+            "max_instances": 1,
+            "coalesce": True,
+            "misfire_grace_time": 120,
+        }
+
         # Self-ping keep-alive every 4 minutes (prevents Render free-tier spin-down)
         self._scheduler.add_job(
             self._keep_alive_job,
             IntervalTrigger(minutes=4),
             id="keep_alive",
             name="Render Keep-Alive Ping",
+            **interval_kwargs,
         )
 
         # eToro data sync every 5 minutes
@@ -49,14 +57,17 @@ class SchedulerService:
             IntervalTrigger(minutes=5),
             id="etoro_sync",
             name="eToro Portfolio Sync",
+            **interval_kwargs,
         )
 
-        # Automation rule evaluation every 1 minute (accelerated for initial rebalance)
+        # Automation rule evaluation every 2 minutes (was 1m — increased to
+        # prevent overlap with 60s rebalance cash-settlement wait)
         self._scheduler.add_job(
             self._automation_eval_job,
-            IntervalTrigger(minutes=1),
+            IntervalTrigger(minutes=2),
             id="automation_eval",
             name="Automation Rule Evaluation",
+            **interval_kwargs,
         )
 
         # Risk check every 15 minutes
@@ -65,6 +76,7 @@ class SchedulerService:
             IntervalTrigger(minutes=15),
             id="risk_check",
             name="Portfolio Risk Check",
+            **interval_kwargs,
         )
 
         # Daily portfolio snapshot at midnight
@@ -92,7 +104,7 @@ class SchedulerService:
         )
 
         self._scheduler.start()
-        logger.info("Scheduler started with 7 jobs")
+        logger.info("Scheduler started with 7 jobs (overlap prevention enabled)")
 
     def stop(self):
         if self._scheduler:
@@ -166,16 +178,23 @@ class SchedulerService:
                     actions = engine.evaluate_rules(db, portfolio, traders, scored_data=scored_data)
                     for action in actions:
                         if action.requires_approval:
-                            # Create pending alert — user must approve via Telegram or UI
                             engine.create_pending_alert(db, portfolio.id, action)
                             logger.info(f"Pending approval: '{action.rule_name}' — {action.description}")
                         else:
-                            # Auto-execute: call eToro API directly
                             sync_service = EToroSyncService()
                             etoro_response = await engine.execute_etoro_action(
                                 sync_service.client, action, portfolio, db
                             )
-                            success = not (etoro_response or {}).get("error", False)
+                            # Validate real success: check error flag AND success_count
+                            has_error = (etoro_response or {}).get("error", False)
+                            success_count = (etoro_response or {}).get("success_count", None)
+                            # success = no top-level error AND (no success_count metric OR at least 1 success)
+                            if has_error:
+                                success = False
+                            elif success_count is not None:
+                                success = success_count > 0
+                            else:
+                                success = True  # legacy actions without success_count
                             engine.log_execution(
                                 db, portfolio, action,
                                 approved_by="auto",
@@ -183,9 +202,26 @@ class SchedulerService:
                                 etoro_response=etoro_response,
                             )
                             if success:
-                                logger.info(f"Auto-executed rule '{action.rule_name}': {action.description}")
+                                detail = etoro_response.get("action", action.action_type)
+                                count_info = f" ({etoro_response.get('success_count', '?')}/{etoro_response.get('total', '?')} succeeded)" if "success_count" in (etoro_response or {}) else ""
+                                logger.info(f"Auto-executed rule '{action.rule_name}': {detail}{count_info}")
                             else:
-                                logger.error(f"Auto-execution FAILED for rule '{action.rule_name}': {etoro_response.get('detail')}")
+                                err_detail = (etoro_response or {}).get("detail", "No details")
+                                logger.error(f"Auto-execution FAILED for rule '{action.rule_name}': {err_detail}")
+                                # Notify Telegram on failure
+                                try:
+                                    from backend.services.telegram_service import TelegramBot
+                                    bot = TelegramBot()
+                                    if bot.enabled:
+                                        await bot.send_message(
+                                            f"❌ <b>Automation Failed</b>\n\n"
+                                            f"Rule: <b>{action.rule_name}</b>\n"
+                                            f"Action: {action.action_type}\n"
+                                            f"Error: {err_detail}",
+                                            show_keyboard=True,
+                                        )
+                                except Exception as tg_err:
+                                    logger.warning(f"Failed to send Telegram failure notification: {tg_err}")
 
                 # ── Risk → Auto-Rebalance Bridge ──────────────────────────
                 # Check for insufficient_diversification violations and
@@ -242,7 +278,14 @@ class SchedulerService:
                                 etoro_response = await engine.execute_etoro_action(
                                     sync_service.client, seed_action, portfolio, db
                                 )
-                                success = not (etoro_response or {}).get("error", False)
+                                has_error = (etoro_response or {}).get("error", False)
+                                success_count = (etoro_response or {}).get("success_count", None)
+                                if has_error:
+                                    success = False
+                                elif success_count is not None:
+                                    success = success_count > 0
+                                else:
+                                    success = True
                                 engine.log_execution(
                                     db, portfolio, seed_action,
                                     approved_by="risk_bridge",
@@ -250,15 +293,28 @@ class SchedulerService:
                                     etoro_response=etoro_response,
                                 )
                                 if success:
+                                    count_info = f" ({etoro_response.get('success_count', '?')}/{etoro_response.get('total', '?')} started)" if "success_count" in (etoro_response or {}) else ""
                                     logger.info(
                                         f"Risk → Rebalance bridge EXECUTED: "
-                                        f"{seed_action.description}"
+                                        f"{seed_action.description}{count_info}"
                                     )
                                 else:
+                                    err_detail = (etoro_response or {}).get("detail", "No details")
                                     logger.error(
                                         f"Risk → Rebalance bridge FAILED: "
-                                        f"{etoro_response.get('detail')}"
+                                        f"{err_detail}"
                                     )
+                                    try:
+                                        from backend.services.telegram_service import TelegramBot
+                                        bot = TelegramBot()
+                                        if bot.enabled:
+                                            await bot.send_message(
+                                                f"❌ <b>Risk Bridge Failed</b>\n\n"
+                                                f"Error: {err_detail}",
+                                                show_keyboard=True,
+                                            )
+                                    except Exception as tg_err:
+                                        logger.warning(f"Failed to send Telegram notification: {tg_err}")
                 except Exception as e:
                     logger.error(f"Risk → Rebalance bridge error: {e}")
         except Exception as e:

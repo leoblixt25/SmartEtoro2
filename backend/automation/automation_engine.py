@@ -174,14 +174,33 @@ class AutomationEngine:
 
         Returns the eToro API response dict. On failure, the dict contains
         {"error": True, "detail": ...}.
+
+        Tracks success_count for every sub-action. If zero sub-actions succeed,
+        the overall result is marked as FAILED with error=True.
         """
         is_sim = portfolio.is_simulation
         action_type = action.action_type
         trader_id = action.details.get("trader_id")
 
+        def _count_successes(results: list, resp_key: str = "response") -> int:
+            """Count how many individual actions succeeded."""
+            count = 0
+            for r in results:
+                resp = r.get(resp_key, {}) if isinstance(r, dict) else {}
+                if isinstance(resp, dict) and not resp.get("error"):
+                    count += 1
+            return count
+
+        def _is_exec_result_successful(resp) -> bool:
+            """Check if an individual execution response is successful."""
+            if resp is None:
+                return False
+            if isinstance(resp, dict):
+                return not resp.get("error", False)
+            return True
+
         try:
             if action_type == "take_profit":
-                # Close all copy-trade mirrors to take profit
                 mirrors = db.query(CopiedTrader).filter(
                     CopiedTrader.portfolio_id == portfolio.id,
                     CopiedTrader.is_active.is_(True),
@@ -201,16 +220,16 @@ class AutomationEngine:
                     results.append({"mirror_id": m.trader_id, "response": resp})
                     if resp and resp.get("error"):
                         logger.error(f"Failed to close mirror {m.trader_id}: {resp.get('detail')}")
-                if any(r.get("response", {}).get("error") for r in results if "response" in r):
-                    errors = [r for r in results if r.get("response", {}).get("error")]
+                success_count = _count_successes(results)
+                if success_count == 0 and len(results) > 0:
                     return {"error": True, "action": "take_profit", "results": results,
-                            "detail": f"{len(errors)}/{len(results)} mirrors failed",
-                            "errors": errors}
-                return {"action": "take_profit", "results": results}
+                            "detail": "All mirror close operations failed",
+                            "success_count": 0, "total": len(results)}
+                return {"action": "take_profit", "results": results,
+                        "success_count": success_count, "total": len(results)}
 
             elif action_type == "partial_profit_lock":
                 lock_amount = action.details.get("lock_amount", 0)
-                # Reduce each active mirror by the proportional lock amount
                 mirrors = db.query(CopiedTrader).filter(
                     CopiedTrader.portfolio_id == portfolio.id,
                     CopiedTrader.is_active.is_(True),
@@ -225,7 +244,13 @@ class AutomationEngine:
                     results.append({"mirror_id": m.trader_id, "new_amount": new_amount, "response": resp})
                     if resp and resp.get("error"):
                         logger.error(f"Failed to change mirror {m.trader_id}: {resp.get('detail')}")
-                return {"action": "partial_profit_lock", "results": results}
+                success_count = _count_successes(results)
+                if success_count == 0 and len(results) > 0:
+                    return {"error": True, "action": "partial_profit_lock", "results": results,
+                            "detail": "All reduce-amount operations failed",
+                            "success_count": 0, "total": len(results)}
+                return {"action": "partial_profit_lock", "results": results,
+                        "success_count": success_count, "total": len(results)}
 
             elif action_type == "pause_copy":
                 traders_to_pause = action.details.get("traders_to_pause", [])
@@ -241,7 +266,13 @@ class AutomationEngine:
                     results.append({"mirror_id": m.trader_id, "response": resp})
                     if resp and resp.get("error"):
                         logger.error(f"Failed to pause mirror {m.trader_id}: {resp.get('detail')}")
-                return {"action": "pause_copy", "results": results}
+                success_count = _count_successes(results)
+                if success_count == 0 and len(results) > 0:
+                    return {"error": True, "action": "pause_copy", "results": results,
+                            "detail": "All pause operations failed",
+                            "success_count": 0, "total": len(results)}
+                return {"action": "pause_copy", "results": results,
+                        "success_count": success_count, "total": len(results)}
 
             elif action_type in ("reduce_on_drawdown", "reduce_on_volatility"):
                 reduction_pct = action.details.get("reduction_pct", 20)
@@ -259,7 +290,13 @@ class AutomationEngine:
                     results.append({"mirror_id": m.trader_id, "new_amount": new_amount, "response": resp})
                     if resp and resp.get("error"):
                         logger.error(f"Failed to reduce mirror {m.trader_id}: {resp.get('detail')}")
-                return {"action": action_type, "results": results}
+                success_count = _count_successes(results)
+                if success_count == 0 and len(results) > 0:
+                    return {"error": True, "action": action_type, "results": results,
+                            "detail": "All reduction operations failed",
+                            "success_count": 0, "total": len(results)}
+                return {"action": action_type, "results": results,
+                        "success_count": success_count, "total": len(results)}
 
             elif action_type == "rebalance":
                 drifted = action.details.get("drifted_traders", [])
@@ -279,7 +316,13 @@ class AutomationEngine:
                         results.append({"mirror_id": mirror.trader_id, "new_amount": new_amount, "response": resp})
                         if resp and resp.get("error"):
                             logger.error(f"Failed to rebalance mirror {mirror.trader_id}: {resp.get('detail')}")
-                return {"action": "rebalance", "results": results}
+                success_count = _count_successes(results)
+                if success_count == 0 and len(results) > 0:
+                    return {"error": True, "action": "rebalance", "results": results,
+                            "detail": "All rebalance operations failed",
+                            "success_count": 0, "total": len(results)}
+                return {"action": "rebalance", "results": results,
+                        "success_count": success_count, "total": len(results)}
 
             elif action_type == "swap":
                 old_username = action.details.get("old_username")
@@ -295,9 +338,19 @@ class AutomationEngine:
                 close_resp = await etoro_client.execute_close_mirror(
                     int(mirror_id), is_simulation=is_sim
                 )
-                if close_resp and close_resp.get("error"):
-                    logger.error(f"Swap failed at step 1 (close): {close_resp.get('detail')}")
-                    return {"error": True, "step": "close", "detail": close_resp.get("detail")}
+                close_ok = _is_exec_result_successful(close_resp)
+                if not close_ok:
+                    logger.warning(f"Swap step 1 (close) failed: {close_resp.get('detail') if close_resp else 'no response'}")
+                    # Non-fatal — mark trader inactive in DB anyway and skip steps 2-3
+                    db.query(CopiedTrader).filter(
+                        CopiedTrader.portfolio_id == portfolio.id,
+                        CopiedTrader.trader_username == old_username,
+                    ).update({"is_active": False, "is_paused": True,
+                              "paused_reason": f"Swap to {new_username} — close failed, needs manual cleanup"})
+                    db.commit()
+                    return {"error": True, "step": "close",
+                            "detail": close_resp.get("detail") if close_resp else "Close mirror returned no response",
+                            "action": "swap"}
 
                 # Step 2: Safety delay — wait 60s for Available Cash to settle
                 logger.info("Swap step 2/3: waiting 60s for cash to settle")
@@ -317,14 +370,18 @@ class AutomationEngine:
                 start_resp = await etoro_client.execute_start_mirror(
                     new_username, new_amount, is_simulation=is_sim
                 )
-                if start_resp and start_resp.get("error"):
-                    logger.warning(f"Swap step 3 completed with warning: {start_resp.get('detail')}")
+                start_ok = _is_exec_result_successful(start_resp)
+                if not start_ok:
+                    logger.warning(f"Swap step 3 (start) failed: {start_resp.get('detail') if start_resp else 'no response'}")
                     return {
+                        "error": True,
                         "action": "swap",
-                        "step_1_close": "ok",
+                        "step_1_close": close_resp,
                         "step_2_delay": "ok",
                         "step_3_start": start_resp,
-                        "warning": start_resp.get("detail"),
+                        "detail": f"Closed {old_username} but could not start {new_username}: {start_resp.get('detail') if start_resp else 'unknown'}",
+                        "close_ok": True,
+                        "start_ok": False,
                     }
 
                 logger.info(f"Swap complete: {old_username} → {new_username}")
@@ -335,6 +392,8 @@ class AutomationEngine:
                     "close_response": close_resp,
                     "start_response": start_resp,
                     "new_amount": new_amount,
+                    "success_count": 2,
+                    "total": 2,
                 }
 
             elif action_type == "equal_rebalance":
@@ -347,9 +406,6 @@ class AutomationEngine:
                 if not current_trader or not current_trader_id:
                     return {"error": True, "detail": "equal_rebalance missing required fields"}
 
-                # Determine target traders:
-                #   replacement_traders (risk path) → use all 3 from seed list
-                #   new_traders (scout path)         → keep current + 2 new
                 if replacement_traders:
                     all_targets = replacement_traders
                 else:
@@ -358,15 +414,18 @@ class AutomationEngine:
                     all_targets = [current_trader] + new_traders
 
                 results = []
+                close_ok = False
+                start_successes = 0
 
-                # Step 1: Close the current mirror (non-fatal — start may still work)
+                # Step 1: Close the current mirror
                 logger.info(f"EqualRebalance step 1/4: closing mirror {current_trader_id} ({current_trader})")
                 close_resp = await etoro_client.execute_close_mirror(
                     int(current_trader_id), is_simulation=is_sim
                 )
-                if close_resp and close_resp.get("error"):
-                    logger.warning(f"EqualRebalance close failed (continuing): {close_resp.get('detail')}")
-                    close_resp = close_resp
+                if close_resp and not close_resp.get("error"):
+                    close_ok = True
+                else:
+                    logger.warning(f"EqualRebalance close failed (continuing): {close_resp.get('detail') if close_resp else 'no response'}")
                 results.append({"step": "close", "username": current_trader, "response": close_resp})
 
                 # Step 2: Safety delay — wait 60s for Available Cash to settle
@@ -391,11 +450,29 @@ class AutomationEngine:
                     resp = await etoro_client.execute_start_mirror(
                         target, amount_per, is_simulation=is_sim
                     )
-                    if resp and resp.get("error"):
-                        logger.warning(f"EqualRebalance warning starting {target}: {resp.get('detail')}")
+                    if resp and not resp.get("error"):
+                        start_successes += 1
+                    else:
+                        logger.warning(f"EqualRebalance warning starting {target}: {resp.get('detail') if resp else 'no response'}")
                     results.append({"step": "start", "username": target, "response": resp})
 
-                logger.info(f"EqualRebalance complete: targets={all_targets}")
+                total_ops = 1 + len(all_targets)  # close + starts
+                if start_successes == 0:
+                    return {
+                        "error": True,
+                        "action": "equal_rebalance",
+                        "current_trader": current_trader,
+                        "new_traders": new_traders,
+                        "replacement_traders": replacement_traders,
+                        "amount_per_trader": amount_per,
+                        "results": results,
+                        "detail": f"Equal rebalance failed: closed={close_ok}, 0/{len(all_targets)} new mirrors started",
+                        "close_ok": close_ok,
+                        "start_successes": start_successes,
+                        "total_attempts": len(all_targets),
+                    }
+
+                logger.info(f"EqualRebalance complete: targets={all_targets}, {start_successes}/{len(all_targets)} started")
                 return {
                     "action": "equal_rebalance",
                     "current_trader": current_trader,
@@ -403,6 +480,9 @@ class AutomationEngine:
                     "replacement_traders": replacement_traders,
                     "amount_per_trader": amount_per,
                     "results": results,
+                    "close_ok": close_ok,
+                    "success_count": start_successes,
+                    "total": len(all_targets),
                 }
 
             else:

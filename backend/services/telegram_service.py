@@ -560,11 +560,19 @@ class TelegramBot:
                     return
                 await self._reply(update, f"⚙️ Executing '{rule.name}' on eToro...")
                 resp = await engine.execute_etoro_action(sync_service.client, match, portfolio, db)
-                success = not (resp or {}).get("error", False)
+                has_error = (resp or {}).get("error", False)
+                success_count = (resp or {}).get("success_count", None)
+                if has_error:
+                    success = False
+                elif success_count is not None:
+                    success = success_count > 0
+                else:
+                    success = True
                 engine.log_execution(db, portfolio, match, approved_by="telegram", success=success, etoro_response=resp)
                 if success:
+                    count_info = f" ({resp.get('success_count', '?')}/{resp.get('total', '?')} actions succeeded)" if "success_count" in (resp or {}) else ""
                     await self._reply(update, 
-                        f"✅ *{rule.name}* executed.\n{match.description}",
+                        f"✅ *{rule.name}* executed.{count_info}\n{match.description}",
                         parse_mode="Markdown",
                     )
                 else:
