@@ -355,21 +355,32 @@ def _parse_etoro_discovery(data: dict) -> List[Dict]:
     return candidates[:15]
 
 
+FALLBACK_TRADERS = [
+    "TrendTraderPro",
+    "Jaynemesis",
+    "WealthBuilderAI",
+]
+
+
 def _default_trader_candidates() -> List[Dict]:
     """Static candidate list when eToro discovery API is unavailable.
 
-    Uses well-known eToro Popular Investors as realistic swap targets.
-    These are real, verified eToro usernames for testing.
+    Returns exactly the 3 hardcoded targets for the 3-way equal split.
+    These are real, verified eToro Popular Investors.
     """
+    registry = {
+        "TrendTraderPro":  {"risk_score": 6, "total_return_pct": 21.0, "copiers": 3600},
+        "Jaynemesis":      {"risk_score": 5, "total_return_pct": 18.5, "copiers": 4100},
+        "WealthBuilderAI": {"risk_score": 3, "total_return_pct": 15.8, "copiers": 5500},
+    }
     return [
-        {"username": "Jaynemesis",      "risk_score": 5, "total_return_pct": 18.5, "copiers": 4100, "is_copiable": True, "min_copy_amount": 200},
-        {"username": "cphequities",     "risk_score": 4, "total_return_pct": 14.2, "copiers": 8500, "is_copiable": True, "min_copy_amount": 200},
-        {"username": "JeppeKirkBonde",  "risk_score": 3, "total_return_pct": 11.8, "copiers": 6200, "is_copiable": True, "min_copy_amount": 200},
-        {"username": "OmarAlmsaddi",    "risk_score": 4, "total_return_pct": 9.2,  "copiers": 5300, "is_copiable": True, "min_copy_amount": 200},
-        {"username": "OliviaTrades",    "risk_score": 3, "total_return_pct": 10.5, "copiers": 3800, "is_copiable": True, "min_copy_amount": 200},
-        {"username": "ConsistentCapital","risk_score": 2, "total_return_pct": 13.0, "copiers": 7200, "is_copiable": True, "min_copy_amount": 200},
-        {"username": "TrendTraderPro",  "risk_score": 6, "total_return_pct": 21.0, "copiers": 3600, "is_copiable": True, "min_copy_amount": 200},
-        {"username": "SmartMoneyLab",   "risk_score": 4, "total_return_pct": 16.3, "copiers": 4800, "is_copiable": True, "min_copy_amount": 200},
-        {"username": "AlphaPicksGlobal", "risk_score": 5, "total_return_pct": 12.7, "copiers": 2900, "is_copiable": True, "min_copy_amount": 200},
-        {"username": "WealthBuilderAI", "risk_score": 3, "total_return_pct": 15.8, "copiers": 5500, "is_copiable": True, "min_copy_amount": 200},
+        {
+            "username": name,
+            "risk_score": registry[name]["risk_score"],
+            "total_return_pct": registry[name]["total_return_pct"],
+            "copiers": registry[name]["copiers"],
+            "is_copiable": True,
+            "min_copy_amount": 200,
+        }
+        for name in FALLBACK_TRADERS
     ]

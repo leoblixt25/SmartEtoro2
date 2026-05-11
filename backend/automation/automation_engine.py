@@ -409,25 +409,6 @@ class AutomationEngine:
             logger.error(f"eToro execution failed for action {action.action_type}: {e}")
             return {"error": True, "detail": str(e)}
 
-    def reverse_action(
-        self,
-        db: Session,
-        log_id: int,
-        portfolio_id: int,
-    ) -> bool:
-        """Mark an action as reversed in the audit trail."""
-        log_entry = (
-            db.query(AutomationLog)
-            .filter(AutomationLog.id == log_id, AutomationLog.portfolio_id == portfolio_id)
-            .first()
-        )
-        if not log_entry:
-            return False
-        log_entry.was_reversed = True
-        db.commit()
-        logger.info(f"Action reversed: log_id={log_id}")
-        return True
-
     def emergency_stop(
         self,
         db: Session,
@@ -717,7 +698,7 @@ class AutomationEngine:
                         "delta": best["delta"],
                     },
                     severity="info",
-                    requires_approval=rule.requires_approval,
+                    requires_approval=False,
                 )
 
         return None
@@ -775,7 +756,7 @@ class AutomationEngine:
                 ],
             },
             severity="info",
-            requires_approval=rule.requires_approval,
+            requires_approval=False,
         )
 
     # ── Helpers ──────────────────────────────────

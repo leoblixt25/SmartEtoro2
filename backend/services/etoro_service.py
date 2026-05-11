@@ -140,7 +140,7 @@ class EToroAPIClient:
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.delete(
-                    f"{self.BASE_URL}/api/v1/sub-portfolios/{mirror_id}",
+                    f"{self.BASE_URL}/api/v1/trading/sub-portfolios/{env}/{mirror_id}",
                     headers=self._get_headers(),
                 )
                 response.raise_for_status()
@@ -173,7 +173,7 @@ class EToroAPIClient:
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(
-                    f"{self.BASE_URL}/api/v1/trading/mirrors/{mirror_id}/change-amount",
+                    f"{self.BASE_URL}/api/v1/trading/mirrors/{env}/{mirror_id}/change-amount",
                     headers=self._get_headers(),
                     json={"mirrorId": mirror_id, "amount": new_amount},
                 )
@@ -206,7 +206,7 @@ class EToroAPIClient:
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(
-                    f"{self.BASE_URL}/api/v1/trading/mirrors/{mirror_id}/pause",
+                    f"{self.BASE_URL}/api/v1/trading/mirrors/{env}/{mirror_id}/pause",
                     headers=self._get_headers(),
                     json={"mirrorId": mirror_id},
                 )
@@ -239,7 +239,7 @@ class EToroAPIClient:
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(
-                    f"{self.BASE_URL}/api/v1/trading/mirrors/{mirror_id}/unpause",
+                    f"{self.BASE_URL}/api/v1/trading/mirrors/{env}/{mirror_id}/unpause",
                     headers=self._get_headers(),
                     json={"mirrorId": mirror_id},
                 )
@@ -277,7 +277,7 @@ class EToroAPIClient:
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(
-                    f"{self.BASE_URL}/api/v1/trading/mirrors",
+                    f"{self.BASE_URL}/api/v1/trading/mirrors/{env}",
                     headers=self._get_headers(),
                     json={"username": username, "amount": amount, "isDemo": is_simulation},
                 )
@@ -489,14 +489,7 @@ class EToroSyncService:
             mirror_equity = initial_investment + m.get("closedPositionsNetProfit", 0.0) + unrealized_pnl_mirror
             
             import json
-            raw_id = (
-                m.get("mirrorID") or
-                m.get("agentPortfolioId") or m.get("AgentPortfolioID") or
-                m.get("mirrorId") or m.get("portfolioId") or
-                m.get("id") or m.get("Id") or m.get("ID") or
-                m.get("cid") or m.get("subPortfolioId") or
-                0
-            )
+            raw_id = m.get("mirrorID") or 0
             try:
                 mirror_id = int(raw_id)
             except (ValueError, TypeError):
