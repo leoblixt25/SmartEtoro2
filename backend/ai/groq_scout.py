@@ -12,8 +12,6 @@ import logging
 import os
 from typing import Optional
 
-from groq import Groq
-
 logger = logging.getLogger(__name__)
 
 TARGET_KEY = "target_portfolio"
@@ -94,6 +92,7 @@ class GroqScout:
             logger.info("GROQ_API_KEY not set — Groq scout disabled")
             self.enabled = False
         else:
+            from groq import Groq
             self.client = Groq(api_key=key)
             self.enabled = True
             logger.info("Groq scout initialized with llama-3.3-70b-versatile")

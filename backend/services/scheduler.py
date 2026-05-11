@@ -249,14 +249,37 @@ class SchedulerService:
         from backend.database.connection import db_session
         from backend.database.models import Portfolio, Alert, AlertType
         from backend.services.market_data import get_current_holdings, fetch_market_news, discover_top_traders
-        from backend.ai.gemini_scout import GeminiScout, TARGET_KEY
-        from backend.ai.groq_scout import GroqScout
 
-        groq_scout = GroqScout()
-        gemini_scout = GeminiScout()
-        if groq_scout.enabled:
+        # Lazy-load scouts so an ImportError in one doesn't kill the entire job
+        TARGET_KEY = "target_portfolio"
+        try:
+            from backend.ai.gemini_scout import GeminiScout
+        except ImportError as e:
+            logger.warning(f"GeminiScout import failed: {e}")
+            GeminiScout = None
+        try:
+            from backend.ai.groq_scout import GroqScout
+        except ImportError as e:
+            logger.warning(f"GroqScout import failed: {e}")
+            GroqScout = None
+
+        # Instantiate scouts (lazily — import error means that scout is unavailable)
+        groq_scout = None
+        if GroqScout is not None:
+            try:
+                groq_scout = GroqScout()
+            except ImportError as e:
+                logger.warning(f"GroqScout init failed (import error): {e}")
+        gemini_scout = None
+        if GeminiScout is not None:
+            try:
+                gemini_scout = GeminiScout()
+            except ImportError as e:
+                logger.warning(f"GeminiScout init failed (import error): {e}")
+
+        if groq_scout and groq_scout.enabled:
             scout = groq_scout
-        elif gemini_scout.enabled:
+        elif gemini_scout and gemini_scout.enabled:
             scout = gemini_scout
         else:
             logger.info("No AI API configured — using mathematical fallback allocation")

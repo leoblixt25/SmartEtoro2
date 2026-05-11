@@ -20,9 +20,6 @@ logger = logging.getLogger(__name__)
 
 TARGET_KEY = "target_portfolio"
 
-import google.generativeai as genai
-
-
 SYSTEM_PROMPT = """You are the Chief Risk Officer for an eToro copy-trading portfolio.
 
 Your job is to:
@@ -95,6 +92,7 @@ class GeminiScout:
             logger.info("GEMINI_API_KEY not set — Gemini scout disabled")
             self.enabled = False
         else:
+            import google.generativeai as genai
             genai.configure(api_key=key)
             self._model = genai.GenerativeModel(
                 model_name="gemini-1.5-flash",
@@ -173,6 +171,7 @@ class GeminiScout:
             return {TARGET_KEY: [], "total_risk_score": 0, "market_sentiment": "unknown"}
 
         if not self._allocation_model:
+            import google.generativeai as genai
             self._allocation_model = genai.GenerativeModel(
                 model_name="gemini-1.5-flash",
                 system_instruction=ALLOCATION_PROMPT,

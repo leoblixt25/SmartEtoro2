@@ -505,19 +505,41 @@ class TelegramBot:
         from backend.database.connection import db_session
         from backend.database.models import Portfolio
         from backend.services.market_data import get_current_holdings, fetch_market_news, discover_top_traders
-        from backend.ai.gemini_scout import GeminiScout, TARGET_KEY
-        from backend.ai.groq_scout import GroqScout
+
+        # Lazy-load scouts so an ImportError in one doesn't kill the entire command
+        TARGET_KEY = "target_portfolio"
+        try:
+            from backend.ai.gemini_scout import GeminiScout
+        except ImportError as e:
+            logger.warning(f"GeminiScout import failed: {e}")
+            GeminiScout = None
+        try:
+            from backend.ai.groq_scout import GroqScout
+        except ImportError as e:
+            logger.warning(f"GroqScout import failed: {e}")
+            GroqScout = None
 
         # Run AI Market Scout with Groq first, fallback to Gemini, then to mathematical fallback
         await self._reply(update, "🔍 Running AI Market Scout... (this may take 10-20s)")
 
-        # Instantiate scouts
-        groq_scout = GroqScout()
-        gemini_scout = GeminiScout()
+        # Instantiate scouts (lazily — import error means that scout is unavailable)
+        groq_scout = None
+        if GroqScout is not None:
+            try:
+                groq_scout = GroqScout()
+            except ImportError as e:
+                logger.warning(f"GroqScout init failed (import error): {e}")
+        gemini_scout = None
+        if GeminiScout is not None:
+            try:
+                gemini_scout = GeminiScout()
+            except ImportError as e:
+                logger.warning(f"GeminiScout init failed (import error): {e}")
+
         # Determine primary scout — hard fallback if both down
-        if groq_scout.enabled:
+        if groq_scout and groq_scout.enabled:
             primary_scout = groq_scout
-        elif gemini_scout.enabled:
+        elif gemini_scout and gemini_scout.enabled:
             primary_scout = gemini_scout
         else:
             logger.info("No AI API configured — using mathematical fallback allocation")
