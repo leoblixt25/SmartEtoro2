@@ -267,11 +267,13 @@ async def _fetch_news_fallback() -> List[Dict]:
 async def discover_top_traders() -> List[Dict]:
     """Fetch top-performing traders using eToro discovery API.
 
-    Uses EToroAPIClient.get_discovery_candidates() to fetch candidates.
-    Falls back to static high-growth defaults if all API calls fail.
+    Tries the discovery API via EToroAPIClient.get_discovery_candidates().
+    The /markets/copy/ranking endpoint is NOT available in the retail/demo
+    public API, so this will return 0 candidates and fall back to the
+    static high-growth defaults immediately.
 
-    Returns up to 50 trader candidates with username, risk, return,
-    drawdown, and track-record data.
+    Returns up to 3 static trader candidates (JeppeKirkBonde, CPHequities,
+    Jaynemesis) when the API is unavailable.
     """
     try:
         from backend.services.etoro_service import EToroAPIClient
@@ -280,30 +282,10 @@ async def discover_top_traders() -> List[Dict]:
         if candidates:
             logger.info(f"Scout: fetched {len(candidates)} top traders via discovery API")
             return candidates
-        logger.warning(
-            "Discovery API returned 0 candidates. "
-            "The /copy/ranking endpoint may require different parameters "
-            "or may not be available on this API plan. "
-            "Falling back to static trader list."
-        )
-    except httpx.HTTPStatusError as e:
-        logger.error(
-            f"Discovery API HTTP error {e.response.status_code}: "
-            f"{e.response.text[:500]}. "
-            f"Falling back to static trader list."
-        )
-    except httpx.RequestError as e:
-        logger.error(
-            f"Discovery API network error: {e}. "
-            f"Falling back to static trader list."
-        )
     except Exception as e:
-        logger.error(
-            f"Discovery API unexpected error: {e}. "
-            f"Falling back to static trader list."
-        )
+        logger.debug(f"Discovery API unavailable (expected): {e}")
 
-    logger.warning("Using static fallback trader list (JeppeKirkBonde, CPHequities, Jaynemesis)")
+    logger.debug("Discovery API unavailable — using static fallback trader list")
     return _default_trader_candidates()
 
 
