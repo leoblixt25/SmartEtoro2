@@ -357,7 +357,7 @@ class TelegramBot:
                 return_pct = (total_return / p.invested_amount * 100) if p.invested_amount else 0
                 mode = "🧪 SIM" if p.is_simulation else "🔴 LIVE"
                 text = (
-                    f"📊 *CopyVault Status*\n"
+                    f"<b>📊 CopyVault Status</b>\n"
                     f"Value: {s}{p.total_value:,.2f}  |  Invested: {s}{p.invested_amount:,.2f}\n"
                     f"Return: {s}{total_return:+,.2f} ({return_pct:+.2f}%)\n"
                     f"Unrealized: {s}{p.unrealized_pnl:+,.2f}  |  Realized: {s}{p.realized_pnl:+,.2f}\n"
@@ -365,7 +365,7 @@ class TelegramBot:
                     f"{mode}  |  {p.currency}\n"
                     f"Updated: {p.last_updated.strftime('%H:%M UTC') if p.last_updated else '—'}"
                 )
-                await self._reply(update, text, parse_mode="Markdown")
+                await self._reply(update, text, parse_mode="HTML")
         except Exception as e:
             logger.error(f"/status error: {e}")
             await self._reply(update, f"Error: {e}")
@@ -386,12 +386,12 @@ class TelegramBot:
                 trader_count = len(p.copied_traders) if p.copied_traders else 0
                 mode = "Simulation" if p.is_simulation else "LIVE"
                 text = (
-                    f"📋 *Portfolio Breakdown*\n\n"
-                    f"💰 *Value*\n"
+                    f"<b>📋 Portfolio Breakdown</b>\n\n"
+                    f"💰 <b>Value</b>\n"
                     f"Total: {s}{p.total_value:,.2f}\n"
                     f"Invested: {s}{p.invested_amount:,.2f}\n"
                     f"Cash: {s}{p.available_cash:,.2f}\n\n"
-                    f"📈 *PnL*\n"
+                    f"📈 <b>PnL</b>\n"
                     f"Total Return: {s}{total_return:+,.2f} ({return_pct:+.2f}%)\n"
                     f"Unrealized: {s}{p.unrealized_pnl:+,.2f}\n"
                     f"Realized: {s}{p.realized_pnl:+,.2f}\n"
@@ -403,7 +403,7 @@ class TelegramBot:
                     f"💱 {p.currency}  |  Mode: {mode}\n"
                     f"🕐 {p.last_updated.strftime('%Y-%m-%d %H:%M UTC') if p.last_updated else '—'}"
                 )
-                await self._reply(update, text, parse_mode="Markdown")
+                await self._reply(update, text, parse_mode="HTML")
         except Exception as e:
             logger.error(f"/portfolio error: {e}")
             await self._reply(update, f"Error: {e}")
@@ -422,18 +422,19 @@ class TelegramBot:
                 if not traders:
                     await self._reply(update, "No copied traders.")
                     return
-                lines = [f"👥 *Copied Traders ({len(traders)})*\n"]
+                lines = [f"👥 <b>Copied Traders ({len(traders)})</b>\n"]
                 for t in traders:
                     status = "⏸" if t.is_paused else ("▶️" if t.is_active else "⏹")
                     risk_color = "🟢" if t.risk_score < 4 else ("🟡" if t.risk_score < 7 else "🔴")
                     ret = t.total_return_pct or 0
                     ret_sign = "📈" if ret >= 0 else "📉"
+                    # Use HTML bold tags — Markdown breaks when username contains underscores
                     lines.append(
-                        f"{status} *{t.trader_username}*\n"
+                        f"{status} <b>{t.trader_username}</b>\n"
                         f"  {ret_sign} Return: {ret:+.2f}%  |  Alloc: {t.allocation_pct:.1f}%\n"
                         f"  {risk_color} Risk: {t.risk_score:.1f}/10  |  {t.risk_classification.upper() if t.risk_classification else '—'}\n"
                     )
-                await self._reply(update, "\n".join(lines), parse_mode="Markdown")
+                await self._reply(update, "\n".join(lines), parse_mode="HTML")
         except Exception as e:
             logger.error(f"/traders error: {e}")
             await self._reply(update, f"Error: {e}")

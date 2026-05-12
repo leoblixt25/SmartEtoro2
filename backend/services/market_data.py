@@ -54,6 +54,7 @@ def get_current_holdings(db, portfolio_id: int) -> List[Dict]:
         .filter(
             CopiedTrader.portfolio_id == portfolio_id,
             CopiedTrader.is_active.is_(True),
+            CopiedTrader.is_paused.is_(False),   # exclude paused — consistent with automation eval
         )
         .all()
     )

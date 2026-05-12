@@ -238,8 +238,13 @@ class AutomationEngine:
                 results = []
                 for m in mirrors:
                     new_amount = max(0, (m.allocated_amount or 0) - lock_amount / max(len(mirrors), 1))
+                    mirror_id = int(m.trader_id) if m.trader_id and str(m.trader_id).isdigit() and int(m.trader_id) > 0 else None
+                    if mirror_id is None:
+                        logger.warning(f"Skipping mirror for {m.trader_username}: invalid trader_id={m.trader_id}. Run /sync first.")
+                        results.append({"mirror_id": m.trader_id, "skipped": True, "detail": "Invalid mirror ID"})
+                        continue
                     resp = await etoro_client.execute_change_mirror_amount(
-                        int(m.trader_id), new_amount, is_simulation=is_sim
+                        mirror_id, new_amount, is_simulation=is_sim
                     )
                     results.append({"mirror_id": m.trader_id, "new_amount": new_amount, "response": resp})
                     if resp and resp.get("error"):
@@ -260,8 +265,13 @@ class AutomationEngine:
                 ).all()
                 results = []
                 for m in mirrors:
+                    mirror_id = int(m.trader_id) if m.trader_id and str(m.trader_id).isdigit() and int(m.trader_id) > 0 else None
+                    if mirror_id is None:
+                        logger.warning(f"Skipping pause for {m.trader_username}: invalid trader_id={m.trader_id}. Run /sync first.")
+                        results.append({"mirror_id": m.trader_id, "skipped": True, "detail": "Invalid mirror ID"})
+                        continue
                     resp = await etoro_client.execute_pause_mirror(
-                        int(m.trader_id), is_simulation=is_sim
+                        mirror_id, is_simulation=is_sim
                     )
                     results.append({"mirror_id": m.trader_id, "response": resp})
                     if resp and resp.get("error"):
@@ -284,8 +294,13 @@ class AutomationEngine:
                 results = []
                 for m in mirrors:
                     new_amount = (m.allocated_amount or 0) * (1 - reduction_pct / 100)
+                    mirror_id = int(m.trader_id) if m.trader_id and str(m.trader_id).isdigit() and int(m.trader_id) > 0 else None
+                    if mirror_id is None:
+                        logger.warning(f"Skipping reduction for {m.trader_username}: invalid trader_id={m.trader_id}. Run /sync first.")
+                        results.append({"mirror_id": m.trader_id, "skipped": True, "detail": "Invalid mirror ID"})
+                        continue
                     resp = await etoro_client.execute_change_mirror_amount(
-                        int(m.trader_id), new_amount, is_simulation=is_sim
+                        mirror_id, new_amount, is_simulation=is_sim
                     )
                     results.append({"mirror_id": m.trader_id, "new_amount": new_amount, "response": resp})
                     if resp and resp.get("error"):
@@ -310,8 +325,13 @@ class AutomationEngine:
                     ).first()
                     if mirror and portfolio.total_value > 0:
                         new_amount = portfolio.total_value * (target_pct / 100)
+                        rebal_id = int(mirror.trader_id) if mirror.trader_id and str(mirror.trader_id).isdigit() and int(mirror.trader_id) > 0 else None
+                        if rebal_id is None:
+                            logger.warning(f"Skipping rebalance for {trader_name}: invalid trader_id={mirror.trader_id}. Run /sync first.")
+                            results.append({"mirror_id": mirror.trader_id, "skipped": True, "detail": "Invalid mirror ID"})
+                            continue
                         resp = await etoro_client.execute_change_mirror_amount(
-                            int(mirror.trader_id), new_amount, is_simulation=is_sim
+                            rebal_id, new_amount, is_simulation=is_sim
                         )
                         results.append({"mirror_id": mirror.trader_id, "new_amount": new_amount, "response": resp})
                         if resp and resp.get("error"):

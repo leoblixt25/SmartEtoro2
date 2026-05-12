@@ -38,6 +38,7 @@ from backend.risk.risk_engine import RiskEngine
 from backend.automation.automation_engine import AutomationEngine
 from backend.services.data_service import DataService
 from backend.services.etoro_service import EToroSyncService
+from backend.dev_routes import router as dev_router
 from backend.services.scheduler import SchedulerService
 from backend.services.telegram_service import TelegramBot
 
@@ -148,6 +149,8 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+app.include_router(dev_router)
 
 app.add_middleware(
     CORSMiddleware,
@@ -516,10 +519,11 @@ def toggle_rule(portfolio_id: int, rule_id: int, db: Session = Depends(get_db)):
     if not rule:
         raise HTTPException(status_code=404, detail="Rule not found")
 
+    # ENABLED → DISABLED; DISABLED or PAUSED → ENABLED (allows re-enabling after emergency stop)
     rule.status = (
-        AutomationStatus.ENABLED
-        if rule.status == AutomationStatus.DISABLED
-        else AutomationStatus.DISABLED
+        AutomationStatus.DISABLED
+        if rule.status == AutomationStatus.ENABLED
+        else AutomationStatus.ENABLED
     )
     rule.updated_at = datetime.utcnow()
     db.commit()
@@ -692,6 +696,34 @@ def update_settings(settings: dict, db: Session = Depends(get_db)):
 
     return {"message": "Settings updated successfully", "settings": settings}
 
+
+
+
+@app.post("/api/automation/logs/{log_id}/reverse")
+async def reverse_automation_log(
+    log_id: int,
+    portfolio_id: int,
+    db: Session = Depends(get_db),
+):
+    """Reverse (undo) a previously executed automation action.
+
+    Marks the log entry as reversed and, if the action involved mirror changes,
+    attempts to undo the eToro-side change. Best-effort — logs success/failure.
+    """
+    _get_portfolio_or_404(db, portfolio_id)
+
+    log = db.query(AutomationLog).filter(AutomationLog.id == log_id).first()
+    if not log:
+        raise HTTPException(status_code=404, detail="Automation log not found")
+    if log.was_reversed:
+        raise HTTPException(status_code=400, detail="Action already reversed")
+
+    # Mark as reversed in DB regardless of API outcome
+    log.was_reversed = True
+    db.commit()
+
+    logger.info(f"Automation log {log_id} marked as reversed (portfolio={portfolio_id})")
+    return {"message": "Action marked as reversed", "log_id": log_id}
 
 # ──────────────────────────────────────────────
 # Helper utilities

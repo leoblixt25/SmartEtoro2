@@ -116,15 +116,23 @@ class AIAnalysisEngine:
         return await self._call_ai(prompt, context="risk_check")
 
     async def _call_ai(self, prompt: str, context: str = "analysis") -> dict:
-        """Call Groq first, fall back to Gemini, then mock."""
+        """Call Groq first, fall back to Gemini, then mock.
+        
+        Groq SDK is synchronous — wrap in asyncio.to_thread to avoid
+        blocking the event loop and freezing all other requests.
+        """
         if self._groq_client:
             try:
-                response = self._groq_client.chat.completions.create(
-                    model="llama-3.3-70b-versatile",
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.3,
-                    max_tokens=1500,
-                )
+                import asyncio
+                client = self._groq_client
+                def _sync_call():
+                    return client.chat.completions.create(
+                        model="llama-3.3-70b-versatile",
+                        messages=[{"role": "user", "content": prompt}],
+                        temperature=0.3,
+                        max_tokens=1500,
+                    )
+                response = await asyncio.to_thread(_sync_call)
                 raw = response.choices[0].message.content
                 return self._parse_response(raw, context)
             except Exception as e:
