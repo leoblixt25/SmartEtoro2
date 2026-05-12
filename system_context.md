@@ -195,7 +195,7 @@ The scheduler starts in the FastAPI `lifespan` handler and stops on shutdown. It
 |-----|---------|----------|-------------|
 | `_keep_alive_job` | `IntervalTrigger` | **Every 4 min** | Pings `{RENDER_EXTERNAL_URL}/health` to prevent Render spin-down |
 | `_etoro_sync_job` | `IntervalTrigger` | **Every 5 min** | Iterates all portfolios, calls `sync_portfolio_data()` (see §3) |
-| `_automation_eval_job` | `IntervalTrigger` | **Every 10 min** | Evaluates all enabled automation rules; auto-executes or creates pending alerts |
+| `_automation_eval_job` | `IntervalTrigger` | **Every 2 min** | Evaluates all enabled automation rules; auto-executes or creates pending alerts |
 | `_risk_check_job` | `IntervalTrigger` | **Every 15 min** | Runs `RiskEngine.check_all()` on all portfolios, creates alerts for violations |
 | `_daily_snapshot_job` | `CronTrigger` | **Daily at 00:05** | Creates `PortfolioSnapshot` for historical tracking |
 | `_weekly_summary_job` | `CronTrigger` | **Sunday at 08:00** | Calls AI engine `generate_weekly_summary()`, saves as Alert |

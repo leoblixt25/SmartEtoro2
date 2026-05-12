@@ -369,10 +369,8 @@ class EToroAPIClient:
         Returns empty list if all formats fail — caller handles fallback.
         """
         base_url = f"{self.BASE_URL}/api/v1/markets/copy/ranking"
-        headers = {
-            "Content-Type": "application/json",
-            "User-Agent": "Mozilla/5.0",
-        }
+        # Use full auth headers — x-request-id is required by eToro API (returns 422 without it)
+        headers = self._get_headers()
 
         # Try different parameter naming conventions
         param_formats = [
@@ -635,7 +633,9 @@ class EToroSyncService:
             mirror_equity = initial_investment + m.get("closedPositionsNetProfit", 0.0) + unrealized_pnl_mirror
             
             import json
-            raw_id = m.get("mirrorID") or 0
+            # eToro API returns "mirrorId" (lowercase d) — "mirrorID" was a typo that
+            # caused all mirrors to resolve to 0 and be skipped, leaving 0 traders in DB.
+            raw_id = m.get("mirrorId") or m.get("mirrorID") or 0
             try:
                 mirror_id = int(raw_id)
             except (ValueError, TypeError):
