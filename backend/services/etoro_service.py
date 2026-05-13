@@ -663,6 +663,8 @@ class EToroSyncService:
                 trader.volatility = info.get("volatility", trader.volatility)
                 trader.risk_score = info.get("risk_score", trader.risk_score)
                 trader.total_return_pct = info.get("total_return_pct", trader.total_return_pct)
+                trader.is_active = True
+                trader.is_paused = False
                 trader.last_updated = datetime.utcnow()
             else:
                 trader = CopiedTrader(
@@ -675,6 +677,8 @@ class EToroSyncService:
                     volatility=info.get("volatility", 0.0),
                     risk_score=info.get("risk_score", 0.0),
                     total_return_pct=info.get("total_return_pct", 0.0),
+                    is_active=True,
+                    is_paused=False,
                 )
                 db.add(trader)
 
