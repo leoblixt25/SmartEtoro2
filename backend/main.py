@@ -268,6 +268,7 @@ def create_portfolio(payload: PortfolioCreate, db: Session = Depends(get_db)):
 
 @app.get("/api/portfolios/{portfolio_id}", response_model=PortfolioResponse)
 def get_portfolio(portfolio_id: int, db: Session = Depends(get_db)):
+    portfolio = _get_portfolio_or_404(db, portfolio_id)
     return portfolio
 
 
