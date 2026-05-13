@@ -45,11 +45,12 @@ def calculate_equal_weight_target(
 
     target_portfolio = []
     for t in scored_top3:
+        score = t.get("final_score") or t.get("score", 0)
         target_portfolio.append({
             "username": t["username"],
             "allocation_pct": TARGET_ALLOCATION_PCT,
             "reasoning": (
-                f"Equal‑weight target (score {t['score']}/100, "
+                f"Equal-weight target (score {score}/100, "
                 f"{t.get('source', 'current')})"
             ),
         })

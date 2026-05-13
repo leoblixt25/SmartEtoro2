@@ -782,23 +782,25 @@ class AutomationEngine:
                 total_value = portfolio.total_value or 10000
                 new_amount = total_value / 3
 
+                _w_score = w.get("final_score") or w.get("score", 0)
+                _b_score = best.get("final_score") or best.get("score", 0)
                 return ProposedAction(
                     rule_id=rule.id,
                     rule_name=rule.name,
                     action_type="swap",
                     description=(
-                        f"Swap {w['username']} (score {w['score']}/100) → "
-                        f"{best['username']} (score {best['score']}/100, "
-                        f"delta +{best['delta']}). Amount: ${new_amount:,.2f}"
+                        f"Swap {w['username']} (score {_w_score}/100) → "
+                        f"{best['username']} (score {_b_score}/100, "
+                        f"delta +{best.get('delta', 0)}). Amount: ${new_amount:,.2f}"
                     ),
                     details={
                         "old_username": w["username"],
                         "new_username": best["username"],
                         "mirror_id": str(mirror_id) if mirror_id else None,
                         "new_amount": round(new_amount, 2),
-                        "old_score": w["score"],
-                        "new_score": best["score"],
-                        "delta": best["delta"],
+                        "old_score": _w_score,
+                        "new_score": _b_score,
+                        "delta": best.get("delta", 0),
                     },
                     severity="info",
                     requires_approval=False,
@@ -857,7 +859,7 @@ class AutomationEngine:
                     "amount_per_trader": amount_per,
                     "total_value": total_value,
                     "top_swap_scores": [
-                        {"username": t["username"], "score": t["score"]}
+                        {"username": t["username"], "score": t.get("final_score") or t.get("score", 0)}
                         for t in top_swaps[:2]
                     ],
                 },

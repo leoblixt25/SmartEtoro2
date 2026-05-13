@@ -67,6 +67,9 @@ logs/
 *.sqlite
 *.sqlite3
 
+# Claude Code local config
+.claude/
+
 # Temporary files
 *.tmp
 *.temp

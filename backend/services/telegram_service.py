@@ -203,7 +203,7 @@ class TelegramBot:
 
     async def _cmd_help(self, update: Update, args: list[str]) -> None:
         text = (
-            "*🤖 CopyVault Bot Commands*\n\n"
+            "🤖 <b>CopyVault Bot Commands</b>\n\n"
             "Tap a button below or type a command:\n\n"
             "/status – Portfolio snapshot\n"
             "/portfolio – Full breakdown\n"
@@ -211,14 +211,14 @@ class TelegramBot:
             "/risk – Risk violations\n"
             "/alerts – Unread alerts\n"
             "/pending – Pending approvals\n"
-            "/approve <id> – Approve action\n"
+            "/approve &lt;id&gt; – Approve action\n"
             "/sync – Sync eToro now\n"
             "/pause – Emergency stop\n"
-            "/scout – Run AI Market Scout\n"
-            "/swap <old> <new> – Execute Scout swap\n"
+            "/scout – Run Growth Scout\n"
+            "/swap &lt;old&gt; &lt;new&gt; – Execute Scout swap\n"
             "/db_check – Database diagnostics\n"
             "/db_status – Database status overview\n"
-            "/mode <real|simulation> – Toggle live/simulation mode"
+            "/mode &lt;real|simulation&gt; – Toggle live/simulation mode"
         )
         await self._reply(update, text, parse_mode="HTML")
 
