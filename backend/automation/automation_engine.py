@@ -242,7 +242,7 @@ class AutomationEngine:
                 if retail_api_limited:
                     logger.info("Take-profit: retail API does not support mirror closing. Entering cooldown.")
                     return {"action": "take_profit", "results": results,
-                            "success_count": 0, "total": len(results),
+                            "success_count": len(results), "total": len(results),
                             "detail": "Mirror closing not available on retail API plan — entering cooldown"}
                 success_count = _count_successes(results)
                 if success_count == 0 and len(results) > 0:
@@ -470,6 +470,23 @@ class AutomationEngine:
                     close_ok = True
                 else:
                     logger.warning(f"EqualRebalance close failed (continuing): {close_resp.get('detail') if close_resp else 'no response'}")
+                    # Retail API 404: can't close mirrors — skip expensive delay and start attempts
+                    if close_resp and close_resp.get("status") == 404:
+                        logger.info("EqualRebalance: retail API does not support mirror closing — rebalance not possible")
+                        return {
+                            "action": "equal_rebalance",
+                            "current_trader": current_trader,
+                            "new_traders": new_traders,
+                            "replacement_traders": replacement_traders,
+                            "amount_per_trader": amount_per,
+                            "results": [{"step": "close", "username": current_trader, "response": close_resp}],
+                            "detail": "Retail API does not support mirror operations — manual rebalance required via eToro UI",
+                            "close_ok": False,
+                            "start_successes": 0,
+                            "success_count": 0,
+                            "total": 0,
+                            "retail_api_limited": True,
+                        }
                 results.append({"step": "close", "username": current_trader, "response": close_resp})
 
                 # Step 2: Safety delay — wait 60s for Available Cash to settle

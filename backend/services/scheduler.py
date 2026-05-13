@@ -185,12 +185,31 @@ class SchedulerService:
                             etoro_response = await engine.execute_etoro_action(
                                 sync_service.client, action, portfolio, db
                             )
-                            # Validate real success: check error flag AND success_count
+                            # Validate real success: check error flag, success_count, and retail API limitation
                             has_error = (etoro_response or {}).get("error", False)
+                            retail_limited = (etoro_response or {}).get("retail_api_limited", False)
                             success_count = (etoro_response or {}).get("success_count", None)
                             total = (etoro_response or {}).get("total", None)
-                            # success = no error AND (no count metric OR at least 1 succeeded OR nothing to act on)
-                            if has_error:
+                            err_detail = (etoro_response or {}).get("detail", "")
+
+                            # Retail API limitation is a known constraint, not a failure
+                            if retail_limited:
+                                success = True
+                                logger.info(f"Rule '{action.rule_name}': {err_detail}")
+                                try:
+                                    from backend.services.telegram_service import TelegramBot
+                                    bot = TelegramBot()
+                                    if bot.enabled:
+                                        await bot.send_message(
+                                            f"⚠️ <b>Retail API Limitation</b>\n\n"
+                                            f"Rule: <b>{action.rule_name}</b>\n"
+                                            f"Action: {action.action_type}\n"
+                                            f"Info: {err_detail}",
+                                            show_keyboard=True,
+                                        )
+                                except Exception as tg_err:
+                                    logger.warning("Failed to send Telegram retail API notification: %s", tg_err)
+                            elif has_error:
                                 success = False
                             elif success_count is not None and total is not None:
                                 # 0/0 = nothing to do (no active traders) — not a failure
@@ -204,11 +223,11 @@ class SchedulerService:
                                 etoro_response=etoro_response,
                             )
                             if success:
-                                detail = etoro_response.get("action", action.action_type)
-                                count_info = f" ({etoro_response.get('success_count', '?')}/{etoro_response.get('total', '?')} succeeded)" if "success_count" in (etoro_response or {}) else ""
-                                logger.info(f"Auto-executed rule '{action.rule_name}': {detail}{count_info}")
+                                if not retail_limited:
+                                    detail = etoro_response.get("action", action.action_type)
+                                    count_info = f" ({etoro_response.get('success_count', '?')}/{etoro_response.get('total', '?')} succeeded)" if "success_count" in (etoro_response or {}) else ""
+                                    logger.info(f"Auto-executed rule '{action.rule_name}': {detail}{count_info}")
                             else:
-                                err_detail = (etoro_response or {}).get("detail", "No details")
                                 logger.error(f"Auto-execution FAILED for rule '{action.rule_name}': {err_detail}")
                                 # Notify Telegram on failure
                                 try:
