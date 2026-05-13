@@ -5,7 +5,7 @@ Pydantic v2 schemas for request/response validation.
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field, ConfigDict
-from backend.database.models import RiskClassification, AutomationStatus, AlertType
+from backend.database.models import RiskClassification, AlertType
 
 
 class PortfolioBase(BaseModel):
