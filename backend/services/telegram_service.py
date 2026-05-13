@@ -636,15 +636,16 @@ class TelegramBot:
             await self._reply(update, f"Error: {e}")
 
     async def _cmd_scout(self, update: Update, args: list[str]) -> None:
-        """Run Deterministic Growth Scout on demand via Telegram.
+        """Run deterministric weighted scoring scout on demand via Telegram.
 
-        Primary:   Pure math scoring engine (always works, no deps).
-        Secondary: If AI is configured, append a 1‑sentence plain‑English summary.
+        Uses ScoutRunner with the 5-category weighted scoring model.
+        Primary: Pure math (always works). Secondary: AI narrator (optional).
         """
         from backend.database.connection import db_session
         from backend.database.models import Portfolio
         from backend.services.market_data import get_current_holdings, fetch_market_news, discover_top_traders
-        from backend.ai.scoring_engine import generate_scout_report, rank_candidates, scout_holdings, rank_combined
+        from backend.scout.trader_scout import get_scout_runner
+        from backend.scout.trader_filter import summarize_constraints
         from backend.services.allocation_logic import calculate_equal_weight_target
 
         await self._reply(update, "🔍 Running Growth Scout...")
@@ -660,34 +661,31 @@ class TelegramBot:
                     await self._reply(update, "No portfolio found.")
                     return
                 holdings = get_current_holdings(db, p.id)
-                if not holdings:
-                    await self._reply(update, "No active copied traders found.")
-                    return
+                logger.info(f"Scout: loaded {len(holdings)} active traders for portfolio {p.id}")
 
-                # ── Step 1: Deterministic growth scoring — ALWAYS runs ──
-                report = generate_scout_report(holdings, candidates)
+                runner = get_scout_runner()
+                report = await runner.run(holdings, candidates)
+                holdings_ranked = report.get("holdings_ranked", [])
+                top_swaps = report.get("top_swaps", [])
+                weakest = report.get("weakest")
+                avg_score = report.get("avg_score", 0)
 
-                # ── Step 2: Optional AI narrator (1 sentence only) ──
+                # ── AI narrator (optional) ──
                 ai_summary = None
                 try:
                     from backend.ai.groq_scout import GroqScout
                     groq = GroqScout()
-                    if groq.enabled:
-                        best_swap = report['top_swaps'][0] if report['top_swaps'] else None
+                    if groq.enabled and holdings_ranked:
+                        import asyncio
+                        best_name = top_swaps[0]["username"] if top_swaps else "none"
                         prompt = (
                             "Summarise this portfolio scout report in ONE plain-English sentence "
-                            "(max 20 words). No formatting, no JSON, no commentary.\n\n"
-                            f"Weakest trader: {report['weakest']['username']} "
-                            f"(score {report['weakest']['score']}/100).\n"
-                            + (
-                                f"Best swap: {best_swap['username']} "
-                                f"(score {best_swap['score']}/100, "
-                                f"delta +{best_swap['delta']}).\n"
-                                if best_swap else "No swap candidates available.\n"
-                            )
-                            + f"Portfolio avg score: {report['avg_score']}/100."
+                            "(max 20 words). No formatting, no JSON.\n\n"
+                            f"Weakest trader: {weakest['username']} "
+                            f"(score {weakest['final_score']}/100).\n"
+                            f"Best swap: {best_name}.\n"
+                            f"Portfolio avg score: {avg_score}/100."
                         )
-                        import asyncio
                         def _call():
                             return groq._ensure_client().chat.completions.create(
                                 model="llama-3.3-70b-versatile",
@@ -696,65 +694,69 @@ class TelegramBot:
                                 max_tokens=40,
                             )
                         resp = await asyncio.to_thread(_call)
-                        ai_summary = resp.choices[0].message.content.strip()
+                        if resp and resp.choices:
+                            ai_summary = resp.choices[0].message.content.strip()
                 except Exception as e:
-                    logger.info(f"AI narrator unavailable (non‑fatal): {e}")
-                    ai_summary = None
+                    logger.info("AI narrator unavailable (non-fatal): %s", e)
 
-                # ── Step 3: Build message ───────────────────────────
+                # ── Build display lines ──
                 lines = []
 
-                # Score table
-                lines.append("<b>📊 Growth Scores</b>")
-                for s in report["scored_holdings"]:
-                    icon = "🟢" if s["score"] >= 60 else ("🟡" if s["score"] >= 30 else "🔴")
-                    lines.append(
-                        f"{icon} <b>{s['username']}</b> — {s['score']}/100 "
-                        f"(alloc {s['allocation_pct']:.1f}%)"
-                    )
-                lines.append(f"\n<b>Portfolio Avg:</b> {report['avg_score']}/100")
+                lines.append("<b>📊 Weighted Growth Scores</b>")
+                if holdings_ranked:
+                    for s in holdings_ranked:
+                        icon = "🟢" if s["final_score"] >= 60 else ("🟡" if s["final_score"] >= 30 else "🔴")
+                        lines.append(
+                            f"{icon} <b>{s['username']}</b> — {s['final_score']}/100 "
+                            f"(P:{s['performance_score']} R:{s['risk_score_category']} "
+                            f"S:{s['stability_score']})"
+                        )
+                else:
+                    lines.append("  No active copied traders found.")
 
-                # AI narrator (optional)
+                lines.append(f"\n<b>Portfolio Avg:</b> {avg_score}/100")
+
                 if ai_summary:
                     lines.append(f"\n🤖 <i>{ai_summary}</i>")
 
                 # Weakest link
-                if report["action_required"]:
-                    w = report["weakest"]
+                if weakest and weakest["final_score"] < 50 and top_swaps:
                     lines.append(
-                        f"\n⚠️ <b>Weakest Link:</b> {w['username']} ({w['score']}/100)"
+                        f"\n⚠️ <b>Weakest Link:</b> {weakest['username']} ({weakest['final_score']}/100)"
                     )
-                    for pnl in w.get("penalties", []):
-                        lines.append(f"  {pnl}")
+                    warnings = summarize_constraints(weakest)
+                    for w in warnings:
+                        lines.append(f"  ⚠️ {w}")
 
-                    # Top swaps
-                    lines.append(f"\n<b>Top Swap Recommendations</b>")
-                    for i, swap in enumerate(report["top_swaps"], 1):
+                    lines.append(f"\n<b>Top Swap Recommendation</b>")
+                    for i, swap in enumerate(top_swaps[:3], 1):
                         lines.append(
-                            f"{i}. <b>{swap['username']}</b> — score {swap['score']}/100 "
-                            f"(delta +{swap['delta']})"
+                            f"{i}. <b>{swap['username']}</b> — {swap['final_score']}/100 "
+                            f"(return {swap['total_return_pct']:.1f}%, "
+                            f"risk {swap['risk_score']:.1f})"
                         )
                     lines.append(
-                        f"\nReply <code>/swap {report['flagged_trader']} {report['top_swaps'][0]['username']}</code> "
-                        f"to execute the top swap."
+                        f"\nReply <code>/swap {weakest['username']} {top_swaps[0]['username']}</code>"
                     )
                 else:
-                    lines.append(f"\n✅ <b>Portfolio Healthy</b> — all traders score ≥ 50/100")
+                    lines.append(f"\n✅ <b>Portfolio Healthy</b> — all traders score well")
 
-                # Top 3 Discovery Candidates (always shown)
-                scored_candidates = rank_candidates(holdings, candidates, top_n=3)
-                if scored_candidates:
-                    lines.append(f"\n<b>🔍 Top 3 Discovery Candidates</b>")
-                    for i, c in enumerate(scored_candidates, 1):
+                # Top 3 Discovery Candidates
+                candidates_ranked = report.get("candidates_ranked", [])
+                if candidates_ranked:
+                    display_candidates = candidates_ranked[:3]
+                    lines.append(f"\n<b>🔍 Top 3 Discovery</b>")
+                    for i, c in enumerate(display_candidates, 1):
                         lines.append(
-                            f"{i}. <b>{c['username']}</b> — score {c['score']}/100 "
-                            f"(risk {c.get('risk_score','?')}, Δ {c['delta']:+.1f})"
+                            f"{i}. <b>{c['username']}</b> — {c['final_score']}/100 "
+                            f"(return {c['total_return_pct']:.1f}%, "
+                            f"risk {c['risk_score']:.1f})"
                         )
 
-                # ── Step 4: 33.3% Equal‑Weight Allocation Plan ──────────
-                top3_combined = rank_combined(holdings, candidates, top_n=3)
-                if top3_combined:
-                    target = calculate_equal_weight_target(top3_combined, p.total_value or 10000)
+                # Allocation plan (combine best holdings + top candidates)
+                top3 = holdings_ranked[:3]
+                if top3:
+                    target = calculate_equal_weight_target(top3, p.total_value or 10000)
                     from backend.services.rebalance_service import calculate_rebalance_orders
                     current_positions = [
                         {"username": h["username"],
@@ -764,9 +766,9 @@ class TelegramBot:
                     orders = calculate_rebalance_orders(
                         p.total_value or 0, current_positions, target
                     )
-                    lines.append(f"\n---\n<b>📊 33.3% Equal‑Weight Plan</b>")
+                    lines.append(f"\n---\n<b>📊 33.3% Equal-Weight Plan</b>")
                     for a in target["target_portfolio"]:
-                        src = "discovery" if a["username"] not in {h["username"] for h in holdings} else "current"
+                        src = "discovery" if a["username"] not in {h["username"] for h in holdings_ranked} else "current"
                         icon = "🆕" if src == "discovery" else "🔄"
                         lines.append(
                             f"{icon} <b>{a['username']}</b> — {a['allocation_pct']}% "
@@ -780,7 +782,7 @@ class TelegramBot:
                 await self._reply(update, text, parse_mode="HTML")
 
         except Exception as e:
-            logger.error(f"/scout error: {e}")
+            logger.exception("/scout error")
             err_str = str(e)
             if "rate" in err_str.lower() or "429" in err_str or "quota" in err_str.lower():
                 await self._reply(update, "⚠️ Scout Error: Rate limit exceeded.")

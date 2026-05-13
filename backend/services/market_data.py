@@ -251,9 +251,9 @@ async def _fetch_news_fallback() -> List[Dict]:
                     "summary": "Yahoo RSS headlines unavailable, using market feed.",
                     "source": "Yahoo Finance",
                 }]
-    except Exception:
-        pass
-    logger.info("Scout: no market news available")
+    except Exception as news_err:
+        logger.warning("Yahoo chart fallback news failed: %s", news_err)
+    logger.info("Scout: market news fallback exhausted")
     return [{
         "title": "Market news unavailable",
         "summary": "Could not fetch live headlines. Scout will rely on trader metrics only.",

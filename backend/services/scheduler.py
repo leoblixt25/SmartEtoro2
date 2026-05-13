@@ -170,8 +170,8 @@ class SchedulerService:
                             holdings = get_current_holdings(db, portfolios[0].id)
                             if holdings:
                                 scored_data = generate_scout_report(holdings, discovery)
-                    except Exception:
-                        pass
+                    except Exception as fallback_err:
+                        logger.warning("Scout fallback also failed: %s", fallback_err)
 
                 for portfolio in portfolios:
                     traders = [t for t in portfolio.copied_traders if t.is_active and not t.is_paused]
@@ -404,15 +404,15 @@ class SchedulerService:
     async def _market_scout_job(self):
         """Run Growth Scout — evaluate portfolio using deterministic scoring.
 
-        Primary:   Pure math scoring engine (always works, no deps).
-        Secondary: If AI is configured, append a 1‑sentence plain‑English summary.
-
-        Never executes trades — only reports findings.
+        Uses ScoutRunner from scout/trader_scout.py (shared with Telegram /scout).
+        AI narrator is optional — pure math is primary.
+        Never executes trades — only reports findings via Alerts + Telegram.
         """
         from backend.database.connection import db_session
         from backend.database.models import Portfolio, Alert, AlertType
         from backend.services.market_data import get_current_holdings, fetch_market_news, discover_top_traders
-        from backend.ai.scoring_engine import generate_scout_report
+        from backend.scout.trader_scout import get_scout_runner
+        from backend.services.rebalance_service import calculate_rebalance_orders
 
         try:
             news = await fetch_market_news()
@@ -423,27 +423,37 @@ class SchedulerService:
                 for portfolio in portfolios:
                     holdings = get_current_holdings(db, portfolio.id)
                     if not holdings:
+                        logger.info("Skipping market scout — no active traders for portfolio %d", portfolio.id)
                         continue
 
-                    # ── Step 1: Deterministic growth scoring — ALWAYS runs ──
-                    report = generate_scout_report(holdings, candidates)
+                    runner = get_scout_runner()
+                    report = await runner.run(holdings, candidates)
 
-                    # ── Step 2: Optional AI narrator (1 sentence only) ──
+                    holdings_ranked = report.get("holdings_ranked", [])
+                    top_swaps = report.get("top_swaps", [])
+                    weakest = report.get("weakest")
+                    avg_score = report.get("avg_score", 0)
+
+                    # ── Determine if action is needed ──
+                    action_required = bool(weakest and weakest["final_score"] < 50 and top_swaps)
+                    flagged_user = weakest["username"] if weakest else None
+
+                    # ── AI narrator (optional) ──
                     ai_summary = None
                     try:
                         from backend.ai.groq_scout import GroqScout
                         groq = GroqScout()
-                        if groq.enabled:
-                            _best = report["top_swaps"][0] if report["top_swaps"] else None
+                        if groq.enabled and holdings_ranked:
+                            import asyncio
+                            _best = top_swaps[0]["username"] if top_swaps else "none"
                             prompt = (
                                 "Summarise this portfolio scout report in ONE plain-English sentence "
                                 "(max 20 words). No formatting, no JSON.\n\n"
-                                f"Weakest trader: {report['weakest']['username']} "
-                                f"(score {report['weakest']['score']}/100).\n"
-                                + (f"Best swap: {_best['username']} (score {_best['score']}/100).\n" if _best else "No swap candidates.\n")
-                                + f"Portfolio avg score: {report['avg_score']}/100."
+                                f"Weakest trader: {weakest['username']} "
+                                f"(score {weakest['final_score']}/100).\n"
+                                f"Best swap: {_best}.\n"
+                                f"Portfolio avg score: {avg_score}/100."
                             )
-                            import asyncio
                             def _call():
                                 return groq._ensure_client().chat.completions.create(
                                     model="llama-3.3-70b-versatile",
@@ -452,49 +462,38 @@ class SchedulerService:
                                     max_tokens=40,
                                 )
                             resp = await asyncio.to_thread(_call)
-                            ai_summary = resp.choices[0].message.content.strip()
+                            if resp and resp.choices:
+                                ai_summary = resp.choices[0].message.content.strip()
                     except Exception as e:
-                        logger.info(f"AI narrator unavailable (non‑fatal): {e}")
+                        logger.info("AI narrator unavailable (non‑fatal): %s", e)
 
-                    # ── Step 3: Build alert ──────────────────────────────
-                    alert_type = AlertType.AI_SCOUT
-                    if report["action_required"]:
-                        w = report["weakest"]
-                        title = f"⚠️ Growth Scout Alert: {w['username']} ({w['score']}/100)"
+                    # ── Build alert ──
+                    if action_required:
+                        title = f"⚠️ Growth Scout Alert: {flagged_user} ({weakest['final_score']}/100)"
                         message_parts = [
-                            f"Weakest link in portfolio.",
-                            f"Score: {w['score']}/100",
+                            f"Weakest link in portfolio: {flagged_user}",
+                            f"Score: {weakest['final_score']}/100",
                         ]
-                        for pnl in w.get("penalties", []):
-                            message_parts.append(f"⚠ {pnl}")
-                        if report["top_swaps"]:
-                            _ts = report["top_swaps"][0]
+                        if top_swaps:
+                            _ts = top_swaps[0]
                             message_parts.append(
-                                f"Recommended swap: {_ts['username']} "
-                                f"(score {_ts['score']}/100, "
-                                f"delta +{_ts['delta']})"
+                                f"Recommended swap: {_ts['username']} ({_ts['final_score']}/100)"
                             )
                         severity = "warning"
                     else:
-                        title = f"✅ Growth Scout: All Clear (avg {report['avg_score']}/100)"
-                        message_parts = [f"All traders score ≥ 50/100. Portfolio avg: {report['avg_score']}/100."]
+                        title = f"✅ Growth Scout: All Clear (avg {avg_score}/100)"
+                        message_parts = [f"Portfolio avg score: {avg_score}/100."]
                         severity = "info"
 
                     if ai_summary:
                         message_parts.append(f"\n🤖 {ai_summary}")
                     message = "\n".join(message_parts)
 
-                    # ── Step 4: Allocation plan (deterministic) ──────────
-                    top_by_score = sorted(
-                        report["scored_holdings"], key=lambda x: x["score"], reverse=True
-                    )[:3]
-                    if top_by_score:
-                        eq_pct = round(100 / len(top_by_score), 1)
-                        allocs = [
-                            {"username": t["username"], "allocation_pct": eq_pct}
-                            for t in top_by_score
-                        ]
-                        from backend.services.rebalance_service import calculate_rebalance_orders
+                    # ── Allocation plan ──
+                    top3 = holdings_ranked[:3]
+                    if top3:
+                        eq_pct = round(100 / len(top3), 1)
+                        allocs = [{"username": t["username"], "allocation_pct": eq_pct} for t in top3]
                         current_positions = [
                             {"username": h["username"],
                              "current_value": h.get("allocation_pct", 0) * 0.01 * (portfolio.total_value or 10000)}
@@ -504,9 +503,7 @@ class SchedulerService:
                             portfolio.total_value or 0, current_positions,
                             {"target_portfolio": allocs}
                         )
-                        alloc_lines = []
-                        for a in allocs:
-                            alloc_lines.append(f"• {a['username']} — {a['allocation_pct']}%")
+                        alloc_lines = [f"• {a['username']} — {a['allocation_pct']}%" for a in allocs]
                         if orders.get("warnings"):
                             alloc_lines.extend([f"⚠️ {w}" for w in orders["warnings"]])
                         message += "\n\n📊 Allocation Plan:\n" + "\n".join(alloc_lines)
@@ -514,7 +511,7 @@ class SchedulerService:
 
                     db.add(Alert(
                         portfolio_id=portfolio.id,
-                        alert_type=alert_type,
+                        alert_type=AlertType.AI_SCOUT,
                         title=title,
                         message=message,
                         severity=severity,
@@ -522,36 +519,30 @@ class SchedulerService:
                     db.commit()
 
                     # Send Telegram alert if action required
-                    if report["action_required"]:
+                    if action_required:
                         from backend.services.telegram_service import TelegramBot
                         bot = TelegramBot()
-                        if bot.enabled:
+                        if bot.enabled and top_swaps:
                             msg = (
                                 f"⚠️ <b>Growth Scout Alert</b>\n\n"
-                                f"Weakest link: <b>{report['weakest']['username']}</b> "
-                                f"(score {report['weakest']['score']}/100)\n\n"
+                                f"Weakest link: <b>{flagged_user}</b> "
+                                f"(score {weakest['final_score']}/100)\n\n"
+                                f"<b>Top swap:</b> {top_swaps[0]['username']} "
+                                f"(score {top_swaps[0]['final_score']}/100)\n\n"
+                                f"Reply <code>/swap {flagged_user} {top_swaps[0]['username']}</code>"
                             )
-                            for pnl in report["weakest"].get("penalties", []):
-                                msg += f"⚠️ {pnl}\n"
-                            if report["top_swaps"]:
-                                _sw = report["top_swaps"][0]
-                                msg += (
-                                    f"\n<b>Top swap:</b> {_sw['username']} "
-                                    f"(score {_sw['score']}/100, "
-                                    f"delta +{_sw['delta']})\n\n"
-                                    f"Reply <code>/swap {report['flagged_trader']} {_sw['username']}</code>"
-                                )
                             if ai_summary:
                                 msg += f"\n\n🤖 <i>{ai_summary}</i>"
                             await bot.send_message(msg, show_keyboard=True)
 
                     logger.info(
-                        f"Growth scout {'flagged' if report['action_required'] else 'cleared'} "
-                        f"portfolio {portfolio.id}"
+                        "Growth scout %s portfolio %d",
+                        "flagged" if action_required else "cleared",
+                        portfolio.id,
                     )
 
         except Exception as e:
-            logger.error(f"Market scout job failed: {e}")
+            logger.exception("Market scout job failed")
 
     async def _etoro_sync_job(self):
         """Sync portfolio data from eToro API."""

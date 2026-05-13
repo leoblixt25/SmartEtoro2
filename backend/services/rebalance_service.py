@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from typing import Dict, List
 
-from backend.ai.gemini_scout import TARGET_KEY
+TARGET_KEY = "target_portfolio"
 
 logger = logging.getLogger(__name__)
 

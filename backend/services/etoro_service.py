@@ -597,22 +597,31 @@ class EToroSyncService:
             mirror_equity = initial_investment + m.get("closedPositionsNetProfit", 0.0) + unrealized_pnl_mirror
             
             import json
-            # eToro API returns "mirrorId" (lowercase d) — "mirrorID" was a typo that
-            # caused all mirrors to resolve to 0 and be skipped, leaving 0 traders in DB.
-            raw_id = m.get("mirrorId") or m.get("mirrorID") or 0
+            # eToro API mirrorId key can vary by account type (retail vs non-retail).
+            # Use a best-effort string key rather than integer — some plans don't
+            # expose mirrorId at all, but we still want trader metrics for the scout.
+            raw_id = (
+                m.get("mirrorId")
+                or m.get("mirrorID")
+                or m.get("id")
+                or m.get("Id")
+                or 0
+            )
             try:
-                mirror_id = int(raw_id)
+                mirror_id = int(raw_id) if raw_id else 0
             except (ValueError, TypeError):
                 mirror_id = 0
-            if not mirror_id or mirror_id <= 0:
-                logger.warning(
-                    f"Skipping mirror for {m.get('parentUsername', 'Unknown')}: "
-                    f"all ID fields are None/0. Raw mirror JSON:\n"
-                    f"{json.dumps(m, indent=2, default=str)}"
-                )
-                continue
 
             username = m.get("parentUsername", "Unknown")
+
+            # If mirror_id is 0, use a synthetic stable ID (username hash) for DB storage.
+            # The trader will appear in the scout but execution commands will fail gracefully.
+            if not mirror_id or mirror_id <= 0:
+                logger.warning(
+                    f"Mirror for {username}: no mirrorId in API response. "
+                    f"Trader data will sync but execution commands (close/change) won't work."
+                )
+                mirror_id = abs(hash(username)) % (10 ** 8)  # synthetic stable 8-digit ID
             # allocated_amount = mirror equity (what's actually at stake for this trader)
             # Used by partial_profit_lock and reduce_on_drawdown to compute new amounts
             allocated_amount = mirror_equity

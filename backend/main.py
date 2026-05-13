@@ -657,7 +657,7 @@ def get_settings(db: Session = Depends(get_db)):
         "etoro_account_id": _load_setting("etoro_account_id"),
         "telegram_bot_token": _load_setting("telegram_bot_token"),
         "telegram_chat_id": _load_setting("telegram_chat_id"),
-        "is_simulation": _load_setting("is_simulation", True) is True,
+        "is_simulation": _load_setting("is_simulation", "true").lower() == "true",
     }
 
 
