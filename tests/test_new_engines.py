@@ -94,14 +94,92 @@ class TestEligibilityEngine:
     def test_filter_candidates_all_checks_together(self):
         from backend.ai.eligibility_engine import filter_candidates
         candidates = [
-            {"username": "A", "source": "tradeinfo", "confidence": 1.0},
-            {"username": "B", "source": "tradeinfo", "confidence": 1.0, "risk_score": 9.5},
+            {"username": "A", "source": "tradeinfo", "confidence": 1.0, "min_copy_amount": 300},
+            {"username": "B", "source": "tradeinfo", "confidence": 1.0, "risk_score": 9.5, "min_copy_amount": 300},
             {"username": "C", "source": "tradeinfo", "confidence": 1.0, "min_copy_amount": 50000},
         ]
         eligible, excluded = filter_candidates(candidates, set(), available_balance=5000)
         assert len(eligible) == 1
         assert eligible[0]["username"] == "A"
         assert len(excluded) == 2
+
+    def test_rejects_zero_holdings(self):
+        from backend.ai.eligibility_engine import filter_candidates
+        candidates = [
+            {"username": "Empty", "source": "tradeinfo", "confidence": 1.0, "min_copy_amount": 300, "holdings": []},
+        ]
+        eligible, excluded = filter_candidates(candidates, set(), available_balance=5000)
+        assert len(eligible) == 0
+        assert any("no_holdings" in " ".join(e.get("exclusion_reasons", [])) for e in excluded)
+
+    def test_rejects_no_positions(self):
+        from backend.ai.eligibility_engine import filter_candidates
+        candidates = [
+            {"username": "NoPos", "source": "tradeinfo", "confidence": 1.0, "min_copy_amount": 300, "positions": []},
+        ]
+        eligible, excluded = filter_candidates(candidates, set(), available_balance=5000)
+        assert len(eligible) == 0
+        assert any("no_positions" in " ".join(e.get("exclusion_reasons", [])) for e in excluded)
+
+    def test_rejects_missing_min_copy(self):
+        from backend.ai.eligibility_engine import filter_candidates
+        candidates = [
+            {"username": "NoMin", "source": "tradeinfo", "confidence": 1.0, "min_copy_amount": None},
+        ]
+        eligible, excluded = filter_candidates(candidates, set(), available_balance=5000)
+        assert len(eligible) == 0
+        assert any("missing_min_copy" in " ".join(e.get("exclusion_reasons", [])) for e in excluded)
+
+    def test_rejects_fallback_zero_return(self):
+        from backend.ai.eligibility_engine import filter_candidates
+        candidates = [
+            {"username": "Zero", "source": "fallback", "confidence": 0.0, "total_return_pct": 0.0, "min_copy_amount": 300},
+        ]
+        eligible, excluded = filter_candidates(candidates, set(), available_balance=5000)
+        assert len(eligible) == 0
+        reasons = " ".join(excluded[0].get("exclusion_reasons", []))
+        assert "no_valid_data" in reasons or "invalid_source" in reasons
+
+    def test_rejects_unknown_source_with_return(self):
+        from backend.ai.eligibility_engine import filter_candidates
+        candidates = [
+            {"username": "NoSrc", "total_return_pct": 11.2, "risk_score": 5, "min_copy_amount": 200},
+        ]
+        eligible, excluded = filter_candidates(candidates, set(), available_balance=5000)
+        assert len(eligible) == 0
+        reasons = " ".join(excluded[0].get("exclusion_reasons", []))
+        assert "invalid_source" in reasons
+
+    def test_accepts_valid_trader(self):
+        from backend.ai.eligibility_engine import filter_candidates
+        candidates = [
+            {"username": "Valid", "source": "tradeinfo", "confidence": 1.0,
+             "min_copy_amount": 200, "total_return_pct": 15.0, "risk_score": 4.0},
+        ]
+        eligible, excluded = filter_candidates(candidates, set(), available_balance=5000)
+        assert len(eligible) == 1
+        assert eligible[0]["username"] == "Valid"
+
+    def test_rejects_zero_portfolio_size(self):
+        from backend.ai.eligibility_engine import filter_candidates
+        candidates = [
+            {"username": "ZeroPort", "source": "tradeinfo", "confidence": 1.0,
+             "min_copy_amount": 200, "portfolio_size": 0},
+        ]
+        eligible, excluded = filter_candidates(candidates, set(), available_balance=5000)
+        assert len(eligible) == 0
+        reasons = " ".join(excluded[0].get("exclusion_reasons", []))
+        assert "zero_portfolio_size" in reasons
+
+    def test_rejects_blocked_trader(self):
+        from backend.ai.eligibility_engine import filter_candidates
+        candidates = [
+            {"username": "Blocked", "is_copiable": False, "source": "tradeinfo",
+             "confidence": 1.0, "min_copy_amount": 200},
+        ]
+        eligible, excluded = filter_candidates(candidates, set(), available_balance=5000)
+        assert len(eligible) == 0
+        assert any("copy_not_available" in " ".join(e.get("exclusion_reasons", [])) for e in excluded)
 
 
 # ── PortfolioEngine ────────────────────────────────────────────────

@@ -309,8 +309,8 @@ class TestFilterCandidates:
     def test_case_insensitive_matching(self):
         from backend.ai.eligibility_engine import filter_candidates
         candidates = [
-            {"username": "Booker03", "source": "tradeinfo", "confidence": 1.0},
-            {"username": "OTHER", "source": "tradeinfo", "confidence": 1.0},
+            {"username": "Booker03", "source": "tradeinfo", "confidence": 1.0, "min_copy_amount": 200},
+            {"username": "OTHER", "source": "tradeinfo", "confidence": 1.0, "min_copy_amount": 200},
         ]
         eligible, excluded = filter_candidates(candidates, {"booker03"}, 5000)
         assert len(eligible) == 1
@@ -320,8 +320,8 @@ class TestFilterCandidates:
     def test_no_holdings_nothing_excluded(self):
         from backend.ai.eligibility_engine import filter_candidates
         candidates = [
-            {"username": "a", "source": "tradeinfo", "confidence": 1.0},
-            {"username": "b", "source": "tradeinfo", "confidence": 1.0},
+            {"username": "a", "source": "tradeinfo", "confidence": 1.0, "min_copy_amount": 200},
+            {"username": "b", "source": "tradeinfo", "confidence": 1.0, "min_copy_amount": 200},
         ]
         eligible, excluded = filter_candidates(candidates, set(), 5000)
         assert len(eligible) == 2
@@ -350,12 +350,13 @@ class TestFilterCandidates:
         assert len(eligible) == 2
         assert len(excluded) == 0
 
-    def test_missing_min_copy_defaults_to_200(self):
+    def test_missing_min_copy_rejected(self):
         from backend.ai.eligibility_engine import filter_candidates
         candidates = [{"username": "no_min_field", "source": "tradeinfo", "confidence": 1.0}]
         eligible, excluded = filter_candidates(candidates, set(), 150)
         assert len(eligible) == 0
-        assert "insufficient_capital" in ",".join(excluded[0].get("exclusion_reasons", []))
+        reasons = ",".join(excluded[0].get("exclusion_reasons", []))
+        assert "missing_min_copy" in reasons
 
     def test_risk_too_high_excluded(self):
         from backend.ai.eligibility_engine import filter_candidates
