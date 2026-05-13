@@ -732,6 +732,28 @@ class EToroSyncService:
             if traders:
                 self._sync_traders(db, portfolio_id, traders, portfolio.total_value)
 
+            # ── Validation: compare API equity field vs computed total ──
+            etoro_api_total = None
+            etoro_field = None
+            for field in ("equity", "netValue", "NetValue", "totalValue", "TotalValue", "NetLiquidatingValue"):
+                v = raw.get("clientPortfolio", {}).get(field)
+                if v is not None and float(v) > 0:
+                    etoro_api_total = float(v)
+                    etoro_field = field
+                    break
+
+            app_total = float(portfolio.total_value or 0)
+            if etoro_api_total is not None:
+                diff = app_total - etoro_api_total
+                diff_pct = (diff / etoro_api_total) * 100 if etoro_api_total else 0
+                log_level = logger.warning if abs(diff_pct) > 1.0 else logger.info
+                log_level(
+                    f"VALUE CHECK: eToro({etoro_field})={etoro_api_total:.2f}, "
+                    f"app={app_total:.2f}, diff={diff:.2f} ({diff_pct:+.4f}%)"
+                )
+            else:
+                logger.info(f"VALUE CHECK: no API equity field found, using computed total={app_total:.2f}")
+
             snapshot = PortfolioSnapshot(
                 portfolio_id=portfolio_id,
                 total_value=portfolio.total_value,
@@ -750,14 +772,15 @@ class EToroSyncService:
     def _extract_summary(self, raw: Dict) -> Dict:
         """Parse eToro API portfolio response into flat summary dict.
 
-        IMPORTANT: Uses clientPortfolio.equity from the API as the single
-        source of truth for total value. eToro equity already includes:
-        invested capital + unrealized PnL + realized PnL + available cash.
-        Do NOT manually add PnL components — that double-counts.
+        Total Value priority:
+          1. Direct API equity field (try multiple field names)
+          2. Sum of ACTIVE mirror current values + available_cash
+             (mirror current value = initialInvestment + unrealizedPnL,
+              NOT including closedPositionsNetProfit which is already
+              paid out to the account)
 
-        Fallback (when equity is missing from API response):
-          Total Value = invested + unrealized_pnl + available_cash
-          (still excludes realized_pnl to avoid double-counting)
+        Never adds realized PnL to total_value — it is already reflected
+        in the mirror current values and/or available cash.
         """
         cp = raw.get("clientPortfolio", {})
         positions = cp.get("positions", [])
@@ -781,22 +804,49 @@ class EToroSyncService:
         # Available cash = account-level credit only
         available_cash = cp.get("credit", 0.0)
 
-        # Use API equity as single source of truth — fall back to safe formula
-        api_equity = cp.get("equity")
-        if api_equity is not None and api_equity > 0:
-            total_value = float(api_equity)
-            equity_source = "api"
+        # ── Try multiple API equity field names ────────────────────────────
+        api_equity = None
+        equity_field = None
+        for field in ("equity", "netValue", "NetValue", "totalValue", "TotalValue", "NetLiquidatingValue"):
+            v = cp.get(field)
+            if v is not None and float(v) > 0:
+                api_equity = float(v)
+                equity_field = field
+                break
+
+        if api_equity is not None:
+            total_value = api_equity
+            equity_source = f"api_{equity_field}"
         else:
-            total_value = invested + unrealized_pnl + available_cash
-            equity_source = "computed"
+            # Fallback: sum of mirror current values + direct positions + cash
+            # Mirror current value = initialInvestment + unrealizedPnL only
+            # (NOT including closedPositionsNetProfit — already paid out)
+            sum_mirror_current = 0.0
+            for m in mirrors:
+                mirror_init = m.get("initialInvestment", 0.0)
+                mirror_upnl = sum(
+                    pos.get("unrealizedPnL", {}).get("pnL", 0.0)
+                    for pos in m.get("positions", [])
+                )
+                sum_mirror_current += mirror_init + mirror_upnl
+
+            # Direct positions current value = amount + unrealizedPnL
+            sum_direct_current = 0.0
+            for p in positions:
+                sum_direct_current += p.get("amount", 0.0) + p.get("unrealizedPnL", {}).get("pnL", 0.0)
+
+            total_value = sum_mirror_current + sum_direct_current + available_cash
+            equity_source = "mirror_sum"
 
         currency = "EUR" if cp.get("accountCurrencyId") == 2 else "USD"
 
         logger.info(
             f"Portfolio total calculated: {total_value} "
-            f"(equity={api_equity}, source={equity_source}, "
-            f"invested={invested}, unrealized_pnl={unrealized_pnl}, "
-            f"realized_pnl={realized_pnl}, cash={available_cash})"
+            f"(equity={api_equity}, source={equity_source})"
+        )
+        logger.info(
+            f"  invested={invested}, unrealized_pnl={unrealized_pnl}, "
+            f"realized_pnl={realized_pnl}, cash={available_cash}"
         )
 
         return {
@@ -819,7 +869,7 @@ class EToroSyncService:
         to invested + unrealized_pnl + available_cash (no realized_pnl).
 
         Allocation % per user formula:
-          (initialInvestment + closedPositionsNetProfit + unrealizedPnL) / Total Value * 100
+          (initialInvestment + unrealizedPnL) / Total Value * 100
         """
         cp = raw.get("clientPortfolio", {})
         mirrors = cp.get("mirrors", [])
@@ -842,8 +892,8 @@ class EToroSyncService:
             total_pnl = m.get("closedPositionsNetProfit", 0.0) + unrealized_pnl_mirror
             initial_investment = m.get("initialInvestment", 1.0)
             
-            # Mirror equity = initialInvestment + closedPositionsNetProfit + unrealizedPnL
-            mirror_equity = initial_investment + m.get("closedPositionsNetProfit", 0.0) + unrealized_pnl_mirror
+            # Mirror equity = initialInvestment + unrealizedPnL (no closedPositionsNetProfit — already in cash)
+            mirror_equity = initial_investment + unrealized_pnl_mirror
             
             import json
             # eToro API mirrorId key can vary by account type (retail vs non-retail).
@@ -892,6 +942,17 @@ class EToroSyncService:
     def _sync_traders(self, db, portfolio_id: int, traders_data: List[Dict], total_equity: float):
         """Update or create copied trader records."""
         from backend.database.models import CopiedTrader
+
+        # Normalize allocation percentages if they exceed 100%
+        total_pct = sum(info.get("allocation_pct", 0.0) for info in traders_data)
+        if total_pct > 100.0:
+            scale = 100.0 / total_pct
+            for info in traders_data:
+                info["allocation_pct"] = info.get("allocation_pct", 0.0) * scale
+            logger.warning(
+                f"Allocation sum was {total_pct:.2f}% — "
+                f"normalized by {scale:.4f}x to total 100%"
+            )
 
         for info in traders_data:
             trader_id = info.get("trader_id")
