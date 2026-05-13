@@ -35,6 +35,9 @@ class EToroAPIClient:
         self.user_key = os.getenv("ETORO_API_KEY")
         self.api_key = os.getenv("ETORO_API_SECRET")
         self.account_id = os.getenv("ETORO_ACCOUNT_ID", "")
+        # ETORO_ENV overrides the API environment segment (e.g. "demo").
+        # Some API keys only have demo permissions — set this to "demo" in that case.
+        self.env = os.getenv("ETORO_ENV", "real").strip().lower()
 
         if not self.api_key or not self.user_key:
             logger.warning("eToro API credentials not configured")
@@ -71,7 +74,7 @@ class EToroAPIClient:
         if not self.enabled:
             return None
 
-        env = "real"
+        env = self.env
         last_error = None
         import asyncio
 
@@ -122,7 +125,7 @@ class EToroAPIClient:
         if not self._validate_mirror_id(mirror_id, "close_mirror"):
             return {"error": True, "detail": f"Invalid mirror_id={mirror_id} — cannot close"}
 
-        env = "real"
+        env = self.env
         url = f"{self.BASE_URL}/api/v1/trading/mirrors/{env}/{mirror_id}"
         logger.info(f"Closing mirror via DELETE {url}")
 
@@ -177,7 +180,7 @@ class EToroAPIClient:
         if not self._validate_mirror_id(mirror_id, "change_mirror_amount"):
             return {"error": True, "detail": f"Invalid mirror_id={mirror_id} — cannot change amount"}
 
-        env = "real"
+        env = self.env
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(
@@ -210,7 +213,7 @@ class EToroAPIClient:
         if not self._validate_mirror_id(mirror_id, "pause_mirror"):
             return {"error": True, "detail": f"Invalid mirror_id={mirror_id} — cannot pause"}
 
-        env = "real"
+        env = self.env
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(
@@ -243,7 +246,7 @@ class EToroAPIClient:
         if not self._validate_mirror_id(mirror_id, "unpause_mirror"):
             return {"error": True, "detail": f"Invalid mirror_id={mirror_id} — cannot unpause"}
 
-        env = "real"
+        env = self.env
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(
@@ -283,7 +286,7 @@ class EToroAPIClient:
             logger.error(f"Cannot start mirror for {username}: amount ${amount:,.2f} is below eToro's $200 minimum")
             return {"error": True, "detail": f"Amount ${amount:,.2f} is below eToro's $200 minimum copy amount"}
 
-        env = "real"
+        env = self.env
         body = {"username": username, "amount": amount, "isDemo": False}
 
         # Attempt 1: POST /api/v1/trading/mirrors/{env}
