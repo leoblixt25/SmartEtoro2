@@ -364,88 +364,44 @@ class EToroAPIClient:
     async def get_discovery_candidates(self) -> List[Dict]:
         """Fetch discovery candidates from /copy/ranking.
 
-        Tries multiple parameter name formats (snake_case, camelCase) because
-        the eToro API may reject certain parameter names with 422.
-        Returns empty list if all formats fail — caller handles fallback.
+        The /markets/copy/ranking endpoint is NOT available in the retail/demo
+        public API (returns 404 RouteNotFound). This method tries once to
+        confirm, then returns an empty list so the caller falls back to the
+        static trader list immediately.
         """
         base_url = f"{self.BASE_URL}/api/v1/markets/copy/ranking"
         # Use full auth headers — x-request-id is required by eToro API (returns 422 without it)
         headers = self._get_headers()
 
-        # Try different parameter naming conventions
-        param_formats = [
-            # Format 1: original snake_case
-            {"period": "12M", "sort": "Gain", "limit": 100, "offset": 0},
-            # Format 2: camelCase
-            {"Period": "12M", "Sort": "Gain", "Limit": 100, "Offset": 0},
-            # Format 3: minimal params
-            {"period": "12M", "limit": 100},
-            # Format 4: no params at all
-            {},
-        ]
-
-        all_candidates = []
-        used_format = None
-
-        for fmt_index, params in enumerate(param_formats):
-            logger.info(f"Discovery attempt format {fmt_index + 1}/{len(param_formats)}: params={params}")
-            try:
-                async with httpx.AsyncClient(timeout=15.0) as client:
-                    resp = await client.get(base_url, params=params, headers=headers)
-                    resp_body = resp.text[:1000]
-                    logger.info(
-                        f"Discovery format {fmt_index + 1}: "
-                        f"status={resp.status_code}, "
-                        f"body_preview={resp_body[:200]}"
-                    )
-                    if resp.status_code == 200:
-                        from backend.services.market_data import _parse_etoro_discovery
-                        data = resp.json()
-                        candidates = _parse_etoro_discovery(data, page=1)
-                        all_candidates.extend(candidates)
-                        used_format = fmt_index
-                        logger.info(f"Discovery format {fmt_index + 1}: {len(candidates)} candidates")
-                        break
-                    elif resp.status_code == 422:
-                        logger.warning(
-                            f"Discovery format {fmt_index + 1} returned 422: params={params}. "
-                            f"Response: {resp_body[:300]}"
-                        )
-                        continue
-                    elif resp.status_code == 404:
-                        # 404 = endpoint doesn't exist on this API plan.
-                        # No point trying other param formats — break immediately.
-                        logger.warning(
-                            "Discovery returned 404 RouteNotFound — endpoint not available on "
-                            "this API plan. Stopping all format attempts."
-                        )
-                        return []
-                    else:
-                        logger.warning(
-                            f"Discovery format {fmt_index + 1} returned {resp.status_code}: "
-                            f"{resp_body[:300]}"
-                        )
-                        continue
-            except httpx.HTTPStatusError as e:
-                logger.warning(
-                    f"Discovery format {fmt_index + 1} HTTP error {e.response.status_code}: "
-                    f"{e.response.text[:300]}"
+        # Single call with minimal params — 404 means not available on this plan, fast-fail.
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(base_url, params={"period": "12M", "limit": 100}, headers=headers)
+                logger.info(
+                    f"Discovery endpoint {base_url}: "
+                    f"status={resp.status_code}, "
+                    f"body={resp.text[:300]}"
                 )
-                continue
-            except Exception as e:
-                logger.warning(f"Discovery format {fmt_index + 1} failed: {e}")
-                continue
-
-        if all_candidates:
-            logger.info(f"Discovery total: {len(all_candidates)} candidates (used format {used_format})")
-        else:
-            logger.warning(
-                "All discovery parameter formats failed. "
-                "The /copy/ranking endpoint may require different parameters "
-                "or may not be available on this API plan. "
-                "Caller should use static fallback list."
-            )
-        return all_candidates
+                if resp.status_code == 200:
+                    from backend.services.market_data import _parse_etoro_discovery
+                    data = resp.json()
+                    candidates = _parse_etoro_discovery(data, page=1)
+                    logger.info(f"Discovery: {len(candidates)} candidates")
+                    return candidates
+                if resp.status_code == 404:
+                    logger.warning(
+                        "Discovery returned 404 RouteNotFound — endpoint not available on "
+                        "this API plan. Using static fallback."
+                    )
+                else:
+                    logger.info(
+                        f"Discovery endpoint not available (HTTP {resp.status_code}) — "
+                        "caller will use static fallback list"
+                    )
+                return []
+        except Exception as e:
+            logger.info(f"Discovery endpoint unreachable ({e}) — caller will use static fallback")
+            return []
 
     def _get_mock_account_summary(self) -> Dict:
         import random
