@@ -205,7 +205,7 @@ class TestDiscoverTopTraders:
             assert result[0]["username"] == "trader1"
 
     @pytest.mark.asyncio
-    async def test_empty_enrichment_triggers_emergency_fallback(self):
+    async def test_empty_enrichment_returns_empty_list(self):
         with patch("backend.services.etoro_service.EToroAPIClient") as MockClient:
             client = AsyncMock()
             client.enabled = True
@@ -224,11 +224,10 @@ class TestDiscoverTopTraders:
 
             from backend.services.market_data import discover_top_traders
             result = await discover_top_traders()
-            # Should fall back to legacy
-            assert len(result) > 0
+            assert len(result) == 0
 
     @pytest.mark.asyncio
-    async def test_exception_triggers_emergency_fallback(self):
+    async def test_exception_returns_empty_list(self):
         with patch("backend.services.etoro_service.EToroAPIClient") as MockClient:
             client = AsyncMock()
             client.enabled = True
@@ -244,21 +243,7 @@ class TestDiscoverTopTraders:
 
             from backend.services.market_data import discover_top_traders
             result = await discover_top_traders()
-            assert len(result) > 0
-
-
-class TestLegacyDefaultCandidates:
-    """_legacy_default_candidates returns expected static list."""
-
-    def test_returns_known_traders(self):
-        from backend.services.market_data import _legacy_default_candidates
-        result = _legacy_default_candidates()
-        assert len(result) == 8
-        usernames = [t["username"] for t in result]
-        assert "JeppeKirkBonde" in usernames
-        assert "booker03" in usernames
-        assert all(t["is_copiable"] for t in result)
-        assert all(t["min_copy_amount"] == 200 for t in result)
+            assert len(result) == 0
 
 
 # ── Eligibility Engine Tests ────────────────────────────────────────
@@ -276,6 +261,9 @@ class TestFilterCandidates:
             "risk_score": 4.0,
             "total_return_pct": 15.0,
             "min_copy_amount": 200,
+            "available": True,
+            "copiers": 100,
+            "positions_count": 10,
         }]
         eligible, excluded = filter_candidates(candidates, set(), 5000)
         assert len(eligible) == 1
@@ -290,6 +278,9 @@ class TestFilterCandidates:
             "confidence": 1.0,
             "risk_score": 4.0,
             "total_return_pct": 10.0,
+            "available": True,
+            "copiers": 100,
+            "positions_count": 10,
         }]
         eligible, excluded = filter_candidates(candidates, {"copiedtrader"}, 5000)
         assert len(eligible) == 0
@@ -298,8 +289,8 @@ class TestFilterCandidates:
     def test_case_insensitive_matching(self):
         from backend.ai.eligibility_engine import filter_candidates
         candidates = [
-            {"username": "Booker03", "source": "tradeinfo", "confidence": 1.0, "min_copy_amount": 200, "total_return_pct": 15.0},
-            {"username": "OTHER", "source": "tradeinfo", "confidence": 1.0, "min_copy_amount": 200, "total_return_pct": 15.0},
+            {"username": "Booker03", "source": "tradeinfo", "confidence": 1.0, "min_copy_amount": 200, "total_return_pct": 15.0, "available": True, "copiers": 100, "positions_count": 10, "risk_score": 4.0},
+            {"username": "OTHER", "source": "tradeinfo", "confidence": 1.0, "min_copy_amount": 200, "total_return_pct": 15.0, "available": True, "copiers": 100, "positions_count": 10, "risk_score": 4.0},
         ]
         eligible, excluded = filter_candidates(candidates, {"booker03"}, 5000)
         assert len(eligible) == 1
@@ -309,8 +300,8 @@ class TestFilterCandidates:
     def test_no_holdings_nothing_excluded(self):
         from backend.ai.eligibility_engine import filter_candidates
         candidates = [
-            {"username": "a", "source": "tradeinfo", "confidence": 1.0, "min_copy_amount": 200, "total_return_pct": 10.0},
-            {"username": "b", "source": "tradeinfo", "confidence": 1.0, "min_copy_amount": 200, "total_return_pct": 10.0},
+            {"username": "a", "source": "tradeinfo", "confidence": 1.0, "min_copy_amount": 200, "total_return_pct": 10.0, "available": True, "copiers": 100, "positions_count": 10, "risk_score": 4.0},
+            {"username": "b", "source": "tradeinfo", "confidence": 1.0, "min_copy_amount": 200, "total_return_pct": 10.0, "available": True, "copiers": 100, "positions_count": 10, "risk_score": 4.0},
         ]
         eligible, excluded = filter_candidates(candidates, set(), 5000)
         assert len(eligible) == 2
@@ -319,8 +310,8 @@ class TestFilterCandidates:
     def test_min_copy_too_high_excluded(self):
         from backend.ai.eligibility_engine import filter_candidates
         candidates = [
-            {"username": "cheap", "source": "tradeinfo", "confidence": 1.0, "min_copy_amount": 100, "total_return_pct": 10.0},
-            {"username": "expensive", "source": "tradeinfo", "confidence": 1.0, "min_copy_amount": 20000, "total_return_pct": 10.0},
+            {"username": "cheap", "source": "tradeinfo", "confidence": 1.0, "min_copy_amount": 100, "total_return_pct": 10.0, "available": True, "copiers": 100, "positions_count": 10, "risk_score": 4.0},
+            {"username": "expensive", "source": "tradeinfo", "confidence": 1.0, "min_copy_amount": 20000, "total_return_pct": 10.0, "available": True, "copiers": 100, "positions_count": 10, "risk_score": 4.0},
         ]
         eligible, excluded = filter_candidates(candidates, set(), 1500)
         assert len(eligible) == 1
@@ -332,8 +323,8 @@ class TestFilterCandidates:
     def test_all_affordable_none_excluded(self):
         from backend.ai.eligibility_engine import filter_candidates
         candidates = [
-            {"username": "a", "source": "tradeinfo", "confidence": 1.0, "min_copy_amount": 100, "total_return_pct": 10.0},
-            {"username": "b", "source": "tradeinfo", "confidence": 1.0, "min_copy_amount": 200, "total_return_pct": 10.0},
+            {"username": "a", "source": "tradeinfo", "confidence": 1.0, "min_copy_amount": 100, "total_return_pct": 10.0, "available": True, "copiers": 100, "positions_count": 10, "risk_score": 4.0},
+            {"username": "b", "source": "tradeinfo", "confidence": 1.0, "min_copy_amount": 200, "total_return_pct": 10.0, "available": True, "copiers": 100, "positions_count": 10, "risk_score": 4.0},
         ]
         eligible, excluded = filter_candidates(candidates, set(), 1000)
         assert len(eligible) == 2
@@ -341,7 +332,7 @@ class TestFilterCandidates:
 
     def test_missing_min_copy_rejected(self):
         from backend.ai.eligibility_engine import filter_candidates
-        candidates = [{"username": "no_min_field", "source": "tradeinfo", "confidence": 1.0}]
+        candidates = [{"username": "no_min_field", "source": "tradeinfo", "confidence": 1.0, "available": True, "copiers": 100, "positions_count": 10, "risk_score": 4.0, "total_return_pct": 15.0}]
         eligible, excluded = filter_candidates(candidates, set(), 150)
         assert len(eligible) == 0
         reasons = ",".join(excluded[0].get("exclusion_reasons", []))
@@ -356,6 +347,9 @@ class TestFilterCandidates:
             "risk_score": 9.5,
             "total_return_pct": 20.0,
             "min_copy_amount": 200,
+            "available": True,
+            "copiers": 100,
+            "positions_count": 10,
         }]
         eligible, excluded = filter_candidates(candidates, set(), 5000, max_risk=9.0)
         assert len(eligible) == 0
@@ -371,6 +365,9 @@ class TestFilterCandidates:
             "min_copy_amount": 200,
             "source": "scraper",
             "confidence": 0.5,
+            "available": True,
+            "copiers": 100,
+            "positions_count": 10,
         }]
         eligible, excluded = filter_candidates(candidates, set(), 5000)
         assert len(eligible) == 0
@@ -380,8 +377,8 @@ class TestFilterCandidates:
     def test_no_affordable_traders_returns_empty(self):
         from backend.ai.eligibility_engine import filter_candidates
         candidates = [
-            {"username": "Expensive1", "source": "tradeinfo", "confidence": 1.0, "risk_score": 4.0, "total_return_pct": 15.0, "min_copy_amount": 50000},
-            {"username": "Expensive2", "source": "tradeinfo", "confidence": 1.0, "risk_score": 3.0, "total_return_pct": 20.0, "min_copy_amount": 30000},
+            {"username": "Expensive1", "source": "tradeinfo", "confidence": 1.0, "risk_score": 4.0, "total_return_pct": 15.0, "min_copy_amount": 50000, "available": True, "copiers": 100, "positions_count": 10},
+            {"username": "Expensive2", "source": "tradeinfo", "confidence": 1.0, "risk_score": 3.0, "total_return_pct": 20.0, "min_copy_amount": 30000, "available": True, "copiers": 100, "positions_count": 10},
         ]
         eligible, excluded = filter_candidates(candidates, set(), 2000)
         assert len(eligible) == 0

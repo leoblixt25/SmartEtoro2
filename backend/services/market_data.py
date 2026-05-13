@@ -266,96 +266,90 @@ async def _fetch_news_fallback() -> List[Dict]:
 
 async def discover_top_traders(
     categories: Optional[List[str]] = None,
-    min_candidates: int = 100,
 ) -> List[Dict]:
-    """Discover eligible trader candidates using multi-source strategy.
+    """Discover eligible trader candidates from real eToro data only.
 
     Pipeline:
-    1. Try eToro social/ranking API for popular traders (dynamic discovery)
-    2. Get seed traders from requested categories
-    3. Merge and deduplicate all sources
-    4. Enrich via tradeinfo API (batch with concurrency limit)
-    5. Return 100% API-enriched candidates for eligibility filtering
-    6. Smart fallback: if fewer than min_candidates, expand to all seeds
+    1. Primary: eToro social/ranking API → get real usernames
+    2. Fallback: seed list of known eToro popular investors (only if API returns 0)
+    3. Enrich all usernames via tradeinfo API (batch with concurrency limit)
+    4. Return enriched candidates for eligibility filtering
+    5. NO fake/mock data — if no real traders found, return empty list.
 
     Args:
         categories: List of categories to focus on (None = all).
-        min_candidates: Minimum candidate count before fallback (default 100).
 
     Returns:
         List of enriched trader dicts with metrics from tradeinfo API.
+        Empty list if no real traders found.
     """
     from backend.utils.trader_seed_data import get_all_seeds, get_seeds_by_category
     from backend.services.etoro_service import EToroAPIClient
 
-    # ── Step 1: Gather usernames from all sources ──
     seen: set = set()
     usernames: List[str] = []
 
-    def _add(usernames_list: List[str]) -> None:
-        for u in usernames_list:
+    def _add(names: List[str]) -> None:
+        for u in names:
             if u.lower() not in seen:
                 seen.add(u.lower())
                 usernames.append(u)
 
-    # Source A: eToro social/ranking API
+    client = EToroAPIClient()
+
+    # Source A (primary): eToro social/ranking API
     try:
-        client = EToroAPIClient()
         if client.enabled:
             social = await client.discover_social_top(limit=100)
-            _add(social)
             if social:
                 logger.info(f"Discovery: found {len(social)} traders via social API")
+                _add(social)
     except Exception as e:
         logger.debug(f"Discovery: social API unavailable ({e})")
 
-    # Source B: Seed traders from requested categories
-    if categories:
-        for cat in categories:
-            seeds = get_seeds_by_category(cat)
-            _add([s["username"] for s in seeds])
-            logger.debug(f"Discovery: added {len(seeds)} seeds for category '{cat}'")
-    else:
-        all_seeds = get_all_seeds()
-        _add([s["username"] for s in all_seeds])
-        logger.info(f"Discovery: added {len(all_seeds)} total seeds")
+    # Source B (backup): seed list — only if social API returned nothing
+    if not usernames:
+        if categories:
+            for cat in categories:
+                seeds = get_seeds_by_category(cat)
+                _add([s["username"] for s in seeds])
+        else:
+            all_seeds = get_all_seeds()
+            _add([s["username"] for s in all_seeds])
+        if usernames:
+            logger.info(f"Discovery: using {len(usernames)} seed traders as backup")
 
     # Source C: CANDIDATE_TRADERS env var (user override)
     raw_env = os.getenv("CANDIDATE_TRADERS", "")
     if raw_env:
         env_list = [u.strip() for u in raw_env.split(",") if u.strip()]
         _add(env_list)
-        logger.info(f"Discovery: added {len(env_list)} traders from CANDIDATE_TRADERS env")
+        if env_list:
+            logger.info(f"Discovery: added {len(env_list)} traders from CANDIDATE_TRADERS env")
 
     if not usernames:
-        logger.warning("Discovery: no trader usernames found from any source")
-        return _emergency_fallback()
+        logger.warning("Discovery: no trader usernames from any source")
+        return []
 
-    # ── Step 2: Enrich via tradeinfo API ──
-    logger.info(
-        f"Discovery: enriching {len(usernames)} unique candidates "
-        f"(from {len(seen)} merged sources)"
-    )
-
+    # Enrich via tradeinfo API
+    logger.info(f"Discovery: enriching {len(usernames)} unique candidates")
     try:
         result = await client.enrich_candidates(usernames, max_concurrent=10)
     except Exception as e:
-        logger.warning(f"Discovery: enrichment failed ({e}) — using emergency fallback")
-        return _emergency_fallback()
+        logger.warning(f"Discovery: enrichment failed ({e})")
+        return []
 
     available = result.get("available", [])
     scanned = result.get("scanned", 0)
     valid_count = result.get("valid_count", 0)
     rejected_count = result.get("rejected", 0)
 
-    # ── Step 3: Attach category info from seed data ──
     if available:
         seed_map = {s["username"].lower(): s.get("categories", [])
                     for s in get_all_seeds()}
         for a in available:
             a["categories"] = seed_map.get(a["username"].lower(), [])
             a["is_copiable"] = a.get("is_copiable", True)
-
         logger.info(
             f"Discovery: scanned={scanned}, valid={valid_count}, "
             f"eligible_before_filter={len(available)}, "
@@ -363,56 +357,5 @@ async def discover_top_traders(
         )
         return available
 
-    # ── Step 4: Smart fallback — if not enough, expand ──
-    if len(available) < min_candidates:
-        logger.info(
-            f"Discovery: only {len(available)} available (need {min_candidates}) — "
-            f"expanding search"
-        )
-
-    logger.warning(
-        f"Discovery: all {scanned} candidates unavailable after enrichment"
-    )
-    return _emergency_fallback()
-
-
-def _emergency_fallback() -> List[Dict]:
-    """Last-resort fallback returning enriched traders from verified seeds.
-
-    Used when all API discovery + enrichment paths fail.
-    Returns the original 8 verified traders with their known stats.
-    """
-    return _legacy_default_candidates()
-
-
-def _legacy_default_candidates() -> List[Dict]:
-    """Static candidate list for backward compatibility and emergency fallback."""
-    registry = {
-        "JeppeKirkBonde":   {"risk_score": 4, "total_return_pct": 18.2, "copiers": 2800},
-        "CPHequities":      {"risk_score": 5, "total_return_pct": 16.7, "copiers": 3200},
-        "Jaynemesis":       {"risk_score": 5, "total_return_pct": 18.5, "copiers": 4100},
-        "booker03":         {"risk_score": 5, "total_return_pct": 15.3, "copiers": 1500},
-        "ConsistentCapital":{"risk_score": 3, "total_return_pct": 12.1, "copiers": 2200},
-        "GrowthEngine":     {"risk_score": 6, "total_return_pct": 22.4, "copiers": 1800},
-        "AlphaPulse":       {"risk_score": 4, "total_return_pct": 14.8, "copiers": 950},
-        "SmartMoneyFX":     {"risk_score": 5, "total_return_pct": 11.2, "copiers": 3100},
-    }
-    return [
-        {
-            "username": name,
-            "risk_score": registry[name]["risk_score"],
-            "total_return_pct": registry[name]["total_return_pct"],
-            "avg_return": 0.0,
-            "avg_monthly_return": registry[name]["total_return_pct"] / 12.0,
-            "max_drawdown": 0.0,
-            "volatility": 0.0,
-            "copiers": registry[name]["copiers"],
-            "is_copiable": True,
-            "min_copy_amount": 200,
-            "categories": ["balanced", "diversified"],
-        }
-        for name in [
-            "JeppeKirkBonde", "CPHequities", "Jaynemesis", "booker03",
-            "ConsistentCapital", "GrowthEngine", "AlphaPulse", "SmartMoneyFX",
-        ] if name in registry
-    ]
+    logger.warning(f"Discovery: all {scanned} candidates unavailable after enrichment")
+    return []

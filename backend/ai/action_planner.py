@@ -94,7 +94,19 @@ def build_action_plan(
             "traders": sorted(usernames),
         })
 
-    # ── 4. Recommendations ──
+    # ── Quality gate: too few high-confidence traders ──
+    quality_gate_message = None
+    if len(discovery_section) < 2 and len(eligible_candidates := [s for s in discovery_scored if s.get("score", 0) > 0]) < 2:
+        total_excluded = sum(g["count"] for g in excluded_section)
+        total_scanned = total_excluded + len(discovery_scored)
+        quality_gate_message = (
+            f"No high-confidence traders found today. "
+            f"Only {len(discovery_section)} trader(s) met quality requirements "
+            f"out of {total_scanned} scanned."
+        )
+        logger.warning("Quality gate: %s", quality_gate_message)
+
+    # ── 5. Recommendations ──
     recommended_swap = None
     equal_weight_plan = []
     weakest = portfolio_analysis.get("weakest")
@@ -159,8 +171,10 @@ def build_action_plan(
         f"{'Diversified' if not portfolio_analysis.get('under_diversified', True) else 'Under-diversified'}. "
         f"{'Concentration risk' if portfolio_analysis.get('concentration_risk', False) else 'No concentration risk'}. "
     )
+    if quality_gate_message:
+        summary += f" {quality_gate_message}"
     if recommended_swap:
-        summary += f"Swap {recommended_swap['replace']} -> {recommended_swap['with']} (delta +{recommended_swap['delta']})."
+        summary += f" Swap {recommended_swap['replace']} -> {recommended_swap['with']} (delta +{recommended_swap['delta']})."
 
     result = {
         "active_portfolio": active_section,
@@ -170,6 +184,7 @@ def build_action_plan(
             "recommended_swap": recommended_swap,
             "equal_weight_plan": equal_weight_plan,
         },
+        "quality_gate_message": quality_gate_message,
         "summary": summary,
         "debug": {
             "active_count": len(active_section),
@@ -258,6 +273,11 @@ def format_display(action_plan: Dict) -> str:
 
     # Summary
     debug = action_plan.get("debug", {})
+    qgm = action_plan.get("quality_gate_message")
+    if qgm:
+        lines.append("\u26a0\ufe0f **Quality Gate:**")
+        lines.append(f"  {qgm}")
+        lines.append("")
     lines.append(f"**Summary:** {action_plan.get('summary', '')}")
     lines.append(f"  Avg score: {debug.get('avg_score', 0)}/100")
     if debug.get("under_diversified"):

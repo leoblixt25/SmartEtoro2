@@ -155,6 +155,46 @@ def is_copy_available(trader: Dict) -> Tuple[bool, Optional[str]]:
     return True, None
 
 
+def is_real_trader(trader: Dict) -> Tuple[bool, Optional[str]]:
+    """Strict pre-filter: only accept traders with verified real eToro stats.
+
+    Auto-reject if:
+      - No tradeinfo response (available=False)
+      - Empty username
+      - Copiers < 50 (no one copies them = not a real popular investor)
+      - Open positions < 5 (no real trading activity)
+      - Risk score is 0 or default (no data)
+      - total_return_pct is None (no performance data)
+      - Source is not authoritative tradeinfo (confidence 1.0)
+
+    Returns:
+        (True, None) if trader is real, (False, reason) otherwise.
+    """
+    available = trader.get("available", False)
+    username = trader.get("username", "")
+    copiers = int(trader.get("copiers", 0) or 0)
+    positions = int(trader.get("positions_count", 0) or 0)
+    risk = float(trader.get("risk_score", 0) or 0)
+    total_return = trader.get("total_return_pct")
+    source = trader.get("source", "unknown")
+
+    if not available:
+        return False, "trader_not_found"
+    if not username:
+        return False, "missing_username"
+    if copiers < 50:
+        return False, f"insufficient_copiers ({copiers})"
+    if positions < 5:
+        return False, f"insufficient_positions ({positions})"
+    if risk <= 0:
+        return False, "missing_risk_score"
+    if total_return is None:
+        return False, "missing_return_data"
+    if source != "tradeinfo":
+        return False, f"unreliable_source ({source})"
+    return True, None
+
+
 def filter_candidates(
     candidates: List[Dict],
     holdings_usernames: set,
@@ -164,12 +204,13 @@ def filter_candidates(
     """Hard filter layer — apply ALL eligibility checks before scoring.
 
     A trader is eligible ONLY if all checks pass:
-      - Not already copied
-      - Trader is open for copying (is_copiable, not blocked/paused/restricted)
-      - min_copy_amount is known and <= available_balance
-      - risk_score <= max_risk
-      - Has real substance (holdings, positions, valid source)
-      - Has trustworthy return data (non-zero from reliable source)
+      - 0. Verified real eToro trader (has copiers, positions, risk, return)
+      - 1. Not already copied
+      - 2. Copy available (is_copiable, not blocked/paused/restricted)
+      - 3. min_copy_amount is known and <= available_balance
+      - 4. risk_score <= max_risk
+      - 5. Has real substance (holdings, positions, valid source)
+      - 6. Has trustworthy return data (non-zero from reliable source)
 
     Args:
         candidates: Raw trader dicts from discovery.
@@ -186,6 +227,11 @@ def filter_candidates(
     for t in candidates:
         reasons = []
         username = t.get("username", "?")
+
+        # 0. Must be a real eToro trader with verified stats
+        ok, reason = is_real_trader(t)
+        if not ok:
+            reasons.append(reason)
 
         # 1. Already copied
         if is_already_copied(username, holdings_usernames):

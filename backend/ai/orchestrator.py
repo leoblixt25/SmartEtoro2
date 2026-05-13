@@ -17,7 +17,7 @@ import logging
 from typing import Dict, List, Optional
 
 from backend.services.market_data import get_current_holdings
-from backend.services.market_data import discover_top_traders, _legacy_default_candidates
+from backend.services.market_data import discover_top_traders
 from backend.ai.eligibility_engine import filter_candidates
 from backend.ai.portfolio_engine import analyze_portfolio, get_active_usernames
 from backend.ai.discovery_engine import build_discovery_list
@@ -71,13 +71,13 @@ async def run_full_pipeline(
     candidates = []
 
     if force_fallback:
-        candidates = _legacy_default_candidates()
+        candidates = []
     else:
         try:
             candidates = await discover_top_traders()
         except Exception as e:
-            logger.warning("Pipeline: discovery failed (%s) — using fallback", e)
-            candidates = _legacy_default_candidates()
+            logger.warning("Pipeline: discovery failed (%s)", e)
+            candidates = []
 
     # ── 2. Eligibility filter ──
     active_usernames = get_active_usernames(holdings)

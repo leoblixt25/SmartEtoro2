@@ -94,9 +94,9 @@ class TestEligibilityEngine:
     def test_filter_candidates_all_checks_together(self):
         from backend.ai.eligibility_engine import filter_candidates
         candidates = [
-            {"username": "A", "source": "tradeinfo", "confidence": 1.0, "min_copy_amount": 300, "total_return_pct": 15.0},
-            {"username": "B", "source": "tradeinfo", "confidence": 1.0, "risk_score": 9.5, "min_copy_amount": 300, "total_return_pct": 15.0},
-            {"username": "C", "source": "tradeinfo", "confidence": 1.0, "min_copy_amount": 50000, "total_return_pct": 15.0},
+            {"username": "A", "source": "tradeinfo", "confidence": 1.0, "available": True, "copiers": 100, "positions_count": 10, "risk_score": 4.0, "min_copy_amount": 300, "total_return_pct": 15.0},
+            {"username": "B", "source": "tradeinfo", "confidence": 1.0, "available": True, "copiers": 100, "positions_count": 10, "risk_score": 9.5, "min_copy_amount": 300, "total_return_pct": 15.0},
+            {"username": "C", "source": "tradeinfo", "confidence": 1.0, "available": True, "copiers": 100, "positions_count": 10, "risk_score": 4.0, "min_copy_amount": 50000, "total_return_pct": 15.0},
         ]
         eligible, excluded = filter_candidates(candidates, set(), available_balance=5000)
         assert len(eligible) == 1
@@ -106,7 +106,7 @@ class TestEligibilityEngine:
     def test_rejects_zero_holdings(self):
         from backend.ai.eligibility_engine import filter_candidates
         candidates = [
-            {"username": "Empty", "source": "tradeinfo", "confidence": 1.0, "min_copy_amount": 300, "holdings": []},
+            {"username": "Empty", "source": "tradeinfo", "confidence": 1.0, "available": True, "copiers": 100, "positions_count": 10, "risk_score": 4.0, "total_return_pct": 15.0, "min_copy_amount": 300, "holdings": []},
         ]
         eligible, excluded = filter_candidates(candidates, set(), available_balance=5000)
         assert len(eligible) == 0
@@ -115,7 +115,7 @@ class TestEligibilityEngine:
     def test_rejects_no_positions(self):
         from backend.ai.eligibility_engine import filter_candidates
         candidates = [
-            {"username": "NoPos", "source": "tradeinfo", "confidence": 1.0, "min_copy_amount": 300, "positions": []},
+            {"username": "NoPos", "source": "tradeinfo", "confidence": 1.0, "available": True, "copiers": 100, "positions_count": 10, "risk_score": 4.0, "total_return_pct": 15.0, "min_copy_amount": 300, "positions": []},
         ]
         eligible, excluded = filter_candidates(candidates, set(), available_balance=5000)
         assert len(eligible) == 0
@@ -124,7 +124,7 @@ class TestEligibilityEngine:
     def test_rejects_missing_min_copy(self):
         from backend.ai.eligibility_engine import filter_candidates
         candidates = [
-            {"username": "NoMin", "source": "tradeinfo", "confidence": 1.0, "min_copy_amount": None},
+            {"username": "NoMin", "source": "tradeinfo", "confidence": 1.0, "available": True, "copiers": 100, "positions_count": 10, "risk_score": 4.0, "total_return_pct": 15.0, "min_copy_amount": None},
         ]
         eligible, excluded = filter_candidates(candidates, set(), available_balance=5000)
         assert len(eligible) == 0
@@ -133,7 +133,7 @@ class TestEligibilityEngine:
     def test_rejects_fallback_zero_return(self):
         from backend.ai.eligibility_engine import filter_candidates
         candidates = [
-            {"username": "Zero", "source": "fallback", "confidence": 0.0, "total_return_pct": 0.0, "min_copy_amount": 300},
+            {"username": "Zero", "source": "fallback", "confidence": 0.0, "available": True, "copiers": 100, "positions_count": 10, "risk_score": 4.0, "total_return_pct": 0.0, "min_copy_amount": 300},
         ]
         eligible, excluded = filter_candidates(candidates, set(), available_balance=5000)
         assert len(eligible) == 0
@@ -143,7 +143,7 @@ class TestEligibilityEngine:
     def test_rejects_unknown_source_with_return(self):
         from backend.ai.eligibility_engine import filter_candidates
         candidates = [
-            {"username": "NoSrc", "total_return_pct": 11.2, "risk_score": 5, "min_copy_amount": 200},
+            {"username": "NoSrc", "source": "unknown", "available": True, "copiers": 100, "positions_count": 10, "total_return_pct": 11.2, "risk_score": 5, "min_copy_amount": 200},
         ]
         eligible, excluded = filter_candidates(candidates, set(), available_balance=5000)
         assert len(eligible) == 0
@@ -154,6 +154,7 @@ class TestEligibilityEngine:
         from backend.ai.eligibility_engine import filter_candidates
         candidates = [
             {"username": "Valid", "source": "tradeinfo", "confidence": 1.0,
+             "available": True, "copiers": 100, "positions_count": 10,
              "min_copy_amount": 200, "total_return_pct": 15.0, "risk_score": 4.0},
         ]
         eligible, excluded = filter_candidates(candidates, set(), available_balance=5000)
@@ -164,6 +165,8 @@ class TestEligibilityEngine:
         from backend.ai.eligibility_engine import filter_candidates
         candidates = [
             {"username": "ZeroPort", "source": "tradeinfo", "confidence": 1.0,
+             "available": True, "copiers": 100, "positions_count": 10,
+             "risk_score": 4.0, "total_return_pct": 15.0,
              "min_copy_amount": 200, "portfolio_size": 0},
         ]
         eligible, excluded = filter_candidates(candidates, set(), available_balance=5000)
@@ -175,7 +178,8 @@ class TestEligibilityEngine:
         from backend.ai.eligibility_engine import filter_candidates
         candidates = [
             {"username": "Blocked", "is_copiable": False, "source": "tradeinfo",
-             "confidence": 1.0, "min_copy_amount": 200},
+             "confidence": 1.0, "available": True, "copiers": 100, "positions_count": 10,
+             "risk_score": 4.0, "total_return_pct": 15.0, "min_copy_amount": 200},
         ]
         eligible, excluded = filter_candidates(candidates, set(), available_balance=5000)
         assert len(eligible) == 0
@@ -186,12 +190,79 @@ class TestEligibilityEngine:
         from backend.ai.eligibility_engine import filter_candidates
         candidates = [
             {"username": "SmartMoneyFX", "source": "tradeinfo", "confidence": 1.0,
+             "available": True, "copiers": 100, "positions_count": 10,
              "min_copy_amount": 200, "total_return_pct": 0.0, "risk_score": 5.0},
         ]
         eligible, excluded = filter_candidates(candidates, set(), available_balance=5000)
         assert len(eligible) == 0
         reasons = " ".join(excluded[0].get("exclusion_reasons", []))
         assert "no_valid" in reasons
+
+
+class TestIsRealTrader:
+    """is_real_trader strict validation tests."""
+
+    def test_real_trader_passes(self):
+        from backend.ai.eligibility_engine import is_real_trader
+        t = {"available": True, "username": "RealTrader", "copiers": 500,
+             "positions_count": 20, "risk_score": 4.0, "total_return_pct": 15.0,
+             "source": "tradeinfo"}
+        ok, reason = is_real_trader(t)
+        assert ok is True
+        assert reason is None
+
+    def test_not_available_rejected(self):
+        from backend.ai.eligibility_engine import is_real_trader
+        ok, reason = is_real_trader({"available": False, "username": "x"})
+        assert ok is False
+        assert reason == "trader_not_found"
+
+    def test_empty_username_rejected(self):
+        from backend.ai.eligibility_engine import is_real_trader
+        ok, reason = is_real_trader({"available": True, "username": ""})
+        assert ok is False
+        assert reason == "missing_username"
+
+    def test_insufficient_copiers_rejected(self):
+        from backend.ai.eligibility_engine import is_real_trader
+        t = {"available": True, "username": "x", "copiers": 10, "positions_count": 20,
+             "risk_score": 4, "total_return_pct": 15.0, "source": "tradeinfo"}
+        ok, reason = is_real_trader(t)
+        assert ok is False
+        assert "insufficient_copiers" in reason
+
+    def test_insufficient_positions_rejected(self):
+        from backend.ai.eligibility_engine import is_real_trader
+        t = {"available": True, "username": "x", "copiers": 100, "positions_count": 2,
+             "risk_score": 4, "total_return_pct": 15.0, "source": "tradeinfo"}
+        ok, reason = is_real_trader(t)
+        assert ok is False
+        assert "insufficient_positions" in reason
+
+    def test_missing_risk_score_rejected(self):
+        from backend.ai.eligibility_engine import is_real_trader
+        t = {"available": True, "username": "x", "copiers": 100, "positions_count": 10,
+             "risk_score": 0, "total_return_pct": 15.0, "source": "tradeinfo"}
+        ok, reason = is_real_trader(t)
+        assert ok is False
+        assert "missing_risk_score" in reason
+
+    def test_missing_return_rejected(self):
+        from backend.ai.eligibility_engine import is_real_trader
+        t = {"available": True, "username": "x", "copiers": 100, "positions_count": 10,
+             "risk_score": 4, "total_return_pct": None, "source": "tradeinfo"}
+        ok, reason = is_real_trader(t)
+        assert ok is False
+        assert "missing_return_data" in reason
+
+    def test_unreliable_source_rejected(self):
+        from backend.ai.eligibility_engine import is_real_trader
+        t = {"available": True, "username": "x", "copiers": 100, "positions_count": 10,
+             "risk_score": 4, "total_return_pct": 15.0, "source": "portfolio_live"}
+        ok, reason = is_real_trader(t)
+        assert ok is False
+        assert "unreliable_source" in reason
+
 
 # ── PortfolioEngine ────────────────────────────────────────────────
 
@@ -726,7 +797,7 @@ class TestOrchestrator:
                    side_effect=Exception("API down")):
             result = await run_full_pipeline(db, 1)
             assert "portfolio_analysis" in result
-            assert result["eligibility_stats"]["total_scanned"] > 0
+            assert result["eligibility_stats"]["total_scanned"] == 0
 
     @pytest.mark.asyncio
     async def test_run_full_pipeline_force_fallback(self):
@@ -744,7 +815,7 @@ class TestOrchestrator:
         with patch("backend.ai.orchestrator.get_current_holdings", return_value=[]):
             result = await run_full_pipeline(db, 1, force_fallback=True)
             assert "portfolio_analysis" in result
-            assert result["eligibility_stats"]["total_scanned"] > 0
+            assert result["eligibility_stats"]["total_scanned"] == 0
 
     def test_get_alert_engine_returns_singleton(self):
         from backend.ai.orchestrator import get_alert_engine

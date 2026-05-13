@@ -112,24 +112,45 @@ The deterministic pipeline runs on demand (Telegram `/overview`, frontend Dashbo
 
 ```
 discover_top_traders()
-    │
+    │  (social API + seed data + env var → merge & deduplicate)
     ▼
-filter_candidates() ←── eligibility_engine.py
+enrich_candidates(usernames)  ←── EToroAPIClient (batch tradeinfo, concurrency=10)
     │
-    ├── eligible → build_discovery_list() → rank_candidates() → scored
+    ├── available → attach categories from seed data
     │
-    └── excluded → grouped by reason
+    └── unavailable → logged, excluded
+          │
+          ▼
+    filter_candidates() ←── eligibility_engine.py
+          │
+          ├── eligible → build_discovery_list(category?) → widen_search() if <3
+          │                  │
+          │                  ▼
+          │              rank_candidates() → scored (top 3-10)
+          │
+          └── excluded → grouped by reason
 ```
 
 ### 5.1 Data Sources
 
-Candidates come from:
-1. **Primary**: `EToroAPIClient.discover_candidates()` — fetches each candidate from:
-   - `tradeinfo` endpoint (confidence=1.0) — authoritative
-   - Fallback: `portfolio/live` (confidence=0.7)
-   - Fallback: `gain` (confidence=0.5)
-   - Fallback: `daily-gain` (confidence=0.3)
-2. **Static fallback** (`_default_trader_candidates()`) — 8 hardcoded traders, used when ALL API endpoints fail. These have no `source` field and are rejected by eligibility.
+Candidates are gathered from **3 sources**, merged and deduplicated:
+
+1. **Social API** (`EToroAPIClient.discover_social_top()`) — tries eToro ranking/social endpoints for popular/trending traders. Returns usernames (no metrics).
+2. **Seed data** (`backend/utils/trader_seed_data.py`) — **45 curated traders** organized across 8 categories:
+   - Categories: balanced, aggressive_growth, etf_focused, dividend, low_risk, tech_focused, crypto_light, diversified
+   - Each seed trader has `username`, `risk_estimate`, and `categories` list
+   - Only ~50% are expected to have valid tradeinfo data — the rest are silently excluded
+3. **`CANDIDATE_TRADERS` env var** — user-defined comma-separated override list
+
+All candidates are batch-enriched via `enrich_candidates()` (async concurrency=10):
+   - Tradeinfo endpoint (confidence=1.0) — authoritative, required for eligibility
+   - Fallbacks: `portfolio/live` (0.7), `gain` (0.5), `daily-gain` (0.3) — rejected by eligibility
+
+**Emergency fallback** (`_legacy_default_candidates()`) — original 8 verified traders used only when ALL enrichment fails.
+
+**Smart fallback** (`widen_search()`) — if fewer than 3 eligible traders after category filter, removes category restriction automatically.
+
+**Detailed logging** — every discovery run logs: scanned count, eligible count, rejection reasons by category, top 5 scores with risk and return, and category used.
 
 ### 5.2 Eligibility Engine (`backend/ai/eligibility_engine.py`)
 
@@ -319,7 +340,7 @@ trader_health_engine.analyze_trader()
 | `RENDER_EXTERNAL_URL` | No | telegram, scheduler | Base URL for webhook |
 | `APP_ENV` | No | `main.py` | "production" or "development" |
 | `ALLOWED_ORIGINS` | No | `main.py` | CORS origins |
-| `CANDIDATE_TRADERS` | No | `market_data.py` | Comma-separated override list |
+| `CANDIDATE_TRADERS` | No | `market_data.py` | Additional comma-separated usernames merged with seed data |
 
 \* Required for Telegram to be enabled.
 
@@ -390,12 +411,12 @@ A trader is **eligible for Discovery** if and only if:
 
 ## 13. Test Suite
 
-144 tests across 3 files:
+143 tests across 3 files:
 
 | File | Tests | Area |
 |------|-------|------|
 | `tests/test_new_engines.py` | ~75 | Eligibility, Portfolio, Discovery, Scoring, ActionPlanner, AlertEngine, Orchestrator |
-| `tests/test_engine_pipeline.py` | ~33 | Confidence, growth filter, source validation, default traders, filter_candidates |
+| `tests/test_engine_pipeline.py` | ~32 | Confidence, growth filter, source validation, legacy candidates, filter_candidates |
 | `tests/test_monitoring.py` | ~36 | News cache, news service, holding parser, health engine, watchlist summary, monitoring state |
 
 Run: `python -m pytest tests/`
@@ -412,3 +433,4 @@ Run: `python -m pytest tests/`
 - **Scheduler is lean**: 3 jobs instead of 8. No automation eval, risk check, daily/weekly snapshots, or market scout.
 - **Confidence-gated sources**: tradeinfo=1.0 (authoritative), portfolio_live=0.7, gain=0.5, daily_gain=0.3. Sources below 0.8 confidence are rejected.
 - **Stateful alerts**: AlertEngine and MonitoringState both use in-memory singletons to suppress duplicate alerts.
+- **Dynamic discovery**: 45 seed traders across 8 categories + optional social API discovery, enriched via batch tradeinfo calls (async concurrency=10). Smart fallback widens search if fewer than 3 eligible.

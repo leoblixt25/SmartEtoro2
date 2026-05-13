@@ -378,6 +378,8 @@ class EToroAPIClient:
             "confidence": 0.0,
             "is_copyable": True,
             "min_copy_amount": 200.0,
+            "copiers": 0,
+            "positions_count": 0,
         }
 
     async def _api_get_with_retry(
@@ -461,6 +463,8 @@ class EToroAPIClient:
                 "available": True,
                 "source": "tradeinfo",
                 "confidence": 1.0,
+                "copiers": int(tradeinfo.get("Copiers", tradeinfo.get("numOfCopiers", 0)) or 0),
+                "positions_count": int(tradeinfo.get("NumberOfOpenPositions", tradeinfo.get("numOfOpenPositions", 0)) or 0),
             })
             logger.info(f"Tradeinfo for {username} loaded successfully")
             return result
@@ -593,7 +597,8 @@ class EToroAPIClient:
                     "volatility": metrics["volatility"],
                     "avg_return": metrics["avg_return"],
                     "avg_monthly_return": metrics["avg_return"],
-                    "copiers": 0,
+                    "copiers": metrics.get("copiers", 0),
+                    "positions_count": metrics.get("positions_count", 0),
                     "is_copiable": is_copyable,
                     "min_copy_amount": min_copy,
                     "source": metrics["source"],
@@ -740,7 +745,8 @@ class EToroAPIClient:
                     "volatility": metrics["volatility"],
                     "avg_return": metrics["avg_return"],
                     "avg_monthly_return": metrics["avg_return"],
-                    "copiers": 0,
+                    "copiers": metrics.get("copiers", 0),
+                    "positions_count": metrics.get("positions_count", 0),
                     "is_copiable": is_copyable,
                     "min_copy_amount": min_copy,
                     "source": metrics["source"],
