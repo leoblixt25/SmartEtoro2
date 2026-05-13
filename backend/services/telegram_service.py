@@ -1,32 +1,6 @@
 """
 Telegram Bot Service
-────────────────────────────────────────────────────────────────────
-Webhook-based Telegram bot for monitoring, control, and approval.
-
-Architecture:
-  - Uses raw telegram.Bot (no Application/Dispatcher — __slots__ bug on Py3.14)
-  - Webhook dispatch via FastAPI endpoint
-  - Only responds to TELEGRAM_ALLOWED_USER_ID
-
-Commands:
-  /help              – List all commands
-  /ping              – Liveness check
-  /status            – Quick portfolio snapshot
-  /portfolio         – Full portfolio details (value, PnL, currency)
-  /traders           – List copied traders with PnL %, allocation, risk
-  /risk              – Active risk violations
-  /alerts            – Recent unread alerts
-  /pending           – Actions waiting for your approval
-  /approve <rule_id> – Approve and execute a pending action
-  /sync              – Trigger an eToro data sync now
-  /pause             – Emergency stop all automation rules
-  /scout             – Run AI Market Scout now
-  /swap <old> <new>  – Execute a trader swap recommended by Scout
-
-Environment variables:
-  TELEGRAM_BOT_TOKEN       – Bot token from @BotFather
-  TELEGRAM_ALLOWED_USER_ID – Your Telegram user ID (integer)
-  TELEGRAM_CHAT_ID         – Your Telegram chat ID (integer)
+Smart portfolio assistant commands: monitor, analyze, decide.
 """
 
 from __future__ import annotations
@@ -86,32 +60,26 @@ class TelegramBot:
         }
 
     COMMANDS = [
-        BotCommand("help", "Show all commands"),
-        BotCommand("ping", "Liveness check"),
+        BotCommand("start", "Welcome and main menu"),
         BotCommand("status", "Quick portfolio snapshot"),
-        BotCommand("portfolio", "Full portfolio breakdown"),
-        BotCommand("traders", "Copied traders with PnL"),
-        BotCommand("risk", "Active risk violations"),
-        BotCommand("alerts", "Recent unread alerts"),
-        BotCommand("pending", "Actions awaiting approval"),
-        BotCommand("approve", "Approve & execute a pending action"),
-        BotCommand("sync", "Force eToro sync now"),
-        BotCommand("pause", "Emergency stop all automation"),
-        BotCommand("scout", "Run AI Market Scout now"),
-        BotCommand("swap", "Execute a trader swap from Scout recommendation"),
-        BotCommand("db_check", "Verify database persistence"),
-        BotCommand("db_status", "Database status overview"),
+        BotCommand("overview", "Full portfolio summary"),
+        BotCommand("active", "List active copied traders"),
+        BotCommand("discovery", "New eligible traders to copy"),
+        BotCommand("health", "Trader health analysis"),
+        BotCommand("alerts", "Recent important alerts"),
+        BotCommand("watchlist", "Monitored traders"),
+        BotCommand("settings", "Current limits and preferences"),
+        BotCommand("help", "Show all commands"),
     ]
 
     MAIN_KEYBOARD = [
-        ["/status", "/traders"],
-        ["/portfolio", "/risk"],
-        ["/pending", "/alerts"],
-        ["/sync", "/scout"],
+        ["/status", "/overview"],
+        ["/active", "/health"],
+        ["/discovery", "/alerts"],
+        ["/watchlist", "/settings"],
     ]
 
     async def setup_commands(self) -> None:
-        """Register the slash-command menu with Telegram."""
         if self._bot:
             try:
                 await self._bot.set_my_commands(self.COMMANDS)
@@ -120,7 +88,6 @@ class TelegramBot:
                 logger.warning(f"Failed to register commands: {e}")
 
     def _keyboard(self) -> dict:
-        """Inline reply keyboard markup for easy command access."""
         return {"keyboard": self.MAIN_KEYBOARD, "resize_keyboard": True}
 
     def _parse_int(self, key: str, default: Optional[int] = None) -> Optional[int]:
@@ -133,7 +100,7 @@ class TelegramBot:
         return user_id == self.allowed_user_id
 
     def _sym(self, currency: str) -> str:
-        return "€" if currency == "EUR" else "$"
+        return "\u20ac" if currency == "EUR" else "$"
 
     async def send_message(self, text: str, chat_id: Optional[int] = None, show_keyboard: bool = False) -> None:
         if not self.enabled or not self._bot:
@@ -151,7 +118,6 @@ class TelegramBot:
             logger.error(f"Failed to send Telegram message: {e}")
 
     async def _reply(self, update: Update, text: str, **kwargs) -> None:
-        """Reply with text + persistent keyboard."""
         markup = self._keyboard()
         await update.message.reply_text(text, reply_markup=markup, **kwargs)
 
@@ -175,131 +141,63 @@ class TelegramBot:
         args = parts[1:]
 
         handlers = {
-            "/help": self._cmd_help,
-            "/ping": self._cmd_ping,
+            "/start": self._cmd_start,
             "/status": self._cmd_status,
-            "/portfolio": self._cmd_portfolio,
-            "/traders": self._cmd_traders,
-            "/risk": self._cmd_risk,
+            "/overview": self._cmd_overview,
+            "/active": self._cmd_active,
+            "/discovery": self._cmd_discovery,
+            "/health": self._cmd_health,
             "/alerts": self._cmd_alerts,
-            "/pending": self._cmd_pending,
-            "/approve": self._cmd_approve,
-            "/sync": self._cmd_sync,
-            "/pause": self._cmd_pause,
-            "/scout": self._cmd_scout,
-            "/swap": self._cmd_swap,
-            "/db_check": self._cmd_db_check,
-        "/db_status": self._cmd_db_status,
-    }
+            "/watchlist": self._cmd_watchlist,
+            "/settings": self._cmd_settings,
+            "/help": self._cmd_help,
+        }
         handler = handlers.get(command)
         if handler:
             await handler(update, args)
         else:
-            await self._reply(update, "Unknown command. Send /help for available commands.")
+            await self._reply(
+                update,
+                "Unknown command. Send /help for available commands.",
+            )
 
     # ── Commands ─────────────────────────────────
 
+    async def _cmd_start(self, update: Update, args: list[str]) -> None:
+        text = (
+            "Welcome to your Smart Portfolio Assistant.\n\n"
+            "I monitor your copied traders, check what they hold, "
+            "analyse news, and warn you when action is needed.\n\n"
+            "Quick start:\n"
+            "/status \u2014 Portfolio snapshot\n"
+            "/active \u2014 Your copied traders\n"
+            "/health \u2014 Trader health analysis\n"
+            "/discovery \u2014 New eligible traders\n"
+            "/alerts \u2014 Important notifications\n\n"
+            "Use the menu below or send /help for all commands."
+        )
+        await self._reply(update, text)
+
     async def _cmd_help(self, update: Update, args: list[str]) -> None:
         text = (
-            "🤖 <b>CopyVault Bot Commands</b>\n\n"
-            "Tap a button below or type a command:\n\n"
-            "/status – Portfolio snapshot\n"
-            "/portfolio – Full breakdown\n"
-            "/traders – Copied traders\n"
-            "/risk – Risk violations\n"
-            "/alerts – Unread alerts\n"
-            "/pending – Pending approvals\n"
-            "/approve &lt;id&gt; – Approve action\n"
-            "/sync – Sync eToro now\n"
-            "/pause – Emergency stop\n"
-            "/scout – Run Growth Scout\n"
-            "/swap &lt;old&gt; &lt;new&gt; – Execute Scout swap\n"
-            "/db_check – Database diagnostics\n"
-            "/db_status – Database status overview"
+            "Available Commands\n\n"
+            "/start \u2013 Welcome and main menu\n"
+            "/status \u2013 Quick portfolio snapshot\n"
+            "/overview \u2013 Full portfolio summary\n"
+            "/active \u2013 List active copied traders\n"
+            "/discovery \u2013 New eligible traders\n"
+            "/health \u2013 Trader health analysis\n"
+            "/alerts \u2013 Recent important alerts\n"
+            "/watchlist \u2013 Monitored traders\n"
+            "/settings \u2013 Current limits and preferences\n"
+            "/help \u2013 Show this message"
         )
-        await self._reply(update, text, parse_mode="HTML")
-
-    async def _cmd_ping(self, update: Update, args: list[str]) -> None:
-        await self._reply(update, "✅ CopyVault Bot is active!")
-
-    async def _cmd_db_check(self, update: Update, args: list[str]) -> None:
-        """Diagnostic: verify database persistence."""
-        from backend.database.connection import DATABASE_URL
-        from backend.database.connection import engine
-        from sqlalchemy import text
-        import os
-
-        db_type = "PostgreSQL" if DATABASE_URL.startswith("postgresql") else "SQLite"
-        lines = [f"<b>🔍 Database Diagnostics</b>\n"]
-        lines.append(f"<b>Type:</b> {db_type}")
-
-        # Rule count
-        try:
-            from backend.database.connection import SessionLocal
-            db = SessionLocal()
-            from backend.database.models import AutomationRule, AppSetting
-            rule_count = db.query(AutomationRule).count()
-            lines.append(f"<b>Rules in DB:</b> {rule_count}")
-
-            # Test write/read
-            test_key = "_db_check_test"
-            existing = db.query(AppSetting).filter(AppSetting.key == test_key).first()
-            if existing:
-                db.delete(existing)
-                db.commit()
-
-            test = AppSetting(key=test_key, value="ok")
-            db.add(test)
-            db.commit()
-
-            re_read = db.query(AppSetting).filter(AppSetting.key == test_key).first()
-            if re_read and re_read.value == "ok":
-                lines.append(f"<b>Write/Read:</b> ✅ passed")
-            else:
-                lines.append(f"<b>Write/Read:</b> ❌ failed — value mismatch")
-
-            db.delete(re_read)
-            db.commit()
-        except Exception as e:
-            lines.append(f"<b>Write/Read:</b> ❌ FAILED — {e}")
-        finally:
-            db.close()
-
-        # Connection check
-        try:
-            with engine.connect() as conn:
-                result = conn.execute(text("SELECT 1"))
-                result.scalar()
-            lines.append(f"<b>Connection:</b> ✅ OK")
-        except Exception as e:
-            lines.append(f"<b>Connection:</b> ❌ FAILED — {e}")
-
-        await self._reply(update, "\n".join(lines), parse_mode="HTML")
-
-    async def _cmd_db_status(self, update: Update, args: list[str]) -> None:
-        """Quick database status overview."""
-        from backend.database.connection import DATABASE_URL
-        from backend.database.connection import SessionLocal
-        from backend.database.models import AutomationRule
-
-        db_type = "PostgreSQL" if DATABASE_URL.startswith("postgresql") else "SQLite"
-        lines = [f"<b>Database Status</b>\n"]
-        lines.append(f"<b>Type:</b> {db_type}")
-
-        try:
-            db = SessionLocal()
-            rule_count = db.query(AutomationRule).count()
-            lines.append(f"<b>Rules:</b> {rule_count}")
-        except Exception as e:
-            lines.append(f"<b>Rules:</b> Error — {e}")
-        finally:
-            db.close()
-
-        await self._reply(update, "\n".join(lines), parse_mode="HTML")
+        await self._reply(update, text)
 
     async def _cmd_status(self, update: Update, args: list[str]) -> None:
         from backend.database.connection import db_session
         from backend.database.models import Portfolio
+        from backend.services.portfolio_service import get_portfolio_overview
 
         try:
             with db_session() as db:
@@ -307,26 +205,27 @@ class TelegramBot:
                 if not p:
                     await self._reply(update, "No portfolio found.")
                     return
-                s = self._sym(p.currency)
-                total_return = p.total_value - p.invested_amount
-                return_pct = (total_return / p.invested_amount * 100) if p.invested_amount else 0
+                overview = get_portfolio_overview(db, p.id)
+                s = self._sym(overview.get("currency", "USD"))
                 text = (
-                    f"<b>📊 CopyVault Status</b>\n"
-                    f"Value: {s}{p.total_value:,.2f}  |  Invested: {s}{p.invested_amount:,.2f}\n"
-                    f"Return: {s}{total_return:+,.2f} ({return_pct:+.2f}%)\n"
-                    f"Unrealized: {s}{p.unrealized_pnl:+,.2f}  |  Realized: {s}{p.realized_pnl:+,.2f}\n"
-                    f"Cash: {s}{p.available_cash:,.2f}  |  Health: {p.health_score:.0f}/100\n"
-                    f"🔴 LIVE  |  {p.currency}\n"
-                    f"Updated: {p.last_updated.strftime('%H:%M UTC') if p.last_updated else '—'}"
+                    f"Portfolio Status\n\n"
+                    f"Value: {s}{overview['total_value']:,.2f}\n"
+                    f"Cash: {s}{overview['available_cash']:,.2f}\n"
+                    f"Return: {overview['total_return_pct']:+.2f}%\n"
+                    f"Active traders: {overview['active_traders']}\n"
+                    f"Health: {overview['health_score']:.0f}/100\n"
+                    f"Sentiment: {overview['sentiment']}\n"
+                    f"Updated: {overview.get('last_sync', '\u2014')[:16] if overview.get('last_sync') else '\u2014'}"
                 )
-                await self._reply(update, text, parse_mode="HTML")
+                await self._reply(update, text)
         except Exception as e:
             logger.error(f"/status error: {e}")
             await self._reply(update, f"Error: {e}")
 
-    async def _cmd_portfolio(self, update: Update, args: list[str]) -> None:
+    async def _cmd_overview(self, update: Update, args: list[str]) -> None:
         from backend.database.connection import db_session
         from backend.database.models import Portfolio
+        from backend.services.portfolio_service import get_portfolio_overview, get_active_traders
 
         try:
             with db_session() as db:
@@ -334,36 +233,51 @@ class TelegramBot:
                 if not p:
                     await self._reply(update, "No portfolio found.")
                     return
-                s = self._sym(p.currency)
-                total_return = p.total_value - p.invested_amount
-                return_pct = (total_return / p.invested_amount * 100) if p.invested_amount else 0
-                trader_count = len(p.copied_traders) if p.copied_traders else 0
-                text = (
-                    f"<b>📋 Portfolio Breakdown</b>\n\n"
-                    f"💰 <b>Value</b>\n"
-                    f"Total: {s}{p.total_value:,.2f}\n"
-                    f"Invested: {s}{p.invested_amount:,.2f}\n"
-                    f"Cash: {s}{p.available_cash:,.2f}\n\n"
-                    f"📈 <b>PnL</b>\n"
-                    f"Total Return: {s}{total_return:+,.2f} ({return_pct:+.2f}%)\n"
-                    f"Unrealized: {s}{p.unrealized_pnl:+,.2f}\n"
-                    f"Realized: {s}{p.realized_pnl:+,.2f}\n"
-                    f"Daily: {s}{p.daily_pnl:+,.2f}\n"
-                    f"Weekly: {s}{p.weekly_pnl:+,.2f}\n"
-                    f"Monthly: {s}{p.monthly_pnl:+,.2f}\n\n"
-                    f"🏥 Health: {p.health_score:.0f}/100\n"
-                    f"👥 Copied Traders: {trader_count}\n"
-                    f"💱 {p.currency}  |  Mode: LIVE\n"
-                    f"🕐 {p.last_updated.strftime('%Y-%m-%d %H:%M UTC') if p.last_updated else '—'}"
+                overview = get_portfolio_overview(db, p.id)
+                traders = get_active_traders(db, p.id)
+                s = self._sym(overview.get("currency", "USD"))
+
+                lines = [f"Portfolio Summary\n"]
+                lines.append(
+                    f"Value: {s}{overview['total_value']:,.2f}  "
+                    f"Cash: {s}{overview['available_cash']:,.2f}"
                 )
-                await self._reply(update, text, parse_mode="HTML")
+                lines.append(
+                    f"Return: {overview['total_return_pct']:+.2f}%  "
+                    f"Health: {overview['health_score']:.0f}/100"
+                )
+                lines.append(
+                    f"Active: {overview['active_traders']} traders  "
+                    f"Sentiment: {overview['sentiment']}"
+                )
+                if overview.get("concentration_risk"):
+                    lines.append("Concentration risk detected")
+
+                if traders:
+                    lines.append(f"\nActive Traders ({len(traders)}):")
+                    for t in traders[:5]:
+                        ret = t["total_return_pct"]
+                        icon = "+" if ret >= 0 else ""
+                        paused = " (paused)" if t.get("is_paused") else ""
+                        lines.append(
+                            f"  {t['username']}{paused} \u2014 "
+                            f"{t['allocation_pct']:.1f}%  "
+                            f"{icon}{ret:+.2f}%  "
+                            f"risk {t['risk_score']:.1f}"
+                        )
+
+                if overview.get("last_sync"):
+                    lines.append(f"\nLast sync: {overview['last_sync'][:16]}")
+
+                await self._reply(update, "\n".join(lines))
         except Exception as e:
-            logger.error(f"/portfolio error: {e}")
+            logger.error(f"/overview error: {e}")
             await self._reply(update, f"Error: {e}")
 
-    async def _cmd_traders(self, update: Update, args: list[str]) -> None:
+    async def _cmd_active(self, update: Update, args: list[str]) -> None:
         from backend.database.connection import db_session
         from backend.database.models import Portfolio
+        from backend.services.portfolio_service import get_active_traders
 
         try:
             with db_session() as db:
@@ -371,434 +285,246 @@ class TelegramBot:
                 if not p:
                     await self._reply(update, "No portfolio found.")
                     return
-                traders = p.copied_traders
+                traders = get_active_traders(db, p.id)
                 if not traders:
-                    await self._reply(update, "No copied traders.")
+                    await self._reply(update, "No active copied traders.")
                     return
-                lines = [f"👥 <b>Copied Traders ({len(traders)})</b>\n"]
+
+                lines = [f"Active Traders ({len(traders)})\n"]
                 for t in traders:
-                    status = "⏸" if t.is_paused else ("▶️" if t.is_active else "⏹")
-                    risk_color = "🟢" if t.risk_score < 4 else ("🟡" if t.risk_score < 7 else "🔴")
-                    ret = t.total_return_pct or 0
-                    ret_sign = "📈" if ret >= 0 else "📉"
-                    # Use HTML bold tags — Markdown breaks when username contains underscores
+                    ret = t["total_return_pct"]
+                    ret_icon = "+" if ret >= 0 else ""
+                    paused = " (paused)" if t.get("is_paused") else ""
                     lines.append(
-                        f"{status} <b>{t.trader_username}</b>\n"
-                        f"  {ret_sign} Return: {ret:+.2f}%  |  Alloc: {t.allocation_pct:.1f}%\n"
-                        f"  {risk_color} Risk: {t.risk_score:.1f}/10  |  {t.risk_classification.upper() if t.risk_classification else '—'}\n"
+                        f"{t['username']}{paused}\n"
+                        f"  Alloc: {t['allocation_pct']:.1f}%  "
+                        f"Return: {ret_icon}{ret:+.2f}%\n"
+                        f"  Risk: {t['risk_score']:.1f}/10  "
+                        f"DD: {t['max_drawdown']:.1f}%"
                     )
-                await self._reply(update, "\n".join(lines), parse_mode="HTML")
+                await self._reply(update, "\n".join(lines))
         except Exception as e:
-            logger.error(f"/traders error: {e}")
+            logger.error(f"/active error: {e}")
             await self._reply(update, f"Error: {e}")
 
-    async def _cmd_risk(self, update: Update, args: list[str]) -> None:
+    async def _cmd_discovery(self, update: Update, args: list[str]) -> None:
         from backend.database.connection import db_session
-        from backend.database.models import Portfolio, RiskSettings
-        from backend.risk.risk_engine import RiskEngine
+        from backend.database.models import Portfolio
+        from backend.services.discovery_service import discover_eligible_traders
 
         try:
+            await self._reply(update, "Scanning for eligible traders...")
             with db_session() as db:
                 p = db.query(Portfolio).first()
                 if not p:
                     await self._reply(update, "No portfolio found.")
                     return
-                settings = db.query(RiskSettings).filter(
-                    RiskSettings.portfolio_id == p.id
-                ).first()
-                engine = RiskEngine()
-                violations = engine.check_all(db, p, settings)
-                if not violations:
-                    await self._reply(update, "✅ No risk violations. Portfolio is healthy.")
-                    return
-                lines = [f"⚠️ <b>{len(violations)} Risk Violation(s)</b>\n"]
-                for v in violations:
-                    icon = "🔴" if v.severity == "critical" else ("🟡" if v.severity == "warning" else "🔵")
-                    lines.append(f"{icon} <b>{v.title}</b>")
-                    lines.append(f"  {v.message}")
-                    if v.suggested_action:
-                        lines.append(f"  💡 {v.suggested_action}")
-                    lines.append("")
-                await self._reply(update, "\n".join(lines), parse_mode="HTML")
+                eligible, excluded, stats = await discover_eligible_traders(db, p.id)
+
+                lines = [f"Discovery: New Eligible Traders\n"]
+                lines.append(f"Scanned: {stats.get('total_scanned', 0)}  "
+                             f"Eligible: {stats.get('eligible', 0)}  "
+                             f"Excluded: {stats.get('excluded', 0)}\n")
+
+                if eligible:
+                    for i, t in enumerate(eligible[:5], 1):
+                        score = t.get("score", 0)
+                        ret = t.get("total_return_pct", 0)
+                        risk = t.get("risk_score", 5)
+                        mincpy = t.get("min_copy_amount", 200)
+                        lines.append(
+                            f"{i}. {t['username']} \u2014 {score}/100\n"
+                            f"   Return: {ret:+.1f}%  Risk: {risk:.1f}  "
+                            f"Min copy: ${mincpy:.0f}"
+                        )
+                    if len(eligible) > 5:
+                        lines.append(f"\n... and {len(eligible) - 5} more")
+                else:
+                    lines.append("No eligible traders found at this time.")
+
+                await self._reply(update, "\n".join(lines))
         except Exception as e:
-            logger.error(f"/risk error: {e}")
+            logger.error(f"/discovery error: {e}")
             await self._reply(update, f"Error: {e}")
+
+    async def _cmd_health(self, update: Update, args: list[str]) -> None:
+        from backend.database.connection import db_session
+        from backend.database.models import Portfolio, CopiedTrader
+        from backend.monitoring.trader_health_engine import analyze_trader_health
+        from backend.monitoring.holding_parser import get_trader_holdings, extract_symbols
+        from backend.monitoring.news_service import fetch_news_for_symbols
+        from backend.services.etoro_service import EToroSyncService
+
+        try:
+            await self._reply(update, "Analysing trader health...")
+
+            sync_service = EToroSyncService()
+            etoro_client = sync_service.client if sync_service.client.enabled else None
+
+            with db_session() as db:
+                p = db.query(Portfolio).first()
+                if not p:
+                    await self._reply(update, "No portfolio found.")
+                    return
+
+                traders = (
+                    db.query(CopiedTrader)
+                    .filter(
+                        CopiedTrader.portfolio_id == p.id,
+                        CopiedTrader.is_active.is_(True),
+                        CopiedTrader.is_paused.is_(False),
+                    )
+                    .all()
+                )
+
+                if not traders:
+                    await self._reply(update, "No active traders to analyse.")
+                    return
+
+                for t in traders:
+                    trader_data = {
+                        "username": t.trader_username,
+                        "source": "tradeinfo" if t.trader_id else "unknown",
+                        "confidence": 1.0,
+                        "return_12m": t.total_return_pct or 0,
+                        "risk_score": t.risk_score or 5,
+                        "max_drawdown": t.max_drawdown or 0,
+                        "consistency_score": t.consistency_score or 50,
+                    }
+
+                    holdings, holdings_source = await get_trader_holdings(
+                        db, p.id, t.trader_username, etoro_client=etoro_client,
+                    )
+                    trader_data["_holdings_source"] = holdings_source
+                    symbols = extract_symbols(holdings)
+                    news_by_symbol = await fetch_news_for_symbols(symbols)
+
+                    result = analyze_trader_health(trader_data, holdings, news_by_symbol)
+
+                    # Wait 0.5s between traders to avoid rate limits
+                    import asyncio
+                    await asyncio.sleep(0.5)
+
+                # Get the latest monitoring results for all traders
+                from backend.monitoring.orchestrator import run_monitoring_pipeline
+                monitor_result = await run_monitoring_pipeline(
+                    db, p.id, etoro_client=etoro_client,
+                )
+
+                results = monitor_result.get("results", [])
+                if not results:
+                    await self._reply(update, "Health analysis complete. No signals to report.")
+                    return
+
+                lines = [f"Trader Health Analysis\n"]
+                for r in results:
+                    signal_icon = {
+                        "increase": "+",
+                        "hold": "\u25b6",
+                        "reduce": "\u25bc",
+                        "avoid": "x",
+                        "watch": "\u25cb",
+                    }.get(r.get("signal", "watch"), "?")
+                    lines.append(
+                        f"{signal_icon} {r['trader']} \u2014 {r['signal']} "
+                        f"(conf: {r['confidence']:.2f})"
+                    )
+                    if r.get("holdings_count", 0) > 0:
+                        lines.append(f"   Holdings: {r['holdings_count']}  "
+                                     f"Health: {r.get('holdings_health', 0):.0f}/100")
+                    for reason in r.get("reasons", [])[:2]:
+                        lines.append(f"   {reason}")
+
+                await self._reply(update, "\n".join(lines))
+        except Exception as e:
+            logger.error(f"/health error: {e}")
+            await self._reply(update, f"Health analysis failed: {e}")
 
     async def _cmd_alerts(self, update: Update, args: list[str]) -> None:
         from backend.database.connection import db_session
-        from backend.database.models import Alert
+        from backend.database.models import Portfolio
+        from backend.services.alert_service import get_alerts
 
         try:
             with db_session() as db:
-                alerts = (
-                    db.query(Alert)
-                    .filter(Alert.is_read.is_(False))
-                    .order_by(Alert.created_at.desc())
-                    .limit(5)
-                    .all()
-                )
-                if not alerts:
-                    await self._reply(update, "✅ No unread alerts.")
+                p = db.query(Portfolio).first()
+                if not p:
+                    await self._reply(update, "No portfolio found.")
                     return
-                lines = [f"🔔 <b>{len(alerts)} Unread Alerts</b>\n"]
+                alerts = get_alerts(db, p.id, unread_only=True, limit=5)
+                if not alerts:
+                    await self._reply(update, "No unread alerts.")
+                    return
+
+                lines = [f"Recent Alerts ({len(alerts)})\n"]
                 for a in alerts:
-                    icon = {"critical": "🔴", "warning": "🟡", "info": "🔵"}.get(a.severity, "⚪")
-                    lines.append(f"{icon} <b>{a.title}</b>")
-                    lines.append(f"  {a.message[:200]}")
-                    lines.append(f"  <i>{a.created_at.strftime('%m/%d %H:%M')}</i>\n")
-                await self._reply(update, "\n".join(lines), parse_mode="HTML")
+                    icon = {"critical": "!", "warning": "\u26a0", "info": "i"}.get(
+                        a["severity"], "?"
+                    )
+                    lines.append(
+                        f"{icon} {a['title']}\n"
+                        f"  {a['message'][:150]}"
+                    )
+                await self._reply(update, "\n".join(lines))
         except Exception as e:
             logger.error(f"/alerts error: {e}")
             await self._reply(update, f"Error: {e}")
 
-    async def _cmd_pending(self, update: Update, args: list[str]) -> None:
-        from backend.database.connection import db_session
-        from backend.database.models import Alert
-
-        try:
-            with db_session() as db:
-                alerts = (
-                    db.query(Alert)
-                    .filter(
-                        Alert.alert_type == "automation",
-                        Alert.is_read.is_(False),
-                    )
-                    .order_by(Alert.created_at.desc())
-                    .limit(10)
-                    .all()
-                )
-                if not alerts:
-                    await self._reply(update, "✅ No pending approvals.")
-                    return
-                lines = [f"⏳ <b>{len(alerts)} Pending Approval(s)</b>\n"]
-                for a in alerts:
-                    lines.append(f"• {a.title}")
-                    lines.append(f"  {a.message[:200]}")
-                    lines.append(f"  <i>{a.created_at.strftime('%m/%d %H:%M')}</i>\n")
-                lines.append("Use /approve <rule_id> to execute.")
-                await self._reply(update, "\n".join(lines), parse_mode="HTML")
-        except Exception as e:
-            logger.error(f"/pending error: {e}")
-            await self._reply(update, f"Error: {e}")
-
-    async def _cmd_approve(self, update: Update, args: list[str]) -> None:
-        if not args or not args[0].isdigit():
-            await self._reply(update, "Usage: /approve <rule_id>")
-            return
-        action_id = int(args[0])
-        from backend.database.connection import db_session
-        from backend.database.models import Portfolio, AutomationRule
-        from backend.automation.automation_engine import AutomationEngine
-        from backend.services.etoro_service import EToroSyncService
-
-        engine = AutomationEngine()
-        sync_service = EToroSyncService()
-
-        try:
-            with db_session() as db:
-                rule = db.query(AutomationRule).filter(AutomationRule.id == action_id).first()
-                if not rule:
-                    await self._reply(update, f"No rule found with ID {action_id}.")
-                    return
-                portfolio = db.query(Portfolio).filter(Portfolio.id == rule.portfolio_id).first()
-                if not portfolio:
-                    await self._reply(update, "Portfolio not found.")
-                    return
-                traders = [t for t in portfolio.copied_traders if t.is_active and not t.is_paused]
-                actions = engine.evaluate_rules(db, portfolio, traders)
-                match = next((a for a in actions if a.rule_id == action_id), None)
-                if not match:
-                    await self._reply(update, 
-                        f"Rule '{rule.name}' is not currently triggered. Conditions may no longer be met."
-                    )
-                    return
-                await self._reply(update, f"⚙️ Executing '{rule.name}' on eToro...")
-                resp = await engine.execute_etoro_action(sync_service.client, match, portfolio, db)
-                has_error = (resp or {}).get("error", False)
-                success_count = (resp or {}).get("success_count", None)
-                if has_error:
-                    success = False
-                elif success_count is not None:
-                    success = success_count > 0
-                else:
-                    success = True
-                engine.log_execution(db, portfolio, match, approved_by="telegram", success=success, etoro_response=resp)
-                if success:
-                    count_info = f" ({resp.get('success_count', '?')}/{resp.get('total', '?')} actions succeeded)" if "success_count" in (resp or {}) else ""
-                    await self._reply(update, 
-                        f"✅ <b>{rule.name}</b> executed.{count_info}\n{match.description}",
-                        parse_mode="HTML",
-                    )
-                else:
-                    detail = (resp or {}).get("detail", "Unknown")
-                    await self._reply(update, f"❌ <b>{rule.name}</b> FAILED.\n{detail}", parse_mode="HTML")
-        except Exception as e:
-            logger.error(f"/approve error: {e}")
-            await self._reply(update, f"Error: {e}")
-
-    async def _cmd_sync(self, update: Update, args: list[str]) -> None:
+    async def _cmd_watchlist(self, update: Update, args: list[str]) -> None:
         from backend.database.connection import db_session
         from backend.database.models import Portfolio
+        from backend.monitoring.orchestrator import run_monitoring_pipeline
         from backend.services.etoro_service import EToroSyncService
 
         try:
-            await self._reply(update, "🔄 Syncing with eToro...")
-            with db_session() as db:
-                p = db.query(Portfolio).first()
-                if not p:
-                    await self._reply(update, "No portfolio found.")
-                    return
-                sync_service = EToroSyncService()
-                success = await sync_service.sync_portfolio_data(db, p.id)
-                if success:
-                    db.refresh(p)
-                    s = self._sym(p.currency)
-                    await self._reply(update, 
-                        f"✅ Sync complete.\n"
-                        f"Value: {s}{p.total_value:,.2f}  |  "
-                        f"Updated: {p.last_updated.strftime('%H:%M UTC')}",
-                        parse_mode="HTML",
-                    )
-                else:
-                    await self._reply(update, "❌ Sync failed. Check API credentials / logs.")
-        except Exception as e:
-            logger.error(f"/sync error: {e}")
-            await self._reply(update, f"Sync error: {e}")
+            await self._reply(update, "Fetching watchlist...")
 
-    async def _cmd_pause(self, update: Update, args: list[str]) -> None:
-        from backend.database.connection import db_session
-        from backend.database.models import Portfolio
-        from backend.automation.automation_engine import AutomationEngine
-
-        engine = AutomationEngine()
-        try:
-            with db_session() as db:
-                p = db.query(Portfolio).first()
-                if not p:
-                    await self._reply(update, "No portfolio found.")
-                    return
-                count = engine.emergency_stop(db, p.id)
-                await self._reply(update, 
-                    f"⛔ <b>Emergency Stop Activated</b>\n"
-                    f"{count} automation rule(s) paused.\n"
-                    "Use the web dashboard to re-enable.",
-                    parse_mode="HTML",
-                )
-        except Exception as e:
-            logger.error(f"/pause error: {e}")
-            await self._reply(update, f"Error: {e}")
-
-    async def _cmd_scout(self, update: Update, args: list[str]) -> None:
-        """Run deterministric weighted scoring scout on demand via Telegram.
-
-        Uses ScoutRunner with the 5-category weighted scoring model.
-        Primary: Pure math (always works). Secondary: AI narrator (optional).
-        """
-        from backend.database.connection import db_session
-        from backend.database.models import Portfolio
-        from backend.services.market_data import get_current_holdings, fetch_market_news, discover_top_traders
-        from backend.ai.eligibility_engine import filter_candidates
-        from backend.ai.scoring_engine import scout_holdings, rank_candidates
-        from backend.ai.portfolio_engine import analyze_portfolio
-        from backend.ai.action_planner import build_action_plan, format_display, summarize_constraints
-
-        await self._reply(update, "🔍 Running Growth Scout...")
-
-        try:
-            news = await fetch_market_news()
-            candidates = await discover_top_traders()
-            logger.info(f"Scout: {len(news)} news, {len(candidates)} candidates")
+            sync_service = EToroSyncService()
+            etoro_client = sync_service.client if sync_service.client.enabled else None
 
             with db_session() as db:
                 p = db.query(Portfolio).first()
                 if not p:
                     await self._reply(update, "No portfolio found.")
                     return
-                holdings = get_current_holdings(db, p.id)
-                logger.info(f"Scout: loaded {len(holdings)} active traders for portfolio {p.id}")
 
-                active_usernames = {h.get("username", "").lower() for h in holdings if h.get("username")}
-                available_balance = p.available_cash or p.total_value * 0.1
-                eligible, excluded = filter_candidates(candidates, active_usernames, available_balance)
-
-                hs = scout_holdings(holdings)
-                discovery_scored = rank_candidates(holdings, eligible)
-                holdings_ranked = sorted(
-                    hs.get("scored", []), key=lambda x: x.get("score", 0), reverse=True,
+                result = await run_monitoring_pipeline(
+                    db, p.id, etoro_client=etoro_client,
                 )
-                weakest = hs.get("weakest")
-                avg_score = hs.get("avg_score", 0)
-                top_swaps = discovery_scored[:3] if discovery_scored else []
 
-                portfolio_analysis = analyze_portfolio(
-                    holdings, total_value=p.total_value or 0, available_cash=p.available_cash or 0,
+                summary = result.get("watchlist_summary", {})
+                results = result.get("results", [])
+
+                if not results:
+                    await self._reply(update, "Watchlist is empty.")
+                    return
+
+                by_signal = summary.get("by_signal", {})
+                lines = [f"Monitored Traders\n"]
+                lines.append(
+                    f"Increase: {by_signal.get('increase', 0)}  "
+                    f"Hold: {by_signal.get('hold', 0)}  "
+                    f"Reduce: {by_signal.get('reduce', 0)}  "
+                    f"Watch: {by_signal.get('watch', 0)}\n"
                 )
-                action_plan = build_action_plan(portfolio_analysis, discovery_scored, excluded, holdings)
 
-                # ── AI narrator (optional) ──
-                ai_summary = None
-                try:
-                    from backend.ai.groq_scout import GroqScout
-                    groq = GroqScout()
-                    if groq.enabled and holdings_ranked:
-                        import asyncio
-                        best_name = top_swaps[0]["username"] if top_swaps else "none"
-                        trader_count = len(holdings_ranked)
-                        prompt = (
-                            "Summarise this portfolio scout report in ONE plain-English sentence "
-                            "(max 20 words). No formatting, no JSON.\n\n"
-                            f"Active traders: {trader_count}.\n"
-                            f"Weakest trader: {weakest['username']} "
-                            f"(score {weakest['score']}/100).\n"
-                            f"Best swap: {best_name}.\n"
-                            f"Portfolio avg score: {avg_score}/100."
-                        )
-                        def _call():
-                            return groq._ensure_client().chat.completions.create(
-                                model="llama-3.3-70b-versatile",
-                                messages=[{"role": "user", "content": prompt}],
-                                temperature=0,
-                                max_tokens=40,
-                            )
-                        resp = await asyncio.to_thread(_call)
-                        if resp and resp.choices:
-                            ai_summary = resp.choices[0].message.content.strip()
-                except Exception as e:
-                    logger.info("AI narrator unavailable (non-fatal): %s", e)
-
-                # ── Build display lines ──
-                lines = []
-
-                lines.append("<b>📊 Decision Dashboard</b>")
-                if holdings_ranked:
-                    for s in holdings_ranked:
-                        score = s.get("score", 0) or s.get("final_score", 0)
-                        icon = "🟢" if score >= 60 else ("🟡" if score >= 30 else "🔴")
-                        lines.append(
-                            f"{icon} <b>{s['username']}</b> — {score}/100"
-                        )
-                else:
-                    lines.append("  No active copied traders found.")
-
-                lines.append(f"\n<b>Portfolio Avg:</b> {avg_score}/100")
-
-                if ai_summary:
-                    lines.append(f"\n🤖 <i>{ai_summary}</i>")
-
-                # Diversification check (before weakest-link check)
-                is_under_diversified = len(holdings_ranked) <= 1
-
-                if is_under_diversified:
-                    lines.append(f"\n⚠️ <b>Critically Under-Diversified</b> — only {len(holdings_ranked)} trader(s)")
-                    if discovery_scored:
-                        lines.append(f"Consider adding traders from the discovery list below.")
-                elif weakest and weakest.get("score", 0) < 50 and top_swaps:
-                    ws = weakest.get("score", 0)
+                for r in results:
                     lines.append(
-                        f"\n⚠️ <b>Weakest Link:</b> {weakest['username']} ({ws}/100)"
+                        f"{r['trader']} \u2014 {r['signal']} "
+                        f"(score: {r.get('performance_score', 0):.0f})"
                     )
-                    warnings = summarize_constraints(weakest)
-                    for w in warnings:
-                        lines.append(f"  ⚠️ {w}")
 
-                    lines.append(f"\n<b>Top Swap Recommendation</b>")
-                    for i, swap in enumerate(top_swaps[:3], 1):
-                        lines.append(
-                            f"{i}. <b>{swap['username']}</b> — {swap.get('score', 0)}/100 "
-                            f"(return {swap.get('total_return_pct', 0):.1f}%, "
-                            f"risk {swap.get('risk_score', 5):.1f})"
-                        )
-                    lines.append(
-                        f"\nReply <code>/swap {weakest['username']} {top_swaps[0]['username']}</code>"
-                    )
-                else:
-                    lines.append(f"\n✅ <b>Portfolio Healthy</b> — all traders score well")
+                overall = summary.get("sentiment", "neutral")
+                lines.append(f"\nOverall sentiment: {overall}")
 
-                # Top 3 Discovery Candidates
-                if discovery_scored:
-                    display_candidates = discovery_scored[:3]
-                    lines.append(f"\n<b>🔍 Top 3 Discovery</b>")
-                    for i, c in enumerate(display_candidates, 1):
-                        lines.append(
-                            f"{i}. <b>{c['username']}</b> — {c.get('score', 0)}/100 "
-                            f"(return {c.get('total_return_pct', 0):.1f}%, "
-                            f"risk {c.get('risk_score', 5):.1f})"
-                        )
-
-                # Allocation plan from action_plan
-                eq_plan = action_plan.get("recommendations", {}).get("equal_weight_plan", [])
-                if eq_plan:
-                    from backend.services.allocation_logic import calculate_equal_weight_target
-                    from backend.services.rebalance_service import calculate_rebalance_orders
-                    existing_names = {h.get("username") for h in holdings if h.get("username")}
-                    target = calculate_equal_weight_target(
-                        eq_plan[:3], p.total_value or 10000,
-                    )
-                    current_positions = [
-                        {"username": h["username"],
-                         "current_value": h.get("allocation_pct", 0) * 0.01 * (p.total_value or 10000)}
-                        for h in holdings
-                    ]
-                    orders = calculate_rebalance_orders(
-                        p.total_value or 0, current_positions, target,
-                    )
-                    lines.append(f"\n---\n<b>📊 33.3% Equal-Weight Plan</b>")
-                    for a in target["target_portfolio"]:
-                        src = "discovery" if a["username"] not in existing_names else "current"
-                        icon = "🆕" if src == "discovery" else "🔄"
-                        lines.append(
-                            f"{icon} <b>{a['username']}</b> — {a['allocation_pct']}% "
-                            f"({src})"
-                        )
-                    if orders.get("warnings"):
-                        for w in orders["warnings"]:
-                            lines.append(f"⚠️ {w}")
-
-                text = "\n".join(lines)
-                await self._reply(update, text, parse_mode="HTML")
-
+                await self._reply(update, "\n".join(lines))
         except Exception as e:
-            logger.exception("/scout error")
-            err_str = str(e)
-            if "rate" in err_str.lower() or "429" in err_str or "quota" in err_str.lower():
-                await self._reply(update, "⚠️ Scout Error: Rate limit exceeded.")
-            elif "api" in err_str.lower() or "401" in err_str or "403" in err_str or "not found" in err_str.lower():
-                await self._reply(update, "⚠️ Scout Error: API configuration issue.")
-            elif "timeout" in err_str.lower() or "timed out" in err_str.lower():
-                await self._reply(update, "⚠️ Scout Error: Request timed out.")
-            else:
-                await self._reply(update, f"❌ Scout failed: {e}")
+            logger.error(f"/watchlist error: {e}")
+            await self._reply(update, f"Error: {e}")
 
-
-    async def _cmd_swap(self, update: Update, args: list[str]) -> None:
-        """Execute a trader swap: stop copying old, start copying new.
-
-        Usage: /swap <old_trader_username> <new_trader_username>
-        """
-        if len(args) < 2:
-            await self._reply(update,
-                "Usage: <code>/swap &lt;old_username&gt; &lt;new_username&gt;</code>\n\n"
-                "Example: <code>/swap booker03 ConsistentCapital</code>\n"
-                "Run /scout first to get a recommendation.",
-                parse_mode="HTML",
-            )
-            return
-
-        old_username = args[0]
-        new_username = args[1]
-
+    async def _cmd_settings(self, update: Update, args: list[str]) -> None:
         from backend.database.connection import db_session
-        from backend.database.models import Portfolio, CopiedTrader, Alert, AlertType
-        from backend.services.etoro_service import EToroSyncService
-
-        await self._reply(update, f"⚙️ Processing swap: <b>{old_username}</b> → <b>{new_username}</b>...", parse_mode="HTML")
-
-        sync_service = EToroSyncService()
-        client = sync_service.client
-
-        if not client.enabled:
-            await self._reply(update, "❌ eToro API not configured. Set ETORO_API_KEY and ETORO_API_SECRET.")
-            return
+        from backend.database.models import Portfolio
 
         try:
             with db_session() as db:
@@ -807,61 +533,21 @@ class TelegramBot:
                     await self._reply(update, "No portfolio found.")
                     return
 
-                # Find the old trader in our DB
-                old_trader = (
-                    db.query(CopiedTrader)
-                    .filter(
-                        CopiedTrader.portfolio_id == p.id,
-                        CopiedTrader.trader_username == old_username,
-                        CopiedTrader.is_active.is_(True),
-                    )
-                    .first()
+                text = (
+                    f"Current Settings\n\n"
+                    f"Portfolio ID: {p.id}\n"
+                    f"Currency: {p.currency or 'USD'}\n"
+                    f"Mode: {'Simulation' if p.is_simulation else 'Live'}\n"
+                    f"Total Value: ${p.total_value:,.2f}\n"
+                    f"Available Cash: ${p.available_cash:,.2f}\n\n"
+                    f"Health Score: {p.health_score:.0f}/100\n"
+                    f"Active Traders: {len([t for t in (p.copied_traders or []) if t.is_active and not t.is_paused])}\n\n"
+                    f"Settings can be changed via the web dashboard."
                 )
-                if not old_trader:
-                    await self._reply(update, f"❌ Active trader '{old_username}' not found.")
-                    return
-
-                mirror_id = int(old_trader.trader_id) if old_trader.trader_id and old_trader.trader_id.isdigit() else None
-
-                if mirror_id:
-                    # Step 1: Close the old mirror position
-                    await self._reply(update, f"⏳ Closing copy of {old_username}...")
-                    close_result = await client.execute_close_mirror(mirror_id)
-                    if close_result and close_result.get("error"):
-                        detail = close_result.get("detail", "Unknown error")
-                        await self._reply(update, f"❌ Failed to close {old_username}: {detail}")
-                        return
-
-                # Step 2: Mark old trader as inactive in DB
-                old_trader.is_active = False
-                old_trader.is_paused = True
-                old_trader.paused_reason = f"Swapped to {new_username} via Scout"
-
-                # Step 3: Log the swap as an alert
-                db.add(Alert(
-                    portfolio_id=p.id,
-                    alert_type=AlertType.AI_SCOUT,
-                    title=f"🔄 Swap Executed: {old_username} → {new_username}",
-                    message=(
-                        f"Copy of {old_username} closed and marked inactive.\n"
-                        f"To start copying {new_username}, use the eToro UI or add via the dashboard."
-                    ),
-                    severity="info",
-                ))
-                db.commit()
-
-                await self._reply(update,
-                    f"✅ <b>Swap Complete</b>\n\n"
-                    f"❌ Stopped copying <b>{old_username}</b>\n"
-                    f"➡️ Ready to copy <b>{new_username}</b>\n\n"
-                    f"Note: Starting a new copy must be done via the eToro UI "
-                    f"or by adding the trader through the dashboard.",
-                    parse_mode="HTML",
-                )
-
+                await self._reply(update, text)
         except Exception as e:
-            logger.error(f"/swap error: {e}")
-            await self._reply(update, f"❌ Swap failed: {e}")
+            logger.error(f"/settings error: {e}")
+            await self._reply(update, f"Error: {e}")
 
     # ── Webhook helpers ──────────────────────────
 

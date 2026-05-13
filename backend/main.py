@@ -1,8 +1,6 @@
 """
 eToro Portfolio Platform — FastAPI Application
-────────────────────────────────────────────────────────────────────
-Main application entry point with all routes, WebSocket, middleware,
-and startup/shutdown lifecycle hooks.
+Smart portfolio assistant: monitor, analyze, decide.
 """
 
 from __future__ import annotations
@@ -19,64 +17,39 @@ from sqlalchemy.orm import Session
 
 from backend.database.connection import init_db, get_db, SessionLocal
 from backend.database.models import (
-    Portfolio, CopiedTrader, AutomationRule, AutomationLog,
-    Alert, AIRecommendation, RiskSettings, AutomationStatus,
-    AppSetting
+    Portfolio, CopiedTrader, Alert, AppSetting,
 )
 from backend.api.schemas import (
     PortfolioCreate, PortfolioResponse, PortfolioUpdate,
     CopiedTraderCreate, CopiedTraderResponse, CopiedTraderUpdate,
-    AutomationRuleCreate, AutomationRuleResponse, AutomationLogResponse,
-    AlertResponse, AIRecommendationResponse, AIAnalysisRequest,
-    RiskSettingsUpdate, RiskSettingsResponse,
-    TraderAnalyticsResult, PortfolioHealthResult as PortfolioHealthSchema,
+    AlertResponse,
 )
-from backend.analytics.trader_analytics import TraderAnalyticsEngine, TraderMetrics
-from backend.analytics.portfolio_analytics import PortfolioAnalyticsEngine
-from backend.ai.analysis_engine import AIAnalysisEngine
-from backend.risk.risk_engine import RiskEngine
-from backend.automation.automation_engine import AutomationEngine
 from backend.services.data_service import DataService
 from backend.services.etoro_service import EToroSyncService
-from backend.dev_routes import router as dev_router
 from backend.services.scheduler import SchedulerService
 from backend.services.telegram_service import TelegramBot
+from backend.services.portfolio_service import get_portfolio_overview, get_active_traders
+from backend.services.discovery_service import discover_eligible_traders
+from backend.services.alert_service import get_alerts, mark_alert_read, mark_all_read, get_alert_summary
+from backend.services.dashboard_service import build_dashboard_data
 
-# ──────────────────────────────────────────────
-# Logging
-# ──────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
 
-# ──────────────────────────────────────────────
-# Global engine instances
-# ──────────────────────────────────────────────
-trader_analytics = TraderAnalyticsEngine()
-portfolio_analytics = PortfolioAnalyticsEngine()
-ai_engine = AIAnalysisEngine()
-risk_engine = RiskEngine()
-automation_engine = AutomationEngine()
 data_service = DataService()
 scheduler = SchedulerService()
 telegram_bot = TelegramBot()
-
-# WebSocket connection manager
 ws_connections: list[WebSocket] = []
 
-
-# ──────────────────────────────────────────────
-# App lifecycle
-# ──────────────────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting eToro Portfolio Platform…")
     init_db()
 
-    # Create default portfolio if none exists
     db = SessionLocal()
     try:
         portfolio_count = db.query(Portfolio).count()
@@ -87,32 +60,14 @@ async def lifespan(app: FastAPI):
                 total_value=10000.0,
                 invested_amount=10000.0,
                 available_cash=10000.0,
-                is_simulation=False
+                is_simulation=False,
             )
             db.add(default_portfolio)
             db.commit()
             db.refresh(default_portfolio)
-
-            # Create default risk settings
-            settings = RiskSettings(portfolio_id=default_portfolio.id)
-            db.add(settings)
-            db.commit()
-
-            logger.info(
-                f"Default portfolio created with ID: {default_portfolio.id}")
+            logger.info(f"Default portfolio created with ID: {default_portfolio.id}")
         else:
             logger.info(f"Found {portfolio_count} existing portfolio(s)")
-
-        # Log automation rule count
-        try:
-            rule_count = db.query(AutomationRule).count()
-            logger.info(f"Automation rules in database: {rule_count}")
-            # Reset cooldowns so rules can fire immediately after deploy
-            cleared = automation_engine.reset_cooldowns(db, 1)
-            if cleared:
-                logger.info(f"Cooldowns reset for {cleared} rules — rebalance can fire immediately")
-        except Exception as e:
-            logger.warning(f"Could not count automation rules: {e}")
     except Exception as e:
         logger.error(f"Error creating default portfolio: {e}")
     finally:
@@ -120,7 +75,6 @@ async def lifespan(app: FastAPI):
 
     scheduler.start()
 
-    # Initialize Telegram bot
     if telegram_bot.enabled:
         try:
             telegram_bot._started_at = datetime.utcnow()
@@ -129,8 +83,9 @@ async def lifespan(app: FastAPI):
             logger.info(f"Telegram webhook set to {webhook_url}")
             await telegram_bot.setup_commands()
             await telegram_bot.send_message(
-                "🚀 <b>CopyVault Server Started</b>\n\n"
-                "eToro sync is active.\n"
+                "Smart Portfolio Assistant started.\n\n"
+                "Monitoring your copied traders with health analysis, "
+                "news tracking, and smart alerts.\n"
                 "Use the menu below or tap /help for commands.",
                 show_keyboard=True,
             )
@@ -145,26 +100,24 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="eToro Portfolio Platform",
-    description="AI-assisted portfolio management and copy-trading analytics",
-    version="1.0.0",
+    description="Smart portfolio assistant — monitor, analyze, and decide",
+    version="2.0.0",
     lifespan=lifespan,
 )
-
-app.include_router(dev_router)
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=os.getenv(
-        "ALLOWED_ORIGINS", "http://localhost:3000,https://smart-etoro2.vercel.app").split(","),
+        "ALLOWED_ORIGINS", "http://localhost:3000,https://smart-etoro2.vercel.app"
+    ).split(","),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
-# ──────────────────────────────────────────────
-# WebSocket — live updates
-# ──────────────────────────────────────────────
+# ── WebSocket ─────────────────────────────────
+
 
 @app.websocket("/ws/{portfolio_id}")
 async def websocket_endpoint(websocket: WebSocket, portfolio_id: int):
@@ -177,55 +130,56 @@ async def websocket_endpoint(websocket: WebSocket, portfolio_id: int):
             await websocket.send_json({"event": "pong", "data": {}})
     except WebSocketDisconnect:
         ws_connections.remove(websocket)
-        logger.info(f"WebSocket disconnected: portfolio {portfolio_id}")
 
 
 async def broadcast(event: str, data: dict):
-    """Broadcast event to all connected WebSocket clients."""
     dead = []
     for ws in ws_connections:
         try:
-            await ws.send_json({"event": event, "data": data, "ts": datetime.utcnow().isoformat()})
+            await ws.send_json({
+                "event": event, "data": data, "ts": datetime.utcnow().isoformat(),
+            })
         except Exception:
             dead.append(ws)
     for ws in dead:
         ws_connections.remove(ws)
 
 
-# ──────────────────────────────────────────────
-# Health check
-# ──────────────────────────────────────────────
+# ── Health ────────────────────────────────────
+
 
 @app.get("/")
 async def root():
-    return {"status": "online", "portfolio": "active"}
+    return {"status": "online", "version": "2.0.0", "product": "portfolio-assistant"}
+
 
 @app.get("/health")
 def health_check():
     return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
+
 
 @app.head("/health")
 def health_check_head():
     return Response(status_code=status.HTTP_200_OK)
 
 
-# ──────────────────────────────────────────────
-# Telegram webhook endpoint
-# ──────────────────────────────────────────────
+# ── Telegram ──────────────────────────────────
+
 
 @app.get("/api/telegram/status")
 def telegram_status():
-    """Return Telegram bot connection status."""
     return telegram_bot.status
 
 
 @app.post("/api/telegram/test")
 async def telegram_test():
-    """Send a test message to verify Telegram bot is working."""
     if not telegram_bot.enabled:
-        raise HTTPException(status_code=400, detail="Telegram bot is not enabled. Check TELEGRAM_BOT_TOKEN and TELEGRAM_ALLOWED_USER_ID.")
+        raise HTTPException(status_code=400, detail="Telegram bot is not enabled.")
     try:
-        await telegram_bot.send_message("✅ <b>Test message</b>\n\nCopyVault Telegram bot is connected and operational.\nServer time: " + datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"), show_keyboard=True)
+        await telegram_bot.send_message(
+            "Test message — Smart Portfolio Assistant is connected.",
+            show_keyboard=True,
+        )
         return {"status": "ok", "message": "Test message sent successfully"}
     except Exception as e:
         telegram_bot.last_error = str(e)
@@ -234,20 +188,17 @@ async def telegram_test():
 
 @app.post(telegram_bot.webhook_path())
 async def telegram_webhook(request: Request):
-    """Receive Telegram update via webhook and dispatch to the bot."""
     if telegram_bot.enabled:
         try:
             data = await request.json()
             await telegram_bot.process_update(data)
         except Exception as e:
             logger.error(f"Telegram webhook error: {e}")
-
     return Response(status_code=200)
 
 
-# ──────────────────────────────────────────────
-# Portfolio routes
-# ──────────────────────────────────────────────
+# ── Portfolio ─────────────────────────────────
+
 
 @app.post("/api/portfolios", response_model=PortfolioResponse, status_code=201)
 def create_portfolio(payload: PortfolioCreate, db: Session = Depends(get_db)):
@@ -255,29 +206,17 @@ def create_portfolio(payload: PortfolioCreate, db: Session = Depends(get_db)):
     db.add(portfolio)
     db.commit()
     db.refresh(portfolio)
-
-    # Create default risk settings
-    settings = RiskSettings(portfolio_id=portfolio.id)
-    db.add(settings)
-    db.commit()
-
-    logger.info(
-        f"Portfolio created: {portfolio.id} (user={portfolio.user_id})")
+    logger.info(f"Portfolio created: {portfolio.id} (user={portfolio.user_id})")
     return portfolio
 
 
 @app.get("/api/portfolios/{portfolio_id}", response_model=PortfolioResponse)
 def get_portfolio(portfolio_id: int, db: Session = Depends(get_db)):
-    portfolio = _get_portfolio_or_404(db, portfolio_id)
-    return portfolio
+    return _get_portfolio_or_404(db, portfolio_id)
 
 
 @app.patch("/api/portfolios/{portfolio_id}", response_model=PortfolioResponse)
-def update_portfolio(
-    portfolio_id: int,
-    payload: PortfolioUpdate,
-    db: Session = Depends(get_db),
-):
+def update_portfolio(portfolio_id: int, payload: PortfolioUpdate, db: Session = Depends(get_db)):
     portfolio = _get_portfolio_or_404(db, portfolio_id)
     for field, value in payload.model_dump(exclude_none=True).items():
         setattr(portfolio, field, value)
@@ -287,54 +226,14 @@ def update_portfolio(
     return portfolio
 
 
-@app.get("/api/portfolios/{portfolio_id}/health")
-def get_portfolio_health(portfolio_id: int, db: Session = Depends(get_db)):
-    portfolio = _get_portfolio_or_404(db, portfolio_id)
-    settings = db.query(RiskSettings).filter(
-        RiskSettings.portfolio_id == portfolio_id).first()
-    result = portfolio_analytics.analyze(db, portfolio, settings)
-    return result
-
-
-@app.get("/api/portfolios/{portfolio_id}/performance")
-def get_performance_history(
-    portfolio_id: int,
-    days: int = 30,
-    db: Session = Depends(get_db),
-):
-    from backend.database.models import PortfolioSnapshot
-    _get_portfolio_or_404(db, portfolio_id)
-    snapshots = (
-        db.query(PortfolioSnapshot)
-        .filter(PortfolioSnapshot.portfolio_id == portfolio_id)
-        .order_by(PortfolioSnapshot.recorded_at.asc())
-        .limit(days)
-        .all()
-    )
-    return [
-        {
-            "date": s.recorded_at.strftime("%Y-%m-%d"),
-            "value": s.total_value,
-            "pnl": s.daily_pnl,
-            "health": s.health_score,
-        }
-        for s in snapshots
-    ]
-
-
 @app.post("/api/portfolios/{portfolio_id}/sync")
 async def sync_etoro_data(portfolio_id: int, db: Session = Depends(get_db)):
     """Sync real-time data from eToro account."""
     _get_portfolio_or_404(db, portfolio_id)
-
-    from backend.services.etoro_service import EToroSyncService
     sync_service = EToroSyncService()
-
     success = await sync_service.sync_portfolio_data(db, portfolio_id)
-
     if success:
-        portfolio = db.query(Portfolio).filter(
-            Portfolio.id == portfolio_id).first()
+        portfolio = db.query(Portfolio).filter(Portfolio.id == portfolio_id).first()
         logger.info(f"Portfolio {portfolio_id} synced successfully")
         return {
             "status": "success",
@@ -343,24 +242,43 @@ async def sync_etoro_data(portfolio_id: int, db: Session = Depends(get_db)):
                 "id": portfolio.id,
                 "total_value": portfolio.total_value,
                 "daily_pnl": portfolio.daily_pnl,
-                "weekly_pnl": portfolio.weekly_pnl,
-                "monthly_pnl": portfolio.monthly_pnl,
-                "unrealized_pnl": portfolio.unrealized_pnl,
-                "realized_pnl": portfolio.realized_pnl,
-                "last_updated": portfolio.last_updated.isoformat(),
-            }
+                "last_updated": portfolio.last_updated.isoformat() if portfolio.last_updated else None,
+            },
         }
     else:
-        logger.warning(f"Failed to sync portfolio {portfolio_id}")
-        raise HTTPException(
-            status_code=503,
-            detail="Failed to sync portfolio data from eToro. Check API credentials and network connection.",
-        )
+        raise HTTPException(status_code=503, detail="Failed to sync portfolio data from eToro.")
 
 
-# ──────────────────────────────────────────────
-# Copied Trader routes
-# ──────────────────────────────────────────────
+# ── Portfolio Overview / Dashboard ────────────
+
+
+@app.get("/api/portfolios/{portfolio_id}/overview")
+def portfolio_overview(portfolio_id: int, db: Session = Depends(get_db)):
+    _get_portfolio_or_404(db, portfolio_id)
+    return get_portfolio_overview(db, portfolio_id)
+
+
+@app.get("/api/portfolios/{portfolio_id}/active-traders")
+def active_traders(portfolio_id: int, db: Session = Depends(get_db)):
+    _get_portfolio_or_404(db, portfolio_id)
+    return get_active_traders(db, portfolio_id)
+
+
+@app.get("/api/portfolios/{portfolio_id}/discovery")
+async def discovery(portfolio_id: int, db: Session = Depends(get_db)):
+    _get_portfolio_or_404(db, portfolio_id)
+    eligible, excluded, stats = await discover_eligible_traders(db, portfolio_id)
+    return {"eligible": eligible, "excluded": excluded, "stats": stats}
+
+
+@app.get("/api/portfolios/{portfolio_id}/dashboard")
+async def dashboard(portfolio_id: int, db: Session = Depends(get_db)):
+    _get_portfolio_or_404(db, portfolio_id)
+    return await build_dashboard_data(db, portfolio_id)
+
+
+# ── Copied Traders ────────────────────────────
+
 
 @app.get("/api/portfolios/{portfolio_id}/traders", response_model=List[CopiedTraderResponse])
 def list_traders(portfolio_id: int, db: Session = Depends(get_db)):
@@ -369,11 +287,7 @@ def list_traders(portfolio_id: int, db: Session = Depends(get_db)):
 
 
 @app.post("/api/portfolios/{portfolio_id}/traders", response_model=CopiedTraderResponse, status_code=201)
-def add_trader(
-    portfolio_id: int,
-    payload: CopiedTraderCreate,
-    db: Session = Depends(get_db),
-):
+def add_trader(portfolio_id: int, payload: CopiedTraderCreate, db: Session = Depends(get_db)):
     _get_portfolio_or_404(db, portfolio_id)
     trader = CopiedTrader(portfolio_id=portfolio_id, **payload.model_dump())
     db.add(trader)
@@ -382,37 +296,9 @@ def add_trader(
     return trader
 
 
-@app.get("/api/traders/{trader_id}/analytics")
-def get_trader_analytics(trader_id: int, db: Session = Depends(get_db)):
-    trader = db.query(CopiedTrader).filter(
-        CopiedTrader.id == trader_id).first()
-    if not trader:
-        raise HTTPException(status_code=404, detail="Trader not found")
-
-    metrics = data_service.build_trader_metrics(trader)
-    result = trader_analytics.analyze(metrics)
-
-    # Persist result back to trader
-    trader.risk_score = result.risk_score
-    trader.risk_classification = result.risk_classification
-    trader.max_drawdown = result.max_drawdown
-    trader.sharpe_score = result.sharpe_score
-    trader.consistency_score = result.consistency_score
-    trader.diversification_score = result.diversification_score
-    trader.last_analyzed = datetime.utcnow()
-    db.commit()
-
-    return result
-
-
 @app.patch("/api/traders/{trader_id}", response_model=CopiedTraderResponse)
-def update_trader(
-    trader_id: int,
-    payload: CopiedTraderUpdate,
-    db: Session = Depends(get_db),
-):
-    trader = db.query(CopiedTrader).filter(
-        CopiedTrader.id == trader_id).first()
+def update_trader(trader_id: int, payload: CopiedTraderUpdate, db: Session = Depends(get_db)):
+    trader = db.query(CopiedTrader).filter(CopiedTrader.id == trader_id).first()
     if not trader:
         raise HTTPException(status_code=404, detail="Trader not found")
     for field, value in payload.model_dump(exclude_none=True).items():
@@ -423,310 +309,81 @@ def update_trader(
     return trader
 
 
-# ──────────────────────────────────────────────
-# AI Analysis routes
-# ──────────────────────────────────────────────
-
-@app.post("/api/ai/analyze")
-async def run_ai_analysis(payload: AIAnalysisRequest, db: Session = Depends(get_db)):
-    portfolio = _get_portfolio_or_404(db, payload.portfolio_id)
-    settings = db.query(RiskSettings).filter(
-        RiskSettings.portfolio_id == payload.portfolio_id).first()
-    health = portfolio_analytics.analyze(db, portfolio, settings)
-
-    if payload.analysis_type == "trader" and payload.trader_id:
-        trader = db.query(CopiedTrader).filter(
-            CopiedTrader.id == payload.trader_id).first()
-        if not trader:
-            raise HTTPException(status_code=404, detail="Trader not found")
-        result = await ai_engine.analyze_trader(trader)
-    elif payload.analysis_type == "weekly":
-        traders = db.query(CopiedTrader).filter(
-            CopiedTrader.portfolio_id == portfolio.id).all()
-        result = await ai_engine.generate_weekly_summary(portfolio, traders)
-    else:
-        result = await ai_engine.analyze_portfolio(portfolio, health)
-
-    # Persist recommendations
-    for rec in result.get("recommendations", []):
-        ai_rec = AIRecommendation(
-            portfolio_id=portfolio.id,
-            recommendation_type=rec.get("type", "general"),
-            title=rec.get("title", ""),
-            summary=rec.get("summary", ""),
-            confidence={"low": 0.3, "medium": 0.6, "high": 0.9}.get(
-                rec.get("confidence", "low"), 0.5),
-            risk_level=rec.get("risk_level", "low"),
-        )
-        db.add(ai_rec)
-    db.commit()
-
-    return result
+# ── Alerts ────────────────────────────────────
 
 
-@app.get("/api/portfolios/{portfolio_id}/recommendations", response_model=List[AIRecommendationResponse])
-def get_recommendations(
-    portfolio_id: int,
-    limit: int = 10,
-    db: Session = Depends(get_db),
-):
-    _get_portfolio_or_404(db, portfolio_id)
-    return (
-        db.query(AIRecommendation)
-        .filter(AIRecommendation.portfolio_id == portfolio_id)
-        .order_by(AIRecommendation.created_at.desc())
-        .limit(limit)
-        .all()
-    )
-
-
-# ──────────────────────────────────────────────
-# Automation routes
-# ──────────────────────────────────────────────
-
-@app.get("/api/portfolios/{portfolio_id}/automation/rules", response_model=List[AutomationRuleResponse])
-def list_rules(portfolio_id: int, db: Session = Depends(get_db)):
-    _get_portfolio_or_404(db, portfolio_id)
-    return db.query(AutomationRule).filter(AutomationRule.portfolio_id == portfolio_id).all()
-
-
-@app.post("/api/portfolios/{portfolio_id}/automation/rules", response_model=AutomationRuleResponse, status_code=201)
-def create_rule(
-    portfolio_id: int,
-    payload: AutomationRuleCreate,
-    db: Session = Depends(get_db),
-):
-    _get_portfolio_or_404(db, portfolio_id)
-    rule = AutomationRule(portfolio_id=portfolio_id, **payload.model_dump())
-    db.add(rule)
-    db.commit()
-    db.refresh(rule)
-    return rule
-
-
-@app.post("/api/portfolios/{portfolio_id}/automation/rules/{rule_id}/toggle")
-def toggle_rule(portfolio_id: int, rule_id: int, db: Session = Depends(get_db)):
-    rule = db.query(AutomationRule).filter(
-        AutomationRule.id == rule_id,
-        AutomationRule.portfolio_id == portfolio_id,
-    ).first()
-    if not rule:
-        raise HTTPException(status_code=404, detail="Rule not found")
-
-    # ENABLED → DISABLED; DISABLED or PAUSED → ENABLED (allows re-enabling after emergency stop)
-    rule.status = (
-        AutomationStatus.DISABLED
-        if rule.status == AutomationStatus.ENABLED
-        else AutomationStatus.ENABLED
-    )
-    rule.updated_at = datetime.utcnow()
-    db.commit()
-    return {"rule_id": rule_id, "new_status": rule.status}
-
-
-@app.delete("/api/portfolios/{portfolio_id}/automation/rules/{rule_id}")
-def delete_rule(portfolio_id: int, rule_id: int, db: Session = Depends(get_db)):
-    rule = db.query(AutomationRule).filter(
-        AutomationRule.id == rule_id,
-        AutomationRule.portfolio_id == portfolio_id,
-    ).first()
-    if not rule:
-        raise HTTPException(status_code=404, detail="Rule not found")
-    # Delete related logs first to avoid FK violation on automation_logs_rule_id_fkey
-    try:
-        db.query(AutomationLog).filter(
-            AutomationLog.rule_id == rule_id
-        ).delete()
-        db.delete(rule)
-        db.commit()
-    except Exception:
-        db.rollback()
-        raise HTTPException(status_code=500, detail="Failed to delete rule")
-    return {"message": "Rule deleted", "rule_id": rule_id}
-
-
-@app.post("/api/portfolios/{portfolio_id}/automation/emergency-stop")
-def emergency_stop(portfolio_id: int, db: Session = Depends(get_db)):
-    _get_portfolio_or_404(db, portfolio_id)
-    count = automation_engine.emergency_stop(db, portfolio_id)
-    return {"message": f"Emergency stop activated. {count} rules paused.", "rules_paused": count}
-
-
-@app.get("/api/portfolios/{portfolio_id}/automation/logs", response_model=List[AutomationLogResponse])
-def get_automation_logs(
-    portfolio_id: int,
-    limit: int = 50,
-    db: Session = Depends(get_db),
-):
-    _get_portfolio_or_404(db, portfolio_id)
-    return (
-        db.query(AutomationLog)
-        .filter(AutomationLog.portfolio_id == portfolio_id)
-        .order_by(AutomationLog.triggered_at.desc())
-        .limit(limit)
-        .all()
-    )
-
-
-# ──────────────────────────────────────────────
-# Risk routes
-# ──────────────────────────────────────────────
-
-@app.get("/api/portfolios/{portfolio_id}/risk/check")
-def check_risk(portfolio_id: int, db: Session = Depends(get_db)):
-    portfolio = _get_portfolio_or_404(db, portfolio_id)
-    settings = db.query(RiskSettings).filter(
-        RiskSettings.portfolio_id == portfolio_id).first()
-    violations = risk_engine.check_all(db, portfolio, settings)
-    risk_engine.violations_to_alerts(db, portfolio_id, violations)
-    return {"violations": [v.__dict__ for v in violations], "count": len(violations)}
-
-
-@app.get("/api/portfolios/{portfolio_id}/risk/settings", response_model=RiskSettingsResponse)
-def get_risk_settings(portfolio_id: int, db: Session = Depends(get_db)):
-    settings = db.query(RiskSettings).filter(
-        RiskSettings.portfolio_id == portfolio_id).first()
-    if not settings:
-        raise HTTPException(status_code=404, detail="Risk settings not found")
-    return settings
-
-
-@app.patch("/api/portfolios/{portfolio_id}/risk/settings", response_model=RiskSettingsResponse)
-def update_risk_settings(
-    portfolio_id: int,
-    payload: RiskSettingsUpdate,
-    db: Session = Depends(get_db),
-):
-    settings = db.query(RiskSettings).filter(
-        RiskSettings.portfolio_id == portfolio_id).first()
-    if not settings:
-        settings = RiskSettings(portfolio_id=portfolio_id)
-        db.add(settings)
-
-    for field, value in payload.model_dump(exclude_none=True).items():
-        setattr(settings, field, value)
-    settings.updated_at = datetime.utcnow()
-    db.commit()
-    db.refresh(settings)
-    return settings
-
-
-# ──────────────────────────────────────────────
-# Alerts routes
-# ──────────────────────────────────────────────
-
-@app.get("/api/portfolios/{portfolio_id}/alerts", response_model=List[AlertResponse])
-def get_alerts(
+@app.get("/api/portfolios/{portfolio_id}/alerts")
+def get_portfolio_alerts(
     portfolio_id: int,
     unread_only: bool = False,
     limit: int = 50,
     db: Session = Depends(get_db),
 ):
     _get_portfolio_or_404(db, portfolio_id)
-    q = db.query(Alert).filter(Alert.portfolio_id == portfolio_id)
-    if unread_only:
-        q = q.filter(Alert.is_read.is_(False))
-    return q.order_by(Alert.created_at.desc()).limit(limit).all()
+    return get_alerts(db, portfolio_id, unread_only=unread_only, limit=limit)
+
+
+@app.get("/api/portfolios/{portfolio_id}/alerts/summary")
+def alert_summary(portfolio_id: int, db: Session = Depends(get_db)):
+    _get_portfolio_or_404(db, portfolio_id)
+    return get_alert_summary(db, portfolio_id)
 
 
 @app.post("/api/alerts/{alert_id}/read")
-def mark_alert_read(alert_id: int, db: Session = Depends(get_db)):
-    alert = db.query(Alert).filter(Alert.id == alert_id).first()
-    if not alert:
+def mark_alert_read_endpoint(alert_id: int, db: Session = Depends(get_db)):
+    if not mark_alert_read(db, alert_id):
         raise HTTPException(status_code=404, detail="Alert not found")
-    alert.is_read = True
-    db.commit()
     return {"message": "Alert marked as read"}
 
 
-# ──────────────────────────────────────────────
-# Settings routes
-# ──────────────────────────────────────────────
+@app.post("/api/portfolios/{portfolio_id}/alerts/read-all")
+def mark_all_alerts_read(portfolio_id: int, db: Session = Depends(get_db)):
+    _get_portfolio_or_404(db, portfolio_id)
+    count = mark_all_read(db, portfolio_id)
+    return {"message": f"{count} alerts marked as read", "count": count}
+
+
+# ── Settings ──────────────────────────────────
+
 
 @app.get("/api/settings")
 def get_settings(db: Session = Depends(get_db)):
-    """Get current application settings."""
-
-    def _load_setting(key: str, default=""):
-        setting = db.query(AppSetting).filter(AppSetting.key == key).first()
-        if setting is not None:
-            return setting.value
-        return os.getenv(key.upper(), default)
+    def _load(key: str, default=""):
+        s = db.query(AppSetting).filter(AppSetting.key == key).first()
+        return s.value if s is not None else os.getenv(key.upper(), default)
 
     return {
-        "etoro_api_key": _load_setting("etoro_api_key"),
-        "etoro_api_secret": _load_setting("etoro_api_secret"),
-        "etoro_account_id": _load_setting("etoro_account_id"),
-        "telegram_bot_token": _load_setting("telegram_bot_token"),
-        "telegram_chat_id": _load_setting("telegram_chat_id"),
+        "etoro_api_key": _load("etoro_api_key"),
+        "etoro_api_secret": _load("etoro_api_secret"),
+        "etoro_account_id": _load("etoro_account_id"),
+        "telegram_bot_token": _load("telegram_bot_token"),
+        "telegram_chat_id": _load("telegram_chat_id"),
     }
 
 
 @app.post("/api/settings")
 def update_settings(settings: dict, db: Session = Depends(get_db)):
-    """Update application settings stored in the database."""
-
-    # Required fields for eToro integration
-    required_fields = ["etoro_api_key", "etoro_api_secret"]
-    
-    # Telegram settings are optional if you don't use notifications
-    optional_fields = ["telegram_bot_token", "telegram_chat_id"]
-
-    for field in required_fields:
+    required = ["etoro_api_key", "etoro_api_secret"]
+    for field in required:
         if field not in settings or not isinstance(settings[field], str) or not settings[field].strip():
-            raise HTTPException(
-                status_code=400, detail=f"Required field missing or empty: {field}")
-
+            raise HTTPException(status_code=400, detail=f"Required field missing: {field}")
 
     for field, value in settings.items():
-        setting = db.query(AppSetting).filter(AppSetting.key == field).first()
-        if setting is None:
-            setting = AppSetting(key=field, value=value)
-            db.add(setting)
+        s = db.query(AppSetting).filter(AppSetting.key == field).first()
+        if s is None:
+            s = AppSetting(key=field, value=value)
+            db.add(s)
         else:
-            setting.value = value
-
+            s.value = value
     db.commit()
-    logger.info("Settings updated successfully")
-
-    return {"message": "Settings updated successfully", "settings": settings}
+    return {"message": "Settings updated", "settings": settings}
 
 
+# ── Helpers ───────────────────────────────────
 
-
-@app.post("/api/automation/logs/{log_id}/reverse")
-async def reverse_automation_log(
-    log_id: int,
-    portfolio_id: int,
-    db: Session = Depends(get_db),
-):
-    """Reverse (undo) a previously executed automation action.
-
-    Marks the log entry as reversed and, if the action involved mirror changes,
-    attempts to undo the eToro-side change. Best-effort — logs success/failure.
-    """
-    _get_portfolio_or_404(db, portfolio_id)
-
-    log = db.query(AutomationLog).filter(AutomationLog.id == log_id).first()
-    if not log:
-        raise HTTPException(status_code=404, detail="Automation log not found")
-    if log.was_reversed:
-        raise HTTPException(status_code=400, detail="Action already reversed")
-
-    # Mark as reversed in DB regardless of API outcome
-    log.was_reversed = True
-    db.commit()
-
-    logger.info(f"Automation log {log_id} marked as reversed (portfolio={portfolio_id})")
-    return {"message": "Action marked as reversed", "log_id": log_id}
-
-# ──────────────────────────────────────────────
-# Helper utilities
-# ──────────────────────────────────────────────
 
 def _get_portfolio_or_404(db: Session, portfolio_id: int) -> Portfolio:
-    portfolio = db.query(Portfolio).filter(
-        Portfolio.id == portfolio_id).first()
+    portfolio = db.query(Portfolio).filter(Portfolio.id == portfolio_id).first()
     if not portfolio:
         raise HTTPException(status_code=404, detail="Portfolio not found")
     return portfolio

@@ -1,9 +1,4 @@
-"""
-Shared constants for the CopyVault backend.
-
-Centralized to eliminate duplicate definitions across modules
-(e.g. FALLBACK_TRADERS defined in both market_data.py and automation_engine.py).
-"""
+"""Shared constants for the platform backend."""
 
 # ── Trader Discovery ────────────────────────────────────────────────
 # CANDIDATE_TRADERS env var overrides the hardcoded fallback list.
@@ -47,8 +42,6 @@ TELEGRAM_WEBHOOK_PATH = "/api/telegram/webhook"
 # ── Scheduler ───────────────────────────────────────────────────────
 KEEP_ALIVE_INTERVAL_MINUTES = 4
 ETORO_SYNC_INTERVAL_MINUTES = 5
-AUTOMATION_EVAL_INTERVAL_MINUTES = 2
-RISK_CHECK_INTERVAL_MINUTES = 15
 
 # ── eToro API ───────────────────────────────────────────────────────
 ETORO_PUBLIC_API_BASE = "https://public-api.etoro.com/api/v1"

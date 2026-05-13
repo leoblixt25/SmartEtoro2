@@ -7,7 +7,11 @@ services:
     envVars:
       - key: DATABASE_URL
         value: sqlite:///./etoro_platform.db
-      - key: ANTHROPIC_API_KEY
+      - key: ETORO_API_KEY
+        sync: false
+      - key: ETORO_API_SECRET
+        sync: false
+      - key: ETORO_ACCOUNT_ID
         sync: false
       - key: TELEGRAM_BOT_TOKEN
         sync: false

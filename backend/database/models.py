@@ -22,12 +22,6 @@ class RiskClassification(str, enum.Enum):
     HIGH_RISK = "high_risk"
 
 
-class AutomationStatus(str, enum.Enum):
-    ENABLED = "enabled"
-    DISABLED = "disabled"
-    PAUSED = "paused"
-
-
 class AppSetting(Base):
     """Persistent application settings stored in the database."""
     __tablename__ = "app_settings"
@@ -48,6 +42,7 @@ class AlertType(str, enum.Enum):
     AUTOMATION = "automation"
     WEEKLY_SUMMARY = "weekly_summary"
     AI_SCOUT = "ai_scout"
+    MONITORING = "monitoring"
 
 
 class Portfolio(Base):
@@ -165,43 +160,6 @@ class PortfolioSnapshot(Base):
     portfolio = relationship("Portfolio", back_populates="snapshots")
 
 
-class AutomationRule(Base):
-    """User-defined automation rules with full audit capability."""
-    __tablename__ = "automation_rules"
-
-    id = Column(Integer, primary_key=True, index=True)
-    portfolio_id = Column(Integer, ForeignKey("portfolios.id"))
-    # take_profit / rebalance / pause_copy etc.
-    rule_type = Column(String, nullable=False)
-    name = Column(String, nullable=False)
-    description = Column(Text, nullable=True)
-    status = Column(Enum(AutomationStatus), default=AutomationStatus.DISABLED)
-    config = Column(JSON, default={})            # Flexible rule parameters
-    threshold = Column(Float, nullable=True)
-    cooldown_hours = Column(Integer, default=24)
-    last_triggered = Column(DateTime, nullable=True)
-    trigger_count = Column(Integer, default=0)
-    requires_approval = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow)
-
-
-class AutomationLog(Base):
-    """Full audit trail for every automation action."""
-    __tablename__ = "automation_logs"
-
-    id = Column(Integer, primary_key=True, index=True)
-    rule_id = Column(Integer, ForeignKey("automation_rules.id"), nullable=True)
-    portfolio_id = Column(Integer, ForeignKey("portfolios.id"))
-    action_type = Column(String, nullable=False)
-    description = Column(Text, nullable=False)
-    details = Column(JSON, default={})
-    was_simulated = Column(Boolean, default=True)
-    was_approved = Column(Boolean, default=False)
-    was_reversed = Column(Boolean, default=False)
-    triggered_at = Column(DateTime, default=datetime.utcnow)
-
-
 class Alert(Base):
     """System alerts sent to the user."""
     __tablename__ = "alerts"
@@ -215,41 +173,6 @@ class Alert(Base):
     is_read = Column(Boolean, default=False)
     was_sent_telegram = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
-
-
-class AIRecommendation(Base):
-    """AI-generated recommendations with confidence scoring."""
-    __tablename__ = "ai_recommendations"
-
-    id = Column(Integer, primary_key=True, index=True)
-    portfolio_id = Column(Integer, ForeignKey("portfolios.id"))
-    recommendation_type = Column(String, nullable=False)
-    title = Column(String, nullable=False)
-    summary = Column(Text, nullable=False)
-    confidence = Column(Float, default=0.5)      # 0.0–1.0
-    risk_level = Column(String, default="low")   # low / medium / high
-    is_acted_on = Column(Boolean, default=False)
-    related_trader_id = Column(Integer, ForeignKey(
-        "copied_traders.id"), nullable=True)
-    expires_at = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-
-class RiskSettings(Base):
-    """User-defined risk management thresholds."""
-    __tablename__ = "risk_settings"
-
-    id = Column(Integer, primary_key=True, index=True)
-    portfolio_id = Column(Integer, ForeignKey("portfolios.id"), unique=True)
-    max_portfolio_drawdown_pct = Column(Float, default=20.0)
-    max_allocation_per_trader_pct = Column(Float, default=30.0)
-    min_traders_for_diversification = Column(Integer, default=3)
-    max_single_asset_exposure_pct = Column(Float, default=25.0)
-    volatility_reduction_threshold = Column(Float, default=15.0)
-    cooldown_after_loss_hours = Column(Integer, default=48)
-    emergency_protection_enabled = Column(Boolean, default=True)
-    emergency_drawdown_trigger_pct = Column(Float, default=15.0)
-    updated_at = Column(DateTime, default=datetime.utcnow)
 
 
 # ──────────────────────────────────────────────
