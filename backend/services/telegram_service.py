@@ -631,9 +631,11 @@ class TelegramBot:
                     if groq.enabled and holdings_ranked:
                         import asyncio
                         best_name = top_swaps[0]["username"] if top_swaps else "none"
+                        trader_count = len(holdings_ranked)
                         prompt = (
                             "Summarise this portfolio scout report in ONE plain-English sentence "
                             "(max 20 words). No formatting, no JSON.\n\n"
+                            f"Active traders: {trader_count}.\n"
                             f"Weakest trader: {weakest['username']} "
                             f"(score {weakest['final_score']}/100).\n"
                             f"Best swap: {best_name}.\n"
@@ -672,8 +674,15 @@ class TelegramBot:
                 if ai_summary:
                     lines.append(f"\n🤖 <i>{ai_summary}</i>")
 
-                # Weakest link
-                if weakest and weakest["final_score"] < 50 and top_swaps:
+                # Diversification check (before weakest-link check)
+                is_under_diversified = len(holdings_ranked) <= 1
+                candidates_ranked = report.get("candidates_ranked", [])
+
+                if is_under_diversified:
+                    lines.append(f"\n⚠️ <b>Critically Under-Diversified</b> — only {len(holdings_ranked)} trader(s)")
+                    if candidates_ranked:
+                        lines.append(f"Consider adding traders from the discovery list below.")
+                elif weakest and weakest["final_score"] < 50 and top_swaps:
                     lines.append(
                         f"\n⚠️ <b>Weakest Link:</b> {weakest['username']} ({weakest['final_score']}/100)"
                     )
@@ -695,7 +704,6 @@ class TelegramBot:
                     lines.append(f"\n✅ <b>Portfolio Healthy</b> — all traders score well")
 
                 # Top 3 Discovery Candidates
-                candidates_ranked = report.get("candidates_ranked", [])
                 if candidates_ranked:
                     display_candidates = candidates_ranked[:3]
                     lines.append(f"\n<b>🔍 Top 3 Discovery</b>")
@@ -706,10 +714,16 @@ class TelegramBot:
                             f"risk {c['risk_score']:.1f})"
                         )
 
-                # Allocation plan (combine best holdings + top candidates)
-                top3 = holdings_ranked[:3]
-                if top3:
-                    target = calculate_equal_weight_target(top3, p.total_value or 10000)
+                # Allocation plan: combine best holdings + discovery to always show 3-way split
+                plan_traders = list(holdings_ranked)
+                existing_names = {h["username"] for h in plan_traders}
+                for c in candidates_ranked:
+                    if len(plan_traders) >= 3:
+                        break
+                    if c["username"] not in existing_names:
+                        plan_traders.append(c)
+                if plan_traders:
+                    target = calculate_equal_weight_target(plan_traders[:3], p.total_value or 10000)
                     from backend.services.rebalance_service import calculate_rebalance_orders
                     current_positions = [
                         {"username": h["username"],
@@ -721,7 +735,7 @@ class TelegramBot:
                     )
                     lines.append(f"\n---\n<b>📊 33.3% Equal-Weight Plan</b>")
                     for a in target["target_portfolio"]:
-                        src = "discovery" if a["username"] not in {h["username"] for h in holdings_ranked} else "current"
+                        src = "discovery" if a["username"] not in existing_names else "current"
                         icon = "🆕" if src == "discovery" else "🔄"
                         lines.append(
                             f"{icon} <b>{a['username']}</b> — {a['allocation_pct']}% "
