@@ -531,8 +531,16 @@ def delete_rule(portfolio_id: int, rule_id: int, db: Session = Depends(get_db)):
     ).first()
     if not rule:
         raise HTTPException(status_code=404, detail="Rule not found")
-    db.delete(rule)
-    db.commit()
+    # Delete related logs first to avoid FK violation on automation_logs_rule_id_fkey
+    try:
+        db.query(AutomationLog).filter(
+            AutomationLog.rule_id == rule_id
+        ).delete()
+        db.delete(rule)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to delete rule")
     return {"message": "Rule deleted", "rule_id": rule_id}
 
 

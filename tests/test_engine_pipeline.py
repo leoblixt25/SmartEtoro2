@@ -237,15 +237,30 @@ class TestInCooldown:
         rule.last_triggered = datetime.utcnow() - timedelta(minutes=5)
         rule.cooldown_hours = 1
         rule.name = "test_rule"
+        rule.rule_type = "take_profit"
+        return rule
+
+    @pytest.fixture
+    def old_rule(self):
+        from backend.database.models import AutomationRule
+        rule = MagicMock(spec=AutomationRule)
+        rule.last_triggered = datetime.utcnow() - timedelta(minutes=35)
+        rule.cooldown_hours = 1
+        rule.name = "test_rule"
+        rule.rule_type = "take_profit"
         return rule
 
     def test_cooldown_active_normal(self, engine, recent_rule):
         from backend.automation.automation_engine import PortfolioState
         assert engine._in_cooldown(recent_rule, PortfolioState.HEALTHY) is True
 
-    def test_cooldown_bypassed_in_recovery(self, engine, recent_rule):
+    def test_cooldown_bypassed_in_recovery(self, engine, old_rule):
         from backend.automation.automation_engine import PortfolioState
-        assert engine._in_cooldown(recent_rule, PortfolioState.RECOVERY) is False
+        assert engine._in_cooldown(old_rule, PortfolioState.RECOVERY) is False
+
+    def test_recovery_throttle_30_min(self, engine, recent_rule):
+        from backend.automation.automation_engine import PortfolioState
+        assert engine._in_cooldown(recent_rule, PortfolioState.RECOVERY) is True
 
     def test_no_last_triggered_no_cooldown(self, engine):
         from backend.automation.automation_engine import PortfolioState

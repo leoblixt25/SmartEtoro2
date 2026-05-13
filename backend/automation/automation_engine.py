@@ -981,8 +981,17 @@ class AutomationEngine:
     ) -> bool:
         if not rule.last_triggered:
             return False
-        # Recovery mode bypasses cooldown so rebalance can retry
+        # Recovery mode: bypass configured cooldown but enforce minimum
+        # 30-min gap to prevent constant 2-min re-triggering
+        # while still retrying faster than the normal 1-hour cooldown.
         if portfolio_state == PortfolioState.RECOVERY:
+            min_gap = timedelta(minutes=30)
+            if datetime.utcnow() < rule.last_triggered + min_gap:
+                logger.info(
+                    f"Recovery mode: throttling '{rule.name}' — "
+                    f"last triggered < 30 min ago"
+                )
+                return True
             logger.info(f"Recovery mode: bypassing cooldown for rule '{rule.name}'")
             return False
         # Enforce minimum 1-hour cooldown to prevent infinite loops

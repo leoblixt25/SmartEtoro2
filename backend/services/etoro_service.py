@@ -125,6 +125,22 @@ class EToroAPIClient:
         if not self._validate_mirror_id(mirror_id, "close_mirror"):
             return {"error": True, "detail": f"Invalid mirror_id={mirror_id} — cannot close"}
 
+        # Retail/demo API does not support mirror closing — skip HTTP call entirely
+        if self.env in ("demo", "retail"):
+            logger.warning(
+                f"Mirror close not supported on {self.env} API — "
+                f"skipping DELETE for mirror {mirror_id}"
+            )
+            return {
+                "error": True,
+                "status": 404,
+                "detail": (
+                    f"Mirror closing is not available on {self.env} API plan. "
+                    f"This feature requires eToro Agent API access."
+                ),
+                "not_supported": True,
+            }
+
         env = self.env
         url = f"{self.BASE_URL}/api/v1/trading/mirrors/{env}/{mirror_id}"
         logger.info(f"Closing mirror via DELETE {url}")
@@ -359,6 +375,7 @@ class EToroAPIClient:
             "total_return_pct": 0.0,
             "available": False,
             "source": "none",
+            "confidence": 0.0,
         }
 
     async def _api_get_with_retry(
@@ -433,6 +450,7 @@ class EToroAPIClient:
                 "total_return_pct": float(tradeinfo.get("gainPerc", 0.0) or tradeinfo.get("gain", 0.0) or 0.0),
                 "available": True,
                 "source": "tradeinfo",
+                "confidence": 1.0,
             })
             logger.info(f"Tradeinfo for {username} loaded successfully")
             return result
@@ -452,6 +470,7 @@ class EToroAPIClient:
                 "avg_return": float(live.get("avgReturn", 0.0) or live.get("averageReturn", 0.0) or 0.0),
                 "available": True,
                 "source": "portfolio_live",
+                "confidence": 0.7,
             })
             logger.info(f"Tradeinfo unavailable for {username}, using portfolio/live endpoint")
             return result
@@ -466,6 +485,7 @@ class EToroAPIClient:
                 "total_return_pct": float(gain.get("gain", 0.0) or gain.get("gainPerc", 0.0) or 0.0),
                 "available": True,
                 "source": "gain",
+                "confidence": 0.5,
             })
             logger.info(f"Tradeinfo unavailable for {username}, using gain endpoint")
             return result
@@ -479,6 +499,7 @@ class EToroAPIClient:
                 "total_return_pct": float(daily.get("gain", 0.0) or daily.get("dailyGain", 0.0) or 0.0),
                 "available": True,
                 "source": "daily_gain",
+                "confidence": 0.3,
             })
             logger.info(f"Tradeinfo unavailable for {username}, using daily-gain endpoint")
             return result
@@ -522,6 +543,23 @@ class EToroAPIClient:
             metrics = await self.get_trader_metrics(username)
 
             if metrics["available"]:
+                # Reject candidates where fallback endpoints returned
+                # 0.0% return — means the endpoint has no real data.
+                # tradeinfo (confidence=1.0) is authoritative even at 0.0%.
+                if metrics["total_return_pct"] == 0.0 and metrics.get("confidence", 0.0) < 1.0:
+                    unavailable.append({
+                        "username": username,
+                        "reason": "no_return_data",
+                        "detail": (
+                            f"source={metrics['source']} returned 0.0% return "
+                            f"(confidence={metrics.get('confidence', 0.0)})"
+                        ),
+                    })
+                    logger.info(
+                        f"Rejected {username}: return=0.0% from "
+                        f"{metrics['source']} (confidence={metrics.get('confidence', 0.0)})"
+                    )
+                    continue
                 available.append({
                     "username": username,
                     "risk_score": metrics["risk_score"],
