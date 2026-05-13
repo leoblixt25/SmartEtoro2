@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 import os
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +28,7 @@ class SchedulerService:
 
     def __init__(self):
         self._scheduler: Optional[object] = None
+        self._last_div_notification: Dict[int, datetime] = {}  # portfolio_id → last notified
 
     def start(self):
         if not SCHEDULER_AVAILABLE:
@@ -292,36 +293,43 @@ class SchedulerService:
                                     )
                                     continue
 
-                            # Notify user about low diversification
-                            try:
-                                from backend.services.telegram_service import TelegramBot
-                                bot = TelegramBot()
-                                if bot.enabled:
-                                    msg = (
-                                        f"⚠️ <b>Low Diversification</b>\n\n"
-                                        f"1 trader (active) detected. "
-                                    )
-                                    if is_recovery:
-                                        msg += (
-                                            f"Auto-rebalance will be attempted on next cycle. "
-                                            f"If eToro retail API does not support starting "
-                                            f"new copies, use the UI to start:\n"
+                            # Notify user about low diversification (throttled to once per 4h)
+                            now = datetime.utcnow()
+                            last_notified = self._last_div_notification.get(portfolio.id)
+                            notify_ok = last_notified is None or (now - last_notified).total_seconds() > 4 * 3600
+                            if notify_ok:
+                                try:
+                                    from backend.services.telegram_service import TelegramBot
+                                    bot = TelegramBot()
+                                    if bot.enabled:
+                                        msg = (
+                                            f"⚠️ <b>Low Diversification</b>\n\n"
+                                            f"1 trader (active) detected. "
                                         )
-                                    else:
+                                        if is_recovery:
+                                            msg += (
+                                                f"Auto-rebalance will be attempted on next cycle. "
+                                                f"If eToro retail API does not support starting "
+                                                f"new copies, use the UI to start:\n"
+                                            )
+                                        else:
+                                            msg += (
+                                                f"The eToro retail API does not support starting "
+                                                f"new copies automatically.\n\n"
+                                                f"To rebalance, use the eToro UI to start copies of:\n"
+                                            )
                                         msg += (
-                                            f"The eToro retail API does not support starting "
-                                            f"new copies automatically.\n\n"
-                                            f"To rebalance, use the eToro UI to start copies of:\n"
+                                            f"• JeppeKirkBonde\n"
+                                            f"• CPHequities\n"
+                                            f"• Jaynemesis\n\n"
+                                            f"This notification will not repeat for 4 hours."
                                         )
-                                    msg += (
-                                        f"• JeppeKirkBonde\n"
-                                        f"• CPHequities\n"
-                                        f"• Jaynemesis\n\n"
-                                        f"This notification will not repeat for 4 hours."
-                                    )
-                                    await bot.send_message(msg, show_keyboard=True)
-                            except Exception as tg_err:
-                                logger.warning("Failed to send risk bridge Telegram: %s", tg_err)
+                                        await bot.send_message(msg, show_keyboard=True)
+                                        self._last_div_notification[portfolio.id] = now
+                                except Exception as tg_err:
+                                    logger.warning("Failed to send risk bridge Telegram: %s", tg_err)
+                            else:
+                                logger.debug(f"Low diversification notification throttled for portfolio {portfolio.id}")
 
                             # In recovery mode, skip the 4-hour cooldown so
                             # evaluate_rules can retry the rebalance next cycle.

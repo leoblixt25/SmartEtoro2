@@ -348,63 +348,161 @@ class EToroAPIClient:
             "last_error": last_error,
         }
 
-    async def get_trader_tradeinfo(self, username: str, period: str = "LastTwoYears") -> Optional[Dict]:
-        """Fetch trade stats for a specific trader via the user-info API.
+    def _empty_metrics(self, username: str) -> Dict:
+        """Return default metrics structure for a trader with no data."""
+        return {
+            "username": username,
+            "avg_return": 0.0,
+            "risk_score": 5.0,
+            "max_drawdown": 0.0,
+            "volatility": 0.0,
+            "total_return_pct": 0.0,
+            "available": False,
+            "source": "none",
+        }
 
-        eToro API: GET /api/v2/user-info/people/{username}/tradeinfo?period={period}
+    async def _api_get_with_retry(
+        self,
+        url: str,
+        params: Optional[Dict] = None,
+        timeout: float = 15.0,
+    ) -> Optional[Dict]:
+        """GET with 3-retry exponential backoff. Does not retry 404.
 
-        Returns parsed JSON on success, None on any failure.
-        Logs the status code for every response.
+        Returns parsed JSON on 200, None on 404 or non-retryable errors.
+        Retries 429 and 5xx with 2^attempt backoff (2s, 4s).
         """
-        url = f"{self.BASE_URL}/api/v2/user-info/people/{username}/tradeinfo"
-        try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                response = await client.get(
-                    url,
-                    params={"period": period},
-                    headers=self._get_headers(),
-                )
-                if response.status_code == 200:
-                    data = response.json()
-                    logger.info(f"Tradeinfo for {username}: gain={data.get('gain')}, riskScore={data.get('riskScore')}, copiers={data.get('copiersCount')}")
-                    return data
-                if response.status_code == 404:
-                    logger.info(f"Tradeinfo for {username}: 404 not found — excluded from discovery")
+        import asyncio
+        for attempt in range(1, 4):
+            try:
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    response = await client.get(url, params=params, headers=self._get_headers())
+                    if response.status_code == 200:
+                        return response.json()
+                    if response.status_code == 404:
+                        return None
+                    if response.status_code in (429,) or response.status_code >= 500:
+                        if attempt < 3:
+                            backoff = 2 ** attempt
+                            logger.debug(f"Retry {attempt}/3 for {url} after {backoff}s (status {response.status_code})")
+                            await asyncio.sleep(backoff)
+                            continue
                     return None
-                if response.status_code == 401:
-                    logger.warning(f"Tradeinfo for {username}: 401 unauthorized — check API key permissions")
-                    return None
-                if response.status_code == 403:
-                    logger.warning(f"Tradeinfo for {username}: 403 forbidden — endpoint not available on this API plan")
-                    return None
-                if response.status_code == 429:
-                    logger.warning(f"Tradeinfo for {username}: 429 rate limited — backing off")
-                    return None
-                if response.status_code >= 500:
-                    logger.warning(f"Tradeinfo for {username}: {response.status_code} server error — temporary failure")
-                    return None
-                logger.warning(f"Tradeinfo for {username}: unexpected status {response.status_code}")
+            except httpx.TimeoutException:
+                if attempt < 3:
+                    await asyncio.sleep(2 ** attempt)
+                    continue
                 return None
-        except httpx.RequestError as e:
-            logger.warning(f"Tradeinfo for {username}: network error — {e}")
-            return None
-        except Exception as e:
-            logger.warning(f"Tradeinfo for {username}: unexpected error — {e}")
-            return None
+            except httpx.RequestError as e:
+                if attempt < 3:
+                    await asyncio.sleep(2 ** attempt)
+                    continue
+                logger.warning(f"Request failed for {url} after 3 retries: {e}")
+                return None
+            except Exception as e:
+                logger.warning(f"Unexpected error for {url}: {e}")
+                return None
+        return None
+
+    async def get_trader_metrics(self, username: str) -> Dict:
+        """Resilient multi-endpoint trader metrics fetcher.
+
+        Strategy:
+          1. Primary: GET /api/v1/user-info/people/{username}/tradeinfo?period=LastTwoYears
+          2. Fallback A: GET /api/v1/user-info/people/{username}/portfolio/live
+          3. Fallback B: GET /api/v1/user-info/people/{username}/gain?period=LastTwoYears
+          4. Fallback C: GET /api/v1/user-info/people/{username}/daily-gain
+
+        Returns normalized dict with available=True if ANY endpoint succeeded.
+        Never raises — always returns the normalized structure.
+        """
+        base = self.BASE_URL
+        result = self._empty_metrics(username)
+
+        # Step 1: Primary tradeinfo endpoint (v1 as documented by eToro)
+        tradeinfo = await self._api_get_with_retry(
+            f"{base}/api/v1/user-info/people/{username}/tradeinfo",
+            params={"period": "LastTwoYears"},
+        )
+        if tradeinfo:
+            result.update({
+                "avg_return": float(tradeinfo.get("avgReturn", 0.0) or 0.0),
+                "risk_score": float(tradeinfo.get("riskScore", 5.0) or 5.0),
+                "max_drawdown": float(tradeinfo.get("maxMonthlyDrawdown", 0.0) or 0.0),
+                "volatility": float(tradeinfo.get("volatility", 0.0) or 0.0),
+                "total_return_pct": float(tradeinfo.get("gainPerc", 0.0) or tradeinfo.get("gain", 0.0) or 0.0),
+                "available": True,
+                "source": "tradeinfo",
+            })
+            logger.info(f"Tradeinfo for {username} loaded successfully")
+            return result
+
+        logger.info(f"Tradeinfo unavailable for {username}, trying fallback endpoints")
+
+        # Step 2: Fallback A — portfolio/live
+        live = await self._api_get_with_retry(
+            f"{base}/api/v1/user-info/people/{username}/portfolio/live",
+        )
+        if live:
+            result.update({
+                "total_return_pct": float(live.get("totalReturn", 0.0) or live.get("return", 0.0) or 0.0),
+                "risk_score": float(live.get("riskScore", 5.0) or 5.0),
+                "max_drawdown": float(live.get("maxDrawdown", 0.0) or 0.0),
+                "volatility": float(live.get("volatility", 0.0) or 0.0),
+                "avg_return": float(live.get("avgReturn", 0.0) or live.get("averageReturn", 0.0) or 0.0),
+                "available": True,
+                "source": "portfolio_live",
+            })
+            logger.info(f"Tradeinfo unavailable for {username}, using portfolio/live endpoint")
+            return result
+
+        # Step 3: Fallback B — gain
+        gain = await self._api_get_with_retry(
+            f"{base}/api/v1/user-info/people/{username}/gain",
+            params={"period": "LastTwoYears"},
+        )
+        if gain:
+            result.update({
+                "total_return_pct": float(gain.get("gain", 0.0) or gain.get("gainPerc", 0.0) or 0.0),
+                "available": True,
+                "source": "gain",
+            })
+            logger.info(f"Tradeinfo unavailable for {username}, using gain endpoint")
+            return result
+
+        # Step 4: Fallback C — daily-gain
+        daily = await self._api_get_with_retry(
+            f"{base}/api/v1/user-info/people/{username}/daily-gain",
+        )
+        if daily:
+            result.update({
+                "total_return_pct": float(daily.get("gain", 0.0) or daily.get("dailyGain", 0.0) or 0.0),
+                "available": True,
+                "source": "daily_gain",
+            })
+            logger.info(f"Tradeinfo unavailable for {username}, using daily-gain endpoint")
+            return result
+
+        # All endpoints failed
+        logger.warning(f"{username} unavailable across all endpoints")
+        return result
 
     async def discover_candidates(self) -> Dict:
-        """Discover trader candidates using configurable list + tradeinfo enrichment.
+        """Discover trader candidates with resilient multi-endpoint fallback.
+
+        Uses get_trader_metrics() which tries:
+          1. Primary: /api/v1/user-info/people/{username}/tradeinfo
+          2. Fallback: portfolio/live, gain, daily-gain
+
+        A candidate is valid if ANY endpoint returns data.
+        Only rejected when ALL endpoints fail.
 
         Returns dict with:
-          available   — candidates with successful tradeinfo enrichment
-          unavailable — list of {username, reason} for rejected candidates
+          available   — candidates with metrics from any source
+          unavailable — list of {username, reason} for fully failed candidates
           scanned     — total usernames checked
           valid_count — length of available
           rejected    — length of unavailable
-
-        When tradeinfo returns 404, the candidate is excluded from the
-        available list (NOT included with zero defaults). If ALL candidates
-        fail, the caller triggers the static fallback path.
         """
         from backend.utils.constants import FALLBACK_TRADERS, CANDIDATE_TRADERS_ENV
 
@@ -419,28 +517,29 @@ class EToroAPIClient:
 
         available = []
         unavailable = []
-        period = "LastTwoYears"
 
         for username in usernames:
-            tradeinfo = await self.get_trader_tradeinfo(username, period=period)
-            if tradeinfo is None:
-                unavailable.append({"username": username, "reason": "tradeinfo_not_found"})
-                continue
+            metrics = await self.get_trader_metrics(username)
 
-            available.append({
-                "username": username,
-                "risk_score": tradeinfo.get("riskScore", 5.0),
-                "total_return_pct": tradeinfo.get("gainPerc", 0.0) or tradeinfo.get("gain", 0.0),
-                "copiers": tradeinfo.get("copiersCount", 0),
-                "is_copiable": True,
-                "min_copy_amount": 200,
-                "gain": tradeinfo.get("gain", 0.0),
-                "gainPerc": tradeinfo.get("gainPerc", 0.0),
-                "maxMonthlyDrawdown": tradeinfo.get("maxMonthlyDrawdown", 0.0),
-                "profitRate": tradeinfo.get("profitRate", 0.0),
-                "copiersCount": tradeinfo.get("copiersCount", 0),
-            })
-            logger.info(f"Candidate {username}: riskScore={available[-1]['risk_score']}, return={available[-1]['total_return_pct']:.1f}%")
+            if metrics["available"]:
+                available.append({
+                    "username": username,
+                    "risk_score": metrics["risk_score"],
+                    "total_return_pct": metrics["total_return_pct"],
+                    "max_drawdown": metrics["max_drawdown"],
+                    "volatility": metrics["volatility"],
+                    "avg_return": metrics["avg_return"],
+                    "copiers": 0,
+                    "is_copiable": True,
+                    "min_copy_amount": 200,
+                    "source": metrics["source"],
+                })
+                logger.info(
+                    f"Candidate {username}: riskScore={metrics['risk_score']}, "
+                    f"return={metrics['total_return_pct']:.1f}%, source={metrics['source']}"
+                )
+            else:
+                unavailable.append({"username": username, "reason": "all_endpoints_failed"})
 
         result = {
             "available": available,
@@ -458,7 +557,10 @@ class EToroAPIClient:
             logger.info(f"  Rejected: {u['username']} — {u['reason']}")
 
         if not available:
-            logger.warning("All {len(usernames)} candidate tradeinfo lookups failed — caller should use fallback")
+            logger.warning(
+                f"All {len(usernames)} candidate tradeinfo lookups failed — "
+                f"caller should use fallback"
+            )
 
         return result
 
