@@ -265,27 +265,26 @@ async def _fetch_news_fallback() -> List[Dict]:
 
 
 async def discover_top_traders() -> List[Dict]:
-    """Fetch top-performing traders using eToro discovery API.
+    """Fetch candidate traders using configurable list + tradeinfo enrichment.
 
-    Tries the discovery API via EToroAPIClient.get_discovery_candidates().
-    The /markets/copy/ranking endpoint is NOT available in the retail/demo
-    public API, so this will return 0 candidates and fall back to the
-    static high-growth defaults immediately.
+    Uses EToroAPIClient.discover_candidates() which:
+    1. Reads CANDIDATE_TRADERS env var, or falls back to FALLBACK_TRADERS constant
+    2. Enriches each candidate via /user-info/people/{username}/tradeinfo
+    3. Returns list of candidate dicts with risk_score, total_return_pct, etc.
 
-    Returns up to 3 static trader candidates (JeppeKirkBonde, CPHequities,
-    Jaynemesis) when the API is unavailable.
+    Falls back to static list if API is unavailable.
     """
     try:
         from backend.services.etoro_service import EToroAPIClient
         client = EToroAPIClient()
-        candidates = await client.get_discovery_candidates()
+        candidates = await client.discover_candidates()
         if candidates:
-            logger.info(f"Scout: fetched {len(candidates)} top traders via discovery API")
+            logger.info(f"Scout: discovered {len(candidates)} candidate traders via tradeinfo")
             return candidates
     except Exception as e:
-        logger.debug(f"Discovery API unavailable (expected): {e}")
+        logger.debug(f"Discovery API error: {e}")
 
-    logger.debug("Discovery API unavailable — using static fallback trader list")
+    logger.debug("Candidate discovery unavailable — using static fallback trader list")
     return _default_trader_candidates()
 
 
@@ -351,19 +350,29 @@ FALLBACK_TRADERS = [
     "JeppeKirkBonde",
     "CPHequities",
     "Jaynemesis",
+    "booker03",
+    "ConsistentCapital",
+    "GrowthEngine",
+    "AlphaPulse",
+    "SmartMoneyFX",
 ]
 
 
 def _default_trader_candidates() -> List[Dict]:
     """Static candidate list when eToro discovery API is unavailable.
 
-    Returns exactly the 3 hardcoded seed targets for the 3-way equal split:
-    JeppeKirkBonde, CPHequities, Jaynemesis.
+    Returns hardcoded seed targets for the equal split and scout.
+    Used when CANDIDATE_TRADERS env var is not set and API is unavailable.
     """
     registry = {
-        "JeppeKirkBonde": {"risk_score": 4, "total_return_pct": 18.2, "copiers": 2800},
-        "CPHequities":    {"risk_score": 5, "total_return_pct": 16.7, "copiers": 3200},
-        "Jaynemesis":     {"risk_score": 5, "total_return_pct": 18.5, "copiers": 4100},
+        "JeppeKirkBonde":   {"risk_score": 4, "total_return_pct": 18.2, "copiers": 2800},
+        "CPHequities":      {"risk_score": 5, "total_return_pct": 16.7, "copiers": 3200},
+        "Jaynemesis":       {"risk_score": 5, "total_return_pct": 18.5, "copiers": 4100},
+        "booker03":         {"risk_score": 5, "total_return_pct": 15.3, "copiers": 1500},
+        "ConsistentCapital":{"risk_score": 3, "total_return_pct": 12.1, "copiers": 2200},
+        "GrowthEngine":     {"risk_score": 6, "total_return_pct": 22.4, "copiers": 1800},
+        "AlphaPulse":       {"risk_score": 4, "total_return_pct": 14.8, "copiers": 950},
+        "SmartMoneyFX":     {"risk_score": 5, "total_return_pct": 11.2, "copiers": 3100},
     }
     return [
         {
@@ -374,5 +383,5 @@ def _default_trader_candidates() -> List[Dict]:
             "is_copiable": True,
             "min_copy_amount": 200,
         }
-        for name in FALLBACK_TRADERS
+        for name in FALLBACK_TRADERS if name in registry
     ]

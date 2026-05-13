@@ -6,10 +6,20 @@ Centralized to eliminate duplicate definitions across modules
 """
 
 # ── Trader Discovery ────────────────────────────────────────────────
+# CANDIDATE_TRADERS env var overrides the hardcoded fallback list.
+# Set it to a comma-separated list of eToro usernames, e.g.
+#   CANDIDATE_TRADERS="user1,user2,user3"
+CANDIDATE_TRADERS_ENV = "CANDIDATE_TRADERS"
+
 FALLBACK_TRADERS = [
     "JeppeKirkBonde",
     "CPHequities",
     "Jaynemesis",
+    "booker03",
+    "ConsistentCapital",
+    "GrowthEngine",
+    "AlphaPulse",
+    "SmartMoneyFX",
 ]
 
 # ── Scoring Weights ─────────────────────────────────────────────────

@@ -348,47 +348,91 @@ class EToroAPIClient:
             "last_error": last_error,
         }
 
-    async def get_discovery_candidates(self) -> List[Dict]:
-        """Fetch discovery candidates from /copy/ranking.
+    async def get_trader_tradeinfo(self, username: str, period: str = "LastTwoYears") -> Optional[Dict]:
+        """Fetch trade stats for a specific trader via the user-info API.
 
-        The /markets/copy/ranking endpoint is NOT available in the retail/demo
-        public API (returns 404 RouteNotFound). This method tries once to
-        confirm, then returns an empty list so the caller falls back to the
-        static trader list immediately.
+        eToro API: GET /api/v2/user-info/people/{username}/tradeinfo?period={period}
+
+        Returns fields like gain, riskScore, copierCount, profitRate, etc.
+        Returns None if the trader is not found or the API call fails.
         """
-        base_url = f"{self.BASE_URL}/api/v1/markets/copy/ranking"
-        # Use full auth headers — x-request-id is required by eToro API (returns 422 without it)
-        headers = self._get_headers()
-
-        # Single call with minimal params — 404 means not available on this plan, fast-fail.
+        url = f"{self.BASE_URL}/api/v2/user-info/people/{username}/tradeinfo"
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.get(base_url, params={"period": "12M", "limit": 100}, headers=headers)
-                logger.info(
-                    f"Discovery endpoint {base_url}: "
-                    f"status={resp.status_code}, "
-                    f"body={resp.text[:300]}"
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.get(
+                    url,
+                    params={"period": period},
+                    headers=self._get_headers(),
                 )
-                if resp.status_code == 200:
-                    from backend.services.market_data import _parse_etoro_discovery
-                    data = resp.json()
-                    candidates = _parse_etoro_discovery(data, page=1)
-                    logger.info(f"Discovery: {len(candidates)} candidates")
-                    return candidates
-                if resp.status_code == 404:
-                    logger.warning(
-                        "Discovery returned 404 RouteNotFound — endpoint not available on "
-                        "this API plan. Using static fallback."
-                    )
-                else:
-                    logger.info(
-                        f"Discovery endpoint not available (HTTP {resp.status_code}) — "
-                        "caller will use static fallback list"
-                    )
-                return []
+                if response.status_code == 404:
+                    logger.info(f"Tradeinfo for {username}: not found (404)")
+                    return None
+                response.raise_for_status()
+                data = response.json()
+                logger.info(f"Tradeinfo for {username}: gain={data.get('gain')}, riskScore={data.get('riskScore')}, copiers={data.get('copiersCount')}")
+                return data
+        except httpx.HTTPStatusError as e:
+            logger.warning(f"Tradeinfo for {username}: HTTP {e.response.status_code} — {e.response.text[:200]}")
+            return None
+        except httpx.RequestError as e:
+            logger.warning(f"Tradeinfo for {username}: network error — {e}")
+            return None
         except Exception as e:
-            logger.info(f"Discovery endpoint unreachable ({e}) — caller will use static fallback")
+            logger.warning(f"Tradeinfo for {username}: unexpected error — {e}")
+            return None
+
+    async def discover_candidates(self) -> List[Dict]:
+        """Discover trader candidates using configurable list + tradeinfo enrichment.
+
+        Strategy:
+        1. Read CANDIDATE_TRADERS env var (comma-separated usernames)
+        2. If empty, use FALLBACK_TRADERS constant
+        3. For each candidate, enrich data via /user-info/people/{username}/tradeinfo
+        4. Return list of candidate dicts with username, risk_score, total_return_pct
+        """
+        from backend.utils.constants import FALLBACK_TRADERS, CANDIDATE_TRADERS_ENV
+
+        raw = os.getenv(CANDIDATE_TRADERS_ENV, "")
+        usernames = [u.strip() for u in raw.split(",") if u.strip()] if raw else FALLBACK_TRADERS[:]
+
+        if not usernames:
+            logger.warning("No candidate traders configured — scout will have no discovery targets")
             return []
+
+        logger.info(f"Discovering {len(usernames)} candidate traders: {usernames}")
+
+        candidates = []
+        for username in usernames:
+            tradeinfo = await self.get_trader_tradeinfo(username)
+            if tradeinfo is None:
+                # Still include with default values
+                candidates.append({
+                    "username": username,
+                    "risk_score": 5.0,
+                    "total_return_pct": 0.0,
+                    "copiers": 0,
+                    "is_copiable": True,
+                    "min_copy_amount": 200,
+                })
+                continue
+
+            candidates.append({
+                "username": username,
+                "risk_score": tradeinfo.get("riskScore", 5.0),
+                "total_return_pct": tradeinfo.get("gainPerc", 0.0) or tradeinfo.get("gain", 0.0),
+                "copiers": tradeinfo.get("copiersCount", 0),
+                "is_copiable": True,
+                "min_copy_amount": 200,
+                "gain": tradeinfo.get("gain", 0.0),
+                "gainPerc": tradeinfo.get("gainPerc", 0.0),
+                "maxMonthlyDrawdown": tradeinfo.get("maxMonthlyDrawdown", 0.0),
+                "profitRate": tradeinfo.get("profitRate", 0.0),
+                "copiersCount": tradeinfo.get("copiersCount", 0),
+            })
+            logger.info(f"Candidate {username}: riskScore={candidates[-1]['risk_score']}, return={candidates[-1]['total_return_pct']:.1f}%")
+
+        logger.info(f"Discovery: {len(candidates)} candidates after enrichment")
+        return candidates
 
     def _get_mock_account_summary(self) -> Dict:
         import random

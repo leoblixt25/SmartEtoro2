@@ -817,7 +817,7 @@ class AutomationEngine:
 
         return None
 
-    REBALANCE_SEED_LIST = ["JeppeKirkBonde", "CPHequities", "Jaynemesis"]
+    REBALANCE_SEED_LIST = ["JeppeKirkBonde", "CPHequities", "Jaynemesis", "booker03", "GrowthEngine"]
 
     def _eval_equal_rebalance(
         self,
