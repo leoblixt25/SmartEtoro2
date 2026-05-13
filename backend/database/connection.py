@@ -73,6 +73,13 @@ def init_db():
 
     create_tables(engine)
 
+    # Migrate PostgreSQL enums (safe to re-run)
+    if DATABASE_URL.startswith("postgresql"):
+        with engine.connect() as conn:
+            with conn.begin():
+                conn.execute(text("ALTER TYPE alerttype ADD VALUE IF NOT EXISTS 'MONITORING'"))
+        logger.info("PostgreSQL enums migrated")
+
     # Enable WAL mode for SQLite (PostgreSQL handles this natively)
     if DATABASE_URL.startswith("sqlite"):
         with engine.connect() as conn:
