@@ -150,10 +150,10 @@ class AutomationEngine:
                 rule.last_triggered = datetime.utcnow()
                 rule.trigger_count += 1
             else:
-                # On failure, set a 5-minute cooldown to avoid spamming eToro API.
-                # _in_cooldown checks: last_triggered + cooldown_hours > now.
-                # Setting last_triggered = now - cooldown_hours + 5min gives exactly 5 min of cooldown.
-                rule.last_triggered = datetime.utcnow() - timedelta(hours=rule.cooldown_hours) + timedelta(minutes=5)
+                # On failure, set cooldown now. _in_cooldown enforces a minimum
+                # 1-hour cooldown, so this prevents rapid re-triggering without
+                # depending on the rule's cooldown_hours value.
+                rule.last_triggered = datetime.utcnow()
 
         db.commit()
         status = "SUCCESS" if success else "FAILED"
@@ -915,5 +915,8 @@ class AutomationEngine:
     def _in_cooldown(self, rule: AutomationRule) -> bool:
         if not rule.last_triggered:
             return False
-        cooldown_ends = rule.last_triggered + timedelta(hours=rule.cooldown_hours)
+        # Enforce minimum 1-hour cooldown to prevent infinite loops
+        # when cooldown_hours is 0 or NULL (rules created via API without defaults).
+        cooldown_hours = max(rule.cooldown_hours or 0, 1)
+        cooldown_ends = rule.last_triggered + timedelta(hours=cooldown_hours)
         return datetime.utcnow() < cooldown_ends

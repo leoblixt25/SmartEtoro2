@@ -8,7 +8,7 @@ Uses APScheduler for simple, reliable job scheduling.
 from __future__ import annotations
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -243,18 +243,47 @@ class SchedulerService:
                         active_traders = [t for t in portfolio.copied_traders
                                           if t.is_active and not t.is_paused]
                         if low_div and len(active_traders) == 1:
-                            # Bridge: create an equal_rebalance action with the seed list
                             logger.warning(
                                 f"LOW DIVERSIFICATION + 1 trader detected — "
-                                f"initiating seed-list rebalance for portfolio {portfolio.id}"
+                                f"portfolio {portfolio.id} has only {active_traders[0].trader_username}"
                             )
-                            # Look up (or auto-create) the equal_rebalance rule
-                            # so log_execution doesn't fail with FK violation.
                             from backend.database.models import AutomationRule, AutomationStatus
                             eq_rule = db.query(AutomationRule).filter(
                                 AutomationRule.portfolio_id == portfolio.id,
                                 AutomationRule.rule_type == "equal_rebalance",
                             ).first()
+
+                            # Check if this rule recently failed (retail API can't start mirrors).
+                            # If so, skip the auto-attempt and just notify.
+                            if eq_rule and eq_rule.last_triggered:
+                                cooldown_hours = max(eq_rule.cooldown_hours or 0, 1)
+                                if datetime.utcnow() < eq_rule.last_triggered + timedelta(hours=cooldown_hours):
+                                    logger.info(
+                                        "Equal rebalance rule still in cooldown — "
+                                        "skipping risk-bridge auto-rebalance"
+                                    )
+                                    continue
+
+                            # Notify user that manual rebalance is needed
+                            try:
+                                from backend.services.telegram_service import TelegramBot
+                                bot = TelegramBot()
+                                if bot.enabled:
+                                    await bot.send_message(
+                                        f"⚠️ <b>Low Diversification</b>\n\n"
+                                        f"1 trader (active) detected, but the eToro retail API "
+                                        f"does not support starting new copies automatically.\n\n"
+                                        f"To rebalance, use the eToro UI to start copies of:\n"
+                                        f"• JeppeKirkBonde\n"
+                                        f"• CPHequities\n"
+                                        f"• Jaynemesis\n\n"
+                                        f"This notification will not repeat for 4 hours.",
+                                        show_keyboard=True,
+                                    )
+                            except Exception as tg_err:
+                                logger.warning("Failed to send risk bridge Telegram: %s", tg_err)
+
+                            # Create/update the rule with a 4-hour cooldown to prevent spam
                             if not eq_rule:
                                 eq_rule = AutomationRule(
                                     portfolio_id=portfolio.id,
@@ -262,62 +291,20 @@ class SchedulerService:
                                     rule_type="equal_rebalance",
                                     status=AutomationStatus.ENABLED,
                                     threshold=0,
-                                    cooldown_hours=0,
+                                    cooldown_hours=4,
                                     requires_approval=False,
                                     config={},
                                 )
                                 db.add(eq_rule)
-                                db.commit()
-                                logger.info(
-                                    f"Auto-created equal_rebalance rule for risk bridge "
-                                    f"(portfolio {portfolio.id})"
-                                )
-                            seed_action = engine._eval_equal_rebalance(
-                                eq_rule, portfolio, active_traders, scored_data=None
+                            else:
+                                eq_rule.cooldown_hours = 4
+                            # Set last_triggered so the 4-hour cooldown starts now
+                            eq_rule.last_triggered = datetime.utcnow()
+                            db.commit()
+                            logger.info(
+                                f"Risk bridge: notified user about low diversification. "
+                                f"Equal rebalance rule cooldown set to 4 hours."
                             )
-                            if seed_action:
-                                sync_service = EToroSyncService()
-                                etoro_response = await engine.execute_etoro_action(
-                                    sync_service.client, seed_action, portfolio, db
-                                )
-                                has_error = (etoro_response or {}).get("error", False)
-                                success_count = (etoro_response or {}).get("success_count", None)
-                                total = (etoro_response or {}).get("total", None)
-                                if has_error:
-                                    success = False
-                                elif success_count is not None and total is not None:
-                                    success = success_count > 0 or total == 0
-                                else:
-                                    success = True
-                                engine.log_execution(
-                                    db, portfolio, seed_action,
-                                    approved_by="risk_bridge",
-                                    success=success,
-                                    etoro_response=etoro_response,
-                                )
-                                if success:
-                                    count_info = f" ({etoro_response.get('success_count', '?')}/{etoro_response.get('total', '?')} started)" if "success_count" in (etoro_response or {}) else ""
-                                    logger.info(
-                                        f"Risk → Rebalance bridge EXECUTED: "
-                                        f"{seed_action.description}{count_info}"
-                                    )
-                                else:
-                                    err_detail = (etoro_response or {}).get("detail", "No details")
-                                    logger.error(
-                                        f"Risk → Rebalance bridge FAILED: "
-                                        f"{err_detail}"
-                                    )
-                                    try:
-                                        from backend.services.telegram_service import TelegramBot
-                                        bot = TelegramBot()
-                                        if bot.enabled:
-                                            await bot.send_message(
-                                                f"❌ <b>Risk Bridge Failed</b>\n\n"
-                                                f"Error: {err_detail}",
-                                                show_keyboard=True,
-                                            )
-                                    except Exception as tg_err:
-                                        logger.warning(f"Failed to send Telegram notification: {tg_err}")
                 except Exception as e:
                     logger.error(f"Risk → Rebalance bridge error: {e}")
         except Exception as e:
