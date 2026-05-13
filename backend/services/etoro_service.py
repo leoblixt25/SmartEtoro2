@@ -671,9 +671,11 @@ class EToroSyncService:
                 return False
 
             summary = self._extract_summary(raw)
-            traders = self._extract_traders(raw)
+            total_equity = summary.get("equity", 0.0)
+            traders = self._extract_traders(raw, total_equity)
             logger.info("Synced live data from eToro API")
-            logger.info(f"RAW clientPortfolio: credit={raw.get('clientPortfolio', {}).get('credit')}, "
+            logger.info(f"RAW clientPortfolio: equity={raw.get('clientPortfolio', {}).get('equity')}, "
+                        f"credit={raw.get('clientPortfolio', {}).get('credit')}, "
                         f"accountCurrencyId={raw.get('clientPortfolio', {}).get('accountCurrencyId')}, "
                         f"mirrors={len(raw.get('clientPortfolio', {}).get('mirrors', []))}")
             for m in raw.get("clientPortfolio", {}).get("mirrors", []):
@@ -714,12 +716,15 @@ class EToroSyncService:
 
     def _extract_summary(self, raw: Dict) -> Dict:
         """Parse eToro API portfolio response into flat summary dict.
-        
-        Formula (per user): Total Value = Invested + Realized PnL + Unrealized PnL + credit
-        - Invested       = sum of all initialInvestment (mirrors) + positions amount
-        - Realized PnL   = sum of closedPositionsNetProfit (mirrors)
-        - Unrealized PnL = sum of unrealizedPnL.pnL (all positions)
-        - credit         = account-level available cash
+
+        IMPORTANT: Uses clientPortfolio.equity from the API as the single
+        source of truth for total value. eToro equity already includes:
+        invested capital + unrealized PnL + realized PnL + available cash.
+        Do NOT manually add PnL components — that double-counts.
+
+        Fallback (when equity is missing from API response):
+          Total Value = invested + unrealized_pnl + available_cash
+          (still excludes realized_pnl to avoid double-counting)
         """
         cp = raw.get("clientPortfolio", {})
         positions = cp.get("positions", [])
@@ -743,10 +748,23 @@ class EToroSyncService:
         # Available cash = account-level credit only
         available_cash = cp.get("credit", 0.0)
 
-        # Total Value per user's formula
-        total_value = invested + realized_pnl + unrealized_pnl + available_cash
+        # Use API equity as single source of truth — fall back to safe formula
+        api_equity = cp.get("equity")
+        if api_equity is not None and api_equity > 0:
+            total_value = float(api_equity)
+            equity_source = "api"
+        else:
+            total_value = invested + unrealized_pnl + available_cash
+            equity_source = "computed"
 
         currency = "EUR" if cp.get("accountCurrencyId") == 2 else "USD"
+
+        logger.info(
+            f"Portfolio total calculated: {total_value} "
+            f"(equity={api_equity}, source={equity_source}, "
+            f"invested={invested}, unrealized_pnl={unrealized_pnl}, "
+            f"realized_pnl={realized_pnl}, cash={available_cash})"
+        )
 
         return {
             "equity": total_value,
@@ -760,30 +778,31 @@ class EToroSyncService:
             "monthly_pnl": 0.0,
         }
 
-    def _extract_traders(self, raw: Dict) -> List[Dict]:
+    def _extract_traders(self, raw: Dict, total_value: float = 0.0) -> List[Dict]:
         """Extract copied trader info from mirrors array.
-        
+
+        Uses the provided total_value (from _extract_summary's equity) as
+        the denominator for allocation_pct. If not provided, falls back
+        to invested + unrealized_pnl + available_cash (no realized_pnl).
+
         Allocation % per user formula:
           (initialInvestment + closedPositionsNetProfit + unrealizedPnL) / Total Value * 100
-        
-        Where Total Value = Invested + Realized PnL + Unrealized PnL + credit
-        (same as _extract_summary)
         """
         cp = raw.get("clientPortfolio", {})
         mirrors = cp.get("mirrors", [])
         positions = cp.get("positions", [])
-        
-        # Compute total_value same way as _extract_summary
-        invested = sum(p.get("amount", 0.0) for p in positions) + sum(m.get("initialInvestment", 0.0) for m in mirrors)
-        positions_pnl = sum(p.get("unrealizedPnL", {}).get("pnL", 0.0) for p in positions)
-        mirrors_pnl = sum(
-            pos.get("unrealizedPnL", {}).get("pnL", 0.0) for m in mirrors for pos in m.get("positions", [])
-        )
-        unrealized_pnl = positions_pnl + mirrors_pnl
-        realized_pnl = sum(m.get("closedPositionsNetProfit", 0.0) for m in mirrors)
-        available_cash = cp.get("credit", 0.0)
-        total_value = invested + realized_pnl + unrealized_pnl + available_cash
-        
+
+        if total_value <= 0:
+            # Fallback: compute without realized_pnl to avoid double-count
+            invested = sum(p.get("amount", 0.0) for p in positions) + sum(m.get("initialInvestment", 0.0) for m in mirrors)
+            positions_pnl = sum(p.get("unrealizedPnL", {}).get("pnL", 0.0) for p in positions)
+            mirrors_pnl = sum(
+                pos.get("unrealizedPnL", {}).get("pnL", 0.0) for m in mirrors for pos in m.get("positions", [])
+            )
+            unrealized_pnl = positions_pnl + mirrors_pnl
+            available_cash = cp.get("credit", 0.0)
+            total_value = invested + unrealized_pnl + available_cash
+
         result = []
         for m in mirrors:
             unrealized_pnl_mirror = sum(pos.get("unrealizedPnL", {}).get("pnL", 0.0) for pos in m.get("positions", []))
