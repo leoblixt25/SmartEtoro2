@@ -85,6 +85,40 @@ def calculate_growth_efficiency_score(trader: dict) -> float:
     return round(score, 1)
 
 
+def _compute_confidence(trader: dict) -> float:
+    """Compute data confidence score 0-1 based on available fields.
+
+    Measures how much of the expected data was actually provided
+    (vs default/fallback values). Used by calculate_growth_score to
+    distinguish "missing data" from "bad data".
+
+    Returns 0.3 (minimum confidence) when no real data is present,
+    up to 1.0 when all fields are populated.
+    """
+    # Fields that should be populated by a complete data source
+    checks = {
+        "return_12m":          lambda v: v is not None and float(v) != 0,
+        "total_return_pct":    lambda v: v is not None and float(v) != 0,
+        "risk_score":          lambda v: v is not None and float(v) != 5.0,
+        "max_drawdown":        lambda v: v is not None and float(v) != 0,
+        "volatility":          lambda v: v is not None and float(v) != 0,
+        "avg_monthly_return":  lambda v: v is not None and float(v) != 0,
+        "sharpe_score":        lambda v: v is not None and float(v) != 0,
+    }
+    present = sum(1 for field, check in checks.items() if check(trader.get(field)))
+    ratio = present / len(checks) if checks else 0
+    return round(0.3 + ratio * 0.7, 2)
+
+
+def _has_return_data(trader: dict) -> bool:
+    """Check if trader has actual return/growth data (not defaults)."""
+    for key in ["return_12m", "return_6m", "total_return_pct", "avg_monthly_return"]:
+        val = trader.get(key)
+        if val is not None and float(val) != 0:
+            return True
+    return False
+
+
 def _get_return_12m(trader: dict) -> float:
     """Derive 12‑month return from available fields."""
     v = trader.get("return_12m")
@@ -145,11 +179,13 @@ def calculate_growth_score(trader: dict) -> dict:
     """Compute deterministic growth score (0–100) for a single trader.
 
     Returns a dict with:
-      score         — final score (0–100)
-      details       — breakdown of each component
-      penalties     — list of applied penalty descriptions
-      growth_filter — True if score zeroed by growth filter
+      score            — final score (0–100)
+      confidence_score — data completeness (0-1); low means data was missing
+      details          — breakdown of each component
+      penalties        — list of applied penalty descriptions
+      growth_filter    — True if score zeroed by growth filter
     """
+    confidence = _compute_confidence(trader)
     r12 = _get_return_12m(trader)
     r6 = _get_return_6m(trader)
     risk = _get_risk(trader)
@@ -159,11 +195,14 @@ def calculate_growth_score(trader: dict) -> dict:
     penalties = []
     growth_filter = False
 
-    # ── Growth filter — hard stop ─────────────────────────────────------
-    if r12 < GROWTH_FILTER_MIN_12M:
+    # ── Growth filter — only when data is present ───────────────────────
+    # When return data is missing (all return fields at default/zero),
+    # skip the hard-zero filter and score conservatively instead.
+    if _has_return_data(trader) and r12 < GROWTH_FILTER_MIN_12M:
         logger.info(f"Growth filter: 12M return {r12:.1f}% < 10% — score = 0")
         return {
             "score": 0.0,
+            "confidence_score": confidence,
             "details": {
                 "return_12m": r12,
                 "return_6m": r6,
@@ -175,6 +214,12 @@ def calculate_growth_score(trader: dict) -> dict:
             "penalties": [f"12M return {r12:.1f}% below 10% threshold — growth filter"],
             "growth_filter": True,
         }
+
+    if not _has_return_data(trader):
+        logger.info(
+            f"Growth filter skipped for {trader.get('username', '?')}: "
+            f"no return data available (confidence={confidence})"
+        )
 
     # ── Normalise each component to 0–100 ────────────────────────────────
     # Return: cap at 100% for scoring purposes
@@ -213,6 +258,7 @@ def calculate_growth_score(trader: dict) -> dict:
 
     return {
         "score": score,
+        "confidence_score": confidence,
         "details": {
             "return_12m": round(r12, 1),
             "return_6m": round(r6, 1),
@@ -237,7 +283,7 @@ def scout_holdings(holdings: list[dict]) -> dict:
     """Score all current holdings and identify the weakest link.
 
     Returns:
-      scored     — list of {username, score, details, penalties, growth_filter}
+      scored     — list of {username, score, confidence_score, details, penalties, growth_filter}
       weakest    — the trader dict with lowest score
       top        — the trader dict with highest score
       avg_score  — average score across all holdings

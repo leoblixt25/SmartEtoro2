@@ -353,8 +353,8 @@ class EToroAPIClient:
 
         eToro API: GET /api/v2/user-info/people/{username}/tradeinfo?period={period}
 
-        Returns fields like gain, riskScore, copierCount, profitRate, etc.
-        Returns None if the trader is not found or the API call fails.
+        Returns parsed JSON on success, None on any failure.
+        Logs the status code for every response.
         """
         url = f"{self.BASE_URL}/api/v2/user-info/people/{username}/tradeinfo"
         try:
@@ -364,16 +364,27 @@ class EToroAPIClient:
                     params={"period": period},
                     headers=self._get_headers(),
                 )
+                if response.status_code == 200:
+                    data = response.json()
+                    logger.info(f"Tradeinfo for {username}: gain={data.get('gain')}, riskScore={data.get('riskScore')}, copiers={data.get('copiersCount')}")
+                    return data
                 if response.status_code == 404:
-                    logger.info(f"Tradeinfo for {username}: not found (404)")
+                    logger.info(f"Tradeinfo for {username}: 404 not found — excluded from discovery")
                     return None
-                response.raise_for_status()
-                data = response.json()
-                logger.info(f"Tradeinfo for {username}: gain={data.get('gain')}, riskScore={data.get('riskScore')}, copiers={data.get('copiersCount')}")
-                return data
-        except httpx.HTTPStatusError as e:
-            logger.warning(f"Tradeinfo for {username}: HTTP {e.response.status_code} — {e.response.text[:200]}")
-            return None
+                if response.status_code == 401:
+                    logger.warning(f"Tradeinfo for {username}: 401 unauthorized — check API key permissions")
+                    return None
+                if response.status_code == 403:
+                    logger.warning(f"Tradeinfo for {username}: 403 forbidden — endpoint not available on this API plan")
+                    return None
+                if response.status_code == 429:
+                    logger.warning(f"Tradeinfo for {username}: 429 rate limited — backing off")
+                    return None
+                if response.status_code >= 500:
+                    logger.warning(f"Tradeinfo for {username}: {response.status_code} server error — temporary failure")
+                    return None
+                logger.warning(f"Tradeinfo for {username}: unexpected status {response.status_code}")
+                return None
         except httpx.RequestError as e:
             logger.warning(f"Tradeinfo for {username}: network error — {e}")
             return None
@@ -381,14 +392,19 @@ class EToroAPIClient:
             logger.warning(f"Tradeinfo for {username}: unexpected error — {e}")
             return None
 
-    async def discover_candidates(self) -> List[Dict]:
+    async def discover_candidates(self) -> Dict:
         """Discover trader candidates using configurable list + tradeinfo enrichment.
 
-        Strategy:
-        1. Read CANDIDATE_TRADERS env var (comma-separated usernames)
-        2. If empty, use FALLBACK_TRADERS constant
-        3. For each candidate, enrich data via /user-info/people/{username}/tradeinfo
-        4. Return list of candidate dicts with username, risk_score, total_return_pct
+        Returns dict with:
+          available   — candidates with successful tradeinfo enrichment
+          unavailable — list of {username, reason} for rejected candidates
+          scanned     — total usernames checked
+          valid_count — length of available
+          rejected    — length of unavailable
+
+        When tradeinfo returns 404, the candidate is excluded from the
+        available list (NOT included with zero defaults). If ALL candidates
+        fail, the caller triggers the static fallback path.
         """
         from backend.utils.constants import FALLBACK_TRADERS, CANDIDATE_TRADERS_ENV
 
@@ -397,26 +413,21 @@ class EToroAPIClient:
 
         if not usernames:
             logger.warning("No candidate traders configured — scout will have no discovery targets")
-            return []
+            return {"available": [], "unavailable": [], "scanned": 0, "valid_count": 0, "rejected": 0}
 
         logger.info(f"Discovering {len(usernames)} candidate traders: {usernames}")
 
-        candidates = []
+        available = []
+        unavailable = []
+        period = "LastTwoYears"
+
         for username in usernames:
-            tradeinfo = await self.get_trader_tradeinfo(username)
+            tradeinfo = await self.get_trader_tradeinfo(username, period=period)
             if tradeinfo is None:
-                # Still include with default values
-                candidates.append({
-                    "username": username,
-                    "risk_score": 5.0,
-                    "total_return_pct": 0.0,
-                    "copiers": 0,
-                    "is_copiable": True,
-                    "min_copy_amount": 200,
-                })
+                unavailable.append({"username": username, "reason": "tradeinfo_not_found"})
                 continue
 
-            candidates.append({
+            available.append({
                 "username": username,
                 "risk_score": tradeinfo.get("riskScore", 5.0),
                 "total_return_pct": tradeinfo.get("gainPerc", 0.0) or tradeinfo.get("gain", 0.0),
@@ -429,10 +440,27 @@ class EToroAPIClient:
                 "profitRate": tradeinfo.get("profitRate", 0.0),
                 "copiersCount": tradeinfo.get("copiersCount", 0),
             })
-            logger.info(f"Candidate {username}: riskScore={candidates[-1]['risk_score']}, return={candidates[-1]['total_return_pct']:.1f}%")
+            logger.info(f"Candidate {username}: riskScore={available[-1]['risk_score']}, return={available[-1]['total_return_pct']:.1f}%")
 
-        logger.info(f"Discovery: {len(candidates)} candidates after enrichment")
-        return candidates
+        result = {
+            "available": available,
+            "unavailable": unavailable,
+            "scanned": len(usernames),
+            "valid_count": len(available),
+            "rejected": len(unavailable),
+        }
+
+        logger.info(
+            f"Discovery: {len(available)} valid / {len(unavailable)} rejected "
+            f"(total {len(usernames)} scanned)"
+        )
+        for u in unavailable:
+            logger.info(f"  Rejected: {u['username']} — {u['reason']}")
+
+        if not available:
+            logger.warning("All {len(usernames)} candidate tradeinfo lookups failed — caller should use fallback")
+
+        return result
 
     def _get_mock_account_summary(self) -> Dict:
         import random

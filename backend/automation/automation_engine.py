@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from enum import Enum
 from typing import List, Optional
 from sqlalchemy.orm import Session
 from backend.database.models import (
@@ -23,6 +24,14 @@ from backend.database.models import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class PortfolioState(Enum):
+    HEALTHY = "healthy"
+    DEGRADED = "degraded"
+    RECOVERY = "recovery"
+    BLOCKED = "blocked"
+    FAILED = "failed"
 
 
 @dataclass
@@ -84,11 +93,17 @@ class AutomationEngine:
             .all()
         )
 
+        state = self._determine_portfolio_state(portfolio, traders)
+        logger.info(
+            f"Portfolio {portfolio.id} state: {state.value} "
+            f"(active traders: {len(traders)})"
+        )
+
         proposed: List[ProposedAction] = []
 
         for rule in rules:
-            # Enforce cooldown
-            if self._in_cooldown(rule):
+            # Enforce cooldown (bypassed in recovery mode)
+            if self._in_cooldown(rule, state):
                 logger.debug(f"Rule '{rule.name}' skipped — in cooldown")
                 continue
 
@@ -902,6 +917,28 @@ class AutomationEngine:
             requires_approval=False,
         )
 
+    def _determine_portfolio_state(
+        self, portfolio: Portfolio, traders: List[CopiedTrader]
+    ) -> PortfolioState:
+        """Determine portfolio health state based on active trader count.
+
+        States:
+          HEALTHY — 3+ active traders (well-diversified)
+          DEGRADED — 2 active traders (low diversification)
+          RECOVERY — 0-1 active traders (critically under-diversified)
+          BLOCKED — reserved for persistent failures
+          FAILED — reserved for unrecoverable errors
+        """
+        if len(traders) <= 1:
+            return PortfolioState.RECOVERY
+        if len(traders) <= 2:
+            return PortfolioState.DEGRADED
+        return PortfolioState.HEALTHY
+
+    def is_recovery_mode(self, portfolio: Portfolio, traders: List[CopiedTrader]) -> bool:
+        """Check if portfolio is in recovery mode (critically under-diversified)."""
+        return self._determine_portfolio_state(portfolio, traders) == PortfolioState.RECOVERY
+
     def reset_cooldowns(self, db: Session, portfolio_id: int) -> int:
         """Clear last_triggered for all rules in a portfolio — 0 cooldown."""
         rules = (
@@ -921,8 +958,15 @@ class AutomationEngine:
 
     # ── Helpers ──────────────────────────────────
 
-    def _in_cooldown(self, rule: AutomationRule) -> bool:
+    def _in_cooldown(
+        self, rule: AutomationRule,
+        portfolio_state: Optional[PortfolioState] = None,
+    ) -> bool:
         if not rule.last_triggered:
+            return False
+        # Recovery mode bypasses cooldown so rebalance can retry
+        if portfolio_state == PortfolioState.RECOVERY:
+            logger.info(f"Recovery mode: bypassing cooldown for rule '{rule.name}'")
             return False
         # Enforce minimum 1-hour cooldown to prevent infinite loops
         # when cooldown_hours is 0 or NULL (rules created via API without defaults).

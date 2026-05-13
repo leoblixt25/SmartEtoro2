@@ -231,6 +231,7 @@ class SchedulerService:
                 # for the 15-min risk check job cycle.
                 try:
                     from backend.risk.risk_engine import RiskEngine
+                    from backend.automation.automation_engine import PortfolioState
                     risk_engine = RiskEngine()
                     for portfolio in portfolios:
                         from backend.database.models import RiskSettings
@@ -248,14 +249,22 @@ class SchedulerService:
                                 f"portfolio {portfolio.id} has only {active_traders[0].trader_username}"
                             )
                             from backend.database.models import AutomationRule, AutomationStatus
+
+                            # Recovery mode: bypass cooldown, let evaluate_rules attempt retry
+                            is_recovery = len(active_traders) <= 1
+                            if is_recovery:
+                                logger.info(
+                                    f"Portfolio {portfolio.id} in RECOVERY state — "
+                                    f"ignoring cooldown for rebalance retry"
+                                )
+
                             eq_rule = db.query(AutomationRule).filter(
                                 AutomationRule.portfolio_id == portfolio.id,
                                 AutomationRule.rule_type == "equal_rebalance",
                             ).first()
 
-                            # Check if this rule recently failed (retail API can't start mirrors).
-                            # If so, skip the auto-attempt and just notify.
-                            if eq_rule and eq_rule.last_triggered:
+                            # Check cooldown — skip only when NOT in recovery
+                            if not is_recovery and eq_rule and eq_rule.last_triggered:
                                 cooldown_hours = max(eq_rule.cooldown_hours or 0, 1)
                                 if datetime.utcnow() < eq_rule.last_triggered + timedelta(hours=cooldown_hours):
                                     logger.info(
@@ -264,47 +273,66 @@ class SchedulerService:
                                     )
                                     continue
 
-                            # Notify user that manual rebalance is needed
+                            # Notify user about low diversification
                             try:
                                 from backend.services.telegram_service import TelegramBot
                                 bot = TelegramBot()
                                 if bot.enabled:
-                                    await bot.send_message(
+                                    msg = (
                                         f"⚠️ <b>Low Diversification</b>\n\n"
-                                        f"1 trader (active) detected, but the eToro retail API "
-                                        f"does not support starting new copies automatically.\n\n"
-                                        f"To rebalance, use the eToro UI to start copies of:\n"
+                                        f"1 trader (active) detected. "
+                                    )
+                                    if is_recovery:
+                                        msg += (
+                                            f"Auto-rebalance will be attempted on next cycle. "
+                                            f"If eToro retail API does not support starting "
+                                            f"new copies, use the UI to start:\n"
+                                        )
+                                    else:
+                                        msg += (
+                                            f"The eToro retail API does not support starting "
+                                            f"new copies automatically.\n\n"
+                                            f"To rebalance, use the eToro UI to start copies of:\n"
+                                        )
+                                    msg += (
                                         f"• JeppeKirkBonde\n"
                                         f"• CPHequities\n"
                                         f"• Jaynemesis\n\n"
-                                        f"This notification will not repeat for 4 hours.",
-                                        show_keyboard=True,
+                                        f"This notification will not repeat for 4 hours."
                                     )
+                                    await bot.send_message(msg, show_keyboard=True)
                             except Exception as tg_err:
                                 logger.warning("Failed to send risk bridge Telegram: %s", tg_err)
 
-                            # Create/update the rule with a 4-hour cooldown to prevent spam
-                            if not eq_rule:
-                                eq_rule = AutomationRule(
-                                    portfolio_id=portfolio.id,
-                                    name="Risk-Bridge Equal Rebalance",
-                                    rule_type="equal_rebalance",
-                                    status=AutomationStatus.ENABLED,
-                                    threshold=0,
-                                    cooldown_hours=4,
-                                    requires_approval=False,
-                                    config={},
+                            # In recovery mode, skip the 4-hour cooldown so
+                            # evaluate_rules can retry the rebalance next cycle.
+                            # In non-recovery mode, set 4-hour cooldown to prevent spam.
+                            if not is_recovery:
+                                if not eq_rule:
+                                    eq_rule = AutomationRule(
+                                        portfolio_id=portfolio.id,
+                                        name="Risk-Bridge Equal Rebalance",
+                                        rule_type="equal_rebalance",
+                                        status=AutomationStatus.ENABLED,
+                                        threshold=0,
+                                        cooldown_hours=4,
+                                        requires_approval=False,
+                                        config={},
+                                    )
+                                    db.add(eq_rule)
+                                else:
+                                    eq_rule.cooldown_hours = 4
+                                eq_rule.last_triggered = datetime.utcnow()
+                                db.commit()
+                                logger.info(
+                                    f"Risk bridge: notified user about low diversification. "
+                                    f"Equal rebalance rule cooldown set to 4 hours."
                                 )
-                                db.add(eq_rule)
                             else:
-                                eq_rule.cooldown_hours = 4
-                            # Set last_triggered so the 4-hour cooldown starts now
-                            eq_rule.last_triggered = datetime.utcnow()
-                            db.commit()
-                            logger.info(
-                                f"Risk bridge: notified user about low diversification. "
-                                f"Equal rebalance rule cooldown set to 4 hours."
-                            )
+                                logger.info(
+                                    f"Risk bridge: recovery mode — notification sent, "
+                                    f"cooldown bypassed for rebalance retry"
+                                )
                 except Exception as e:
                     logger.error(f"Risk → Rebalance bridge error: {e}")
         except Exception as e:

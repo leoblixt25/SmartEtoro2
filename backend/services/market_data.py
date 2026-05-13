@@ -270,21 +270,44 @@ async def discover_top_traders() -> List[Dict]:
     Uses EToroAPIClient.discover_candidates() which:
     1. Reads CANDIDATE_TRADERS env var, or falls back to FALLBACK_TRADERS constant
     2. Enriches each candidate via /user-info/people/{username}/tradeinfo
-    3. Returns list of candidate dicts with risk_score, total_return_pct, etc.
+    3. Returns dict with available/unavailable sublists
 
-    Falls back to static list if API is unavailable.
+    Falls back to static fallback list when:
+    - API call raises an exception
+    - available list is empty (all candidates 404'd)
     """
     try:
         from backend.services.etoro_service import EToroAPIClient
         client = EToroAPIClient()
-        candidates = await client.discover_candidates()
-        if candidates:
-            logger.info(f"Scout: discovered {len(candidates)} candidate traders via tradeinfo")
-            return candidates
+        result = await client.discover_candidates()
+
+        if isinstance(result, dict):
+            available = result.get("available", [])
+            unavailable = result.get("unavailable", [])
+            scanned = result.get("scanned", 0)
+            valid_count = result.get("valid_count", len(available))
+            rejected_count = result.get("rejected", len(unavailable))
+
+            logger.info(
+                f"Scout discovery: scanned={scanned}, valid={valid_count}, "
+                f"available={len(available)}, unavailable={len(unavailable)}, "
+                f"rejected={rejected_count}"
+            )
+            for u in unavailable:
+                logger.info(f"  Unavailable: {u.get('username', '?')} — {u.get('reason', 'unknown')}")
+
+            if available:
+                logger.info(f"Scout: discovered {len(available)} candidate traders via tradeinfo")
+                return available
+        elif isinstance(result, list):
+            if result:
+                logger.info(f"Scout: discovered {len(result)} candidate traders via tradeinfo (legacy format)")
+                return result
+
     except Exception as e:
         logger.debug(f"Discovery API error: {e}")
 
-    logger.debug("Candidate discovery unavailable — using static fallback trader list")
+    logger.info("No available candidates from discovery API — using static fallback trader list")
     return _default_trader_candidates()
 
 
