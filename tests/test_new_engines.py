@@ -48,9 +48,9 @@ class TestEligibilityEngine:
         ok, reason = passes_budget(None, 150)
         assert ok is False
 
-    def test_has_reliable_data_tradeinfo_always_ok(self):
+    def test_has_reliable_data_tradeinfo_with_return_ok(self):
         from backend.ai.eligibility_engine import has_reliable_data
-        ok, reason = has_reliable_data({"source": "tradeinfo", "confidence": 1.0})
+        ok, reason = has_reliable_data({"source": "tradeinfo", "confidence": 1.0, "total_return_pct": 15.0})
         assert ok is True
         assert reason is None
 
@@ -68,7 +68,7 @@ class TestEligibilityEngine:
             "source": "scraper", "confidence": 0.9, "total_return_pct": 0.0,
         })
         assert ok is False
-        assert "no_return_data" in reason
+        assert "no_valid_return_data" in reason
 
     def test_passes_risk_within_limit(self):
         from backend.ai.eligibility_engine import passes_risk
@@ -94,9 +94,9 @@ class TestEligibilityEngine:
     def test_filter_candidates_all_checks_together(self):
         from backend.ai.eligibility_engine import filter_candidates
         candidates = [
-            {"username": "A", "source": "tradeinfo", "confidence": 1.0, "min_copy_amount": 300},
-            {"username": "B", "source": "tradeinfo", "confidence": 1.0, "risk_score": 9.5, "min_copy_amount": 300},
-            {"username": "C", "source": "tradeinfo", "confidence": 1.0, "min_copy_amount": 50000},
+            {"username": "A", "source": "tradeinfo", "confidence": 1.0, "min_copy_amount": 300, "total_return_pct": 15.0},
+            {"username": "B", "source": "tradeinfo", "confidence": 1.0, "risk_score": 9.5, "min_copy_amount": 300, "total_return_pct": 15.0},
+            {"username": "C", "source": "tradeinfo", "confidence": 1.0, "min_copy_amount": 50000, "total_return_pct": 15.0},
         ]
         eligible, excluded = filter_candidates(candidates, set(), available_balance=5000)
         assert len(eligible) == 1
@@ -181,6 +181,17 @@ class TestEligibilityEngine:
         assert len(eligible) == 0
         assert any("copy_not_available" in " ".join(e.get("exclusion_reasons", [])) for e in excluded)
 
+    def test_rejects_tradeinfo_zero_return(self):
+        """SmartMoneyFX scenario: tradeinfo with 0% return must be rejected."""
+        from backend.ai.eligibility_engine import filter_candidates
+        candidates = [
+            {"username": "SmartMoneyFX", "source": "tradeinfo", "confidence": 1.0,
+             "min_copy_amount": 200, "total_return_pct": 0.0, "risk_score": 5.0},
+        ]
+        eligible, excluded = filter_candidates(candidates, set(), available_balance=5000)
+        assert len(eligible) == 0
+        reasons = " ".join(excluded[0].get("exclusion_reasons", []))
+        assert "no_valid" in reasons
 
 # ── PortfolioEngine ────────────────────────────────────────────────
 

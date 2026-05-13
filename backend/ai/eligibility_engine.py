@@ -67,15 +67,15 @@ def has_substance(trader: Dict) -> Tuple[bool, Optional[str]]:
     if copied_positions is not None and copied_positions == 0:
         reasons.append("no_copied_positions")
 
-    # Reject fallback/default sources with no real return data
+    # Reject any source with zero return data — no substance
     has_any_return = any(
         (trader.get(k) or 0) != 0
         for k in ("total_return_pct", "avg_monthly_return", "avg_return", "return_12m", "return_6m")
     )
-    if source in ("fallback", "default", "unknown") and not has_any_return:
+    if not has_any_return:
         reasons.append("no_valid_data")
 
-    # Reject unknown/fallback source entirely — no real data backing
+    # Reject unknown/fallback/default source entirely
     if source in ("fallback", "default", "unknown"):
         reasons.append(f"invalid_source={source}")
 
@@ -97,15 +97,15 @@ def has_reliable_data(trader: Dict) -> Tuple[bool, Optional[str]]:
     confidence = trader.get("confidence", 0.0)
     total_return = trader.get("total_return_pct", 0.0) or 0.0
 
-    # Reject fallback/default/unknown with no real return data
+    # Reject any source with no real return data
     has_any_return = any(
         (trader.get(k) or 0) != 0
         for k in ("total_return_pct", "avg_monthly_return", "avg_return", "return_12m", "return_6m")
     )
-    if source in ("fallback", "default", "unknown") and not has_any_return:
-        return False, "no_valid_data"
+    if not has_any_return and total_return == 0.0:
+        return False, "no_valid_return_data"
 
-    # tradeinfo is always authoritative
+    # tradeinfo with non-zero return is authoritative
     if source == "tradeinfo" or confidence >= 1.0:
         return True, None
 

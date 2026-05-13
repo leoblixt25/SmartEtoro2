@@ -309,8 +309,8 @@ class TestFilterCandidates:
     def test_case_insensitive_matching(self):
         from backend.ai.eligibility_engine import filter_candidates
         candidates = [
-            {"username": "Booker03", "source": "tradeinfo", "confidence": 1.0, "min_copy_amount": 200},
-            {"username": "OTHER", "source": "tradeinfo", "confidence": 1.0, "min_copy_amount": 200},
+            {"username": "Booker03", "source": "tradeinfo", "confidence": 1.0, "min_copy_amount": 200, "total_return_pct": 15.0},
+            {"username": "OTHER", "source": "tradeinfo", "confidence": 1.0, "min_copy_amount": 200, "total_return_pct": 15.0},
         ]
         eligible, excluded = filter_candidates(candidates, {"booker03"}, 5000)
         assert len(eligible) == 1
@@ -320,8 +320,8 @@ class TestFilterCandidates:
     def test_no_holdings_nothing_excluded(self):
         from backend.ai.eligibility_engine import filter_candidates
         candidates = [
-            {"username": "a", "source": "tradeinfo", "confidence": 1.0, "min_copy_amount": 200},
-            {"username": "b", "source": "tradeinfo", "confidence": 1.0, "min_copy_amount": 200},
+            {"username": "a", "source": "tradeinfo", "confidence": 1.0, "min_copy_amount": 200, "total_return_pct": 10.0},
+            {"username": "b", "source": "tradeinfo", "confidence": 1.0, "min_copy_amount": 200, "total_return_pct": 10.0},
         ]
         eligible, excluded = filter_candidates(candidates, set(), 5000)
         assert len(eligible) == 2
@@ -330,8 +330,8 @@ class TestFilterCandidates:
     def test_min_copy_too_high_excluded(self):
         from backend.ai.eligibility_engine import filter_candidates
         candidates = [
-            {"username": "cheap", "source": "tradeinfo", "confidence": 1.0, "min_copy_amount": 100},
-            {"username": "expensive", "source": "tradeinfo", "confidence": 1.0, "min_copy_amount": 20000},
+            {"username": "cheap", "source": "tradeinfo", "confidence": 1.0, "min_copy_amount": 100, "total_return_pct": 10.0},
+            {"username": "expensive", "source": "tradeinfo", "confidence": 1.0, "min_copy_amount": 20000, "total_return_pct": 10.0},
         ]
         eligible, excluded = filter_candidates(candidates, set(), 1500)
         assert len(eligible) == 1
@@ -343,8 +343,8 @@ class TestFilterCandidates:
     def test_all_affordable_none_excluded(self):
         from backend.ai.eligibility_engine import filter_candidates
         candidates = [
-            {"username": "a", "source": "tradeinfo", "confidence": 1.0, "min_copy_amount": 100},
-            {"username": "b", "source": "tradeinfo", "confidence": 1.0, "min_copy_amount": 200},
+            {"username": "a", "source": "tradeinfo", "confidence": 1.0, "min_copy_amount": 100, "total_return_pct": 10.0},
+            {"username": "b", "source": "tradeinfo", "confidence": 1.0, "min_copy_amount": 200, "total_return_pct": 10.0},
         ]
         eligible, excluded = filter_candidates(candidates, set(), 1000)
         assert len(eligible) == 2
@@ -385,7 +385,8 @@ class TestFilterCandidates:
         }]
         eligible, excluded = filter_candidates(candidates, set(), 5000)
         assert len(eligible) == 0
-        assert any("no_return_data" in r or "low_confidence" in r for r in excluded[0]["exclusion_reasons"])
+        reasons = ",".join(excluded[0].get("exclusion_reasons", []))
+        assert "no_valid" in reasons or "no_return" in reasons
 
     def test_no_affordable_traders_returns_empty(self):
         from backend.ai.eligibility_engine import filter_candidates
