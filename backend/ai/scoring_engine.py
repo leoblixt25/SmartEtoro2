@@ -246,6 +246,7 @@ def calculate_growth_score(trader: dict) -> dict:
         )
         return {
             "score": 0.0,
+            "final_score": 0.0,
             "confidence_score": _compute_confidence(trader),
             "source": source,
             "source_valid": False,
@@ -270,6 +271,7 @@ def calculate_growth_score(trader: dict) -> dict:
     if _has_return_data(trader) and r12 < GROWTH_FILTER_MIN_12M:
         result = {
             "score": 0.0,
+            "final_score": 0.0,
             "confidence_score": confidence,
             "source": source,
             "source_valid": True,
@@ -318,6 +320,7 @@ def calculate_growth_score(trader: dict) -> dict:
 
     result = {
         "score": score,
+        "final_score": score,
         "confidence_score": confidence,
         "source": source,
         "source_valid": True,

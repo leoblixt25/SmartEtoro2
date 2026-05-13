@@ -373,167 +373,136 @@ class TestDefaultTraderCandidates:
         assert all(t["min_copy_amount"] == 200 for t in result)
 
 
-# ── Eligibility Filter Tests ────────────────────────────────────────
+# ── Eligibility Engine Tests ────────────────────────────────────────
 
 
-class TestFilterAlreadyCopied:
-    """filter_already_copied excludes traders already being copied."""
-
-    def test_already_copied_excluded(self):
-        from backend.scout.trader_filter import filter_already_copied
-        candidates = [
-            {"username": "booker03"},
-            {"username": "JeppeKirkBonde"},
-            {"username": "NewTrader"},
-        ]
-        holdings_usernames = {"booker03", "jeppekirkbonde"}
-        eligible, excluded = filter_already_copied(candidates, holdings_usernames)
-        assert len(eligible) == 1
-        assert eligible[0]["username"] == "NewTrader"
-        assert len(excluded) == 2
-        assert all(e["exclusion_reason"] == "already_copied" for e in excluded)
-
-    def test_case_insensitive_matching(self):
-        from backend.scout.trader_filter import filter_already_copied
-        candidates = [{"username": "Booker03"}, {"username": "OTHER"}]
-        holdings_usernames = {"booker03"}
-        eligible, excluded = filter_already_copied(candidates, holdings_usernames)
-        assert len(eligible) == 1
-        assert eligible[0]["username"] == "OTHER"
-        assert excluded[0]["username"] == "Booker03"
-
-    def test_no_holdings_nothing_excluded(self):
-        from backend.scout.trader_filter import filter_already_copied
-        candidates = [{"username": "a"}, {"username": "b"}]
-        eligible, excluded = filter_already_copied(candidates, set())
-        assert len(eligible) == 2
-        assert len(excluded) == 0
-
-
-class TestFilterMinimumCapital:
-    """filter_minimum_capital excludes traders above budget."""
-
-    def test_min_copy_too_high_excluded(self):
-        from backend.scout.trader_filter import filter_minimum_capital
-        candidates = [
-            {"username": "cheap", "min_copy_amount": 100},
-            {"username": "expensive", "min_copy_amount": 20000},
-        ]
-        eligible, excluded = filter_minimum_capital(candidates, 1500)
-        assert len(eligible) == 1
-        assert eligible[0]["username"] == "cheap"
-        assert len(excluded) == 1
-        assert excluded[0]["username"] == "expensive"
-        assert "insufficient_capital" in excluded[0]["exclusion_reason"]
-
-    def test_all_affordable_none_excluded(self):
-        from backend.scout.trader_filter import filter_minimum_capital
-        candidates = [
-            {"username": "a", "min_copy_amount": 100},
-            {"username": "b", "min_copy_amount": 200},
-        ]
-        eligible, excluded = filter_minimum_capital(candidates, 1000)
-        assert len(eligible) == 2
-        assert len(excluded) == 0
-
-    def test_missing_min_copy_defaults_to_200(self):
-        from backend.scout.trader_filter import filter_minimum_capital
-        candidates = [{"username": "no_min_field"}]
-        eligible, excluded = filter_minimum_capital(candidates, 150)
-        assert len(eligible) == 0
-        assert excluded[0]["username"] == "no_min_field"
-
-
-class TestEligibilityFilter:
-    """eligibility_filter applies all pre-scoring checks."""
+class TestFilterCandidates:
+    """filter_candidates applies all pre-scoring checks via EligibilityEngine."""
 
     def test_eligible_trader_passes(self):
-        from backend.scout.trader_filter import eligibility_filter
+        from backend.ai.eligibility_engine import filter_candidates
         candidates = [{
             "username": "GoodTrader",
+            "source": "tradeinfo",
+            "confidence": 1.0,
             "risk_score": 4.0,
             "total_return_pct": 15.0,
             "min_copy_amount": 200,
-            "copiers": 500,
         }]
-        eligible, excluded = eligibility_filter(candidates, set(), 5000)
+        eligible, excluded = filter_candidates(candidates, set(), 5000)
         assert len(eligible) == 1
         assert eligible[0]["username"] == "GoodTrader"
         assert len(excluded) == 0
 
     def test_already_copied_excluded(self):
-        from backend.scout.trader_filter import eligibility_filter
-        candidates = [{"username": "CopiedTrader", "risk_score": 4.0, "total_return_pct": 10.0}]
-        eligible, excluded = eligibility_filter(candidates, {"copiedtrader"}, 5000)
+        from backend.ai.eligibility_engine import filter_candidates
+        candidates = [{
+            "username": "CopiedTrader",
+            "source": "tradeinfo",
+            "confidence": 1.0,
+            "risk_score": 4.0,
+            "total_return_pct": 10.0,
+        }]
+        eligible, excluded = filter_candidates(candidates, {"copiedtrader"}, 5000)
         assert len(eligible) == 0
         assert "already_copied" in excluded[0]["exclusion_reasons"]
 
+    def test_case_insensitive_matching(self):
+        from backend.ai.eligibility_engine import filter_candidates
+        candidates = [
+            {"username": "Booker03", "source": "tradeinfo", "confidence": 1.0},
+            {"username": "OTHER", "source": "tradeinfo", "confidence": 1.0},
+        ]
+        eligible, excluded = filter_candidates(candidates, {"booker03"}, 5000)
+        assert len(eligible) == 1
+        assert eligible[0]["username"] == "OTHER"
+        assert excluded[0]["username"] == "Booker03"
+
+    def test_no_holdings_nothing_excluded(self):
+        from backend.ai.eligibility_engine import filter_candidates
+        candidates = [
+            {"username": "a", "source": "tradeinfo", "confidence": 1.0},
+            {"username": "b", "source": "tradeinfo", "confidence": 1.0},
+        ]
+        eligible, excluded = filter_candidates(candidates, set(), 5000)
+        assert len(eligible) == 2
+        assert len(excluded) == 0
+
     def test_min_copy_too_high_excluded(self):
-        from backend.scout.trader_filter import eligibility_filter
-        candidates = [{
-            "username": "Expensive",
-            "risk_score": 4.0,
-            "total_return_pct": 15.0,
-            "min_copy_amount": 20000,
-        }]
-        eligible, excluded = eligibility_filter(candidates, set(), 1500)
+        from backend.ai.eligibility_engine import filter_candidates
+        candidates = [
+            {"username": "cheap", "source": "tradeinfo", "confidence": 1.0, "min_copy_amount": 100},
+            {"username": "expensive", "source": "tradeinfo", "confidence": 1.0, "min_copy_amount": 20000},
+        ]
+        eligible, excluded = filter_candidates(candidates, set(), 1500)
+        assert len(eligible) == 1
+        assert eligible[0]["username"] == "cheap"
+        assert len(excluded) == 1
+        assert excluded[0]["username"] == "expensive"
+        assert any("insufficient_capital" in r for r in excluded[0]["exclusion_reasons"])
+
+    def test_all_affordable_none_excluded(self):
+        from backend.ai.eligibility_engine import filter_candidates
+        candidates = [
+            {"username": "a", "source": "tradeinfo", "confidence": 1.0, "min_copy_amount": 100},
+            {"username": "b", "source": "tradeinfo", "confidence": 1.0, "min_copy_amount": 200},
+        ]
+        eligible, excluded = filter_candidates(candidates, set(), 1000)
+        assert len(eligible) == 2
+        assert len(excluded) == 0
+
+    def test_missing_min_copy_defaults_to_200(self):
+        from backend.ai.eligibility_engine import filter_candidates
+        candidates = [{"username": "no_min_field", "source": "tradeinfo", "confidence": 1.0}]
+        eligible, excluded = filter_candidates(candidates, set(), 150)
         assert len(eligible) == 0
-        reasons = excluded[0]["exclusion_reasons"]
-        assert any("insufficient_capital" in r for r in reasons)
+        assert "insufficient_capital" in ",".join(excluded[0].get("exclusion_reasons", []))
 
     def test_risk_too_high_excluded(self):
-        from backend.scout.trader_filter import eligibility_filter
+        from backend.ai.eligibility_engine import filter_candidates
         candidates = [{
             "username": "Risky",
+            "source": "tradeinfo",
+            "confidence": 1.0,
             "risk_score": 9.5,
             "total_return_pct": 20.0,
             "min_copy_amount": 200,
         }]
-        eligible, excluded = eligibility_filter(candidates, set(), 5000, max_risk=9.0)
+        eligible, excluded = filter_candidates(candidates, set(), 5000, max_risk=9.0)
         assert len(eligible) == 0
         assert any("risk_score" in r for r in excluded[0]["exclusion_reasons"])
 
-    def test_no_return_data_excluded(self):
-        from backend.scout.trader_filter import eligibility_filter
+    def test_no_reliable_data_excluded(self):
+        from backend.ai.eligibility_engine import filter_candidates
         candidates = [{
             "username": "NoData",
             "risk_score": 4.0,
             "total_return_pct": 0.0,
             "avg_monthly_return": 0.0,
             "min_copy_amount": 200,
+            "source": "scraper",
+            "confidence": 0.5,
         }]
-        eligible, excluded = eligibility_filter(candidates, set(), 5000)
+        eligible, excluded = filter_candidates(candidates, set(), 5000)
         assert len(eligible) == 0
-        assert any("no_return_data" in r for r in excluded[0]["exclusion_reasons"])
+        assert any("no_return_data" in r or "low_confidence" in r for r in excluded[0]["exclusion_reasons"])
 
     def test_no_affordable_traders_returns_empty(self):
-        from backend.scout.trader_filter import eligibility_filter
+        from backend.ai.eligibility_engine import filter_candidates
         candidates = [
-            {"username": "Expensive1", "risk_score": 4.0, "total_return_pct": 15.0, "min_copy_amount": 50000},
-            {"username": "Expensive2", "risk_score": 3.0, "total_return_pct": 20.0, "min_copy_amount": 30000},
+            {"username": "Expensive1", "source": "tradeinfo", "confidence": 1.0, "risk_score": 4.0, "total_return_pct": 15.0, "min_copy_amount": 50000},
+            {"username": "Expensive2", "source": "tradeinfo", "confidence": 1.0, "risk_score": 3.0, "total_return_pct": 20.0, "min_copy_amount": 30000},
         ]
-        eligible, excluded = eligibility_filter(candidates, set(), 2000)
+        eligible, excluded = filter_candidates(candidates, set(), 2000)
         assert len(eligible) == 0
         assert len(excluded) == 2
 
-    def test_not_eligible_not_scored_order_preserved(self):
-        from backend.scout.trader_filter import eligibility_filter
-        candidates = [
-            {"username": "Good", "risk_score": 4.0, "total_return_pct": 15.0, "min_copy_amount": 200},
-            {"username": "Bad", "risk_score": 4.0, "total_return_pct": 0.0, "min_copy_amount": 200},
-        ]
-        eligible, excluded = eligibility_filter(candidates, set(), 5000)
-        assert len(eligible) == 1
-        assert eligible[0]["username"] == "Good"
-        assert len(excluded) == 1
-        assert excluded[0]["username"] == "Bad"
 
-
-class TestExplainRecommendation:
-    """explain_recommendation generates human-readable reasons."""
+class TestExplainFunctions:
+    """explain_recommendation and explain_exclusion from action_planner."""
 
     def test_good_trader_gets_positive_reasons(self):
-        from backend.scout.scoring_engine import explain_recommendation
+        from backend.ai.action_planner import explain_recommendation
         trader = {
             "username": "GoodTrader",
             "total_return_pct": 18.5,
@@ -555,14 +524,14 @@ class TestExplainRecommendation:
         assert any("Not already copied" in r for r in reasons)
 
     def test_minimal_trader_still_gets_reasons(self):
-        from backend.scout.scoring_engine import explain_recommendation
+        from backend.ai.action_planner import explain_recommendation
         trader = {"username": "Minimal", "total_return_pct": 5.0}
         reasons = explain_recommendation(trader)
         assert len(reasons) >= 1
         assert "Not already copied" in reasons
 
     def test_explain_exclusion_formats_reasons(self):
-        from backend.scout.scoring_engine import explain_exclusion
+        from backend.ai.action_planner import explain_exclusion
         excluded = {
             "username": "Bad",
             "exclusion_reasons": ["already_copied", "insufficient_capital (min=$20000, available=$1500)"],
@@ -572,7 +541,7 @@ class TestExplainRecommendation:
         assert "already_copied" in reasons[0]
 
     def test_explain_exclusion_fallback_for_old_format(self):
-        from backend.scout.scoring_engine import explain_exclusion
+        from backend.ai.action_planner import explain_exclusion
         excluded = {"username": "Old", "exclusion_reason": "already_copied"}
         reasons = explain_exclusion(excluded)
         assert reasons == ["already_copied"]

@@ -239,26 +239,41 @@ async def cmd_scout(update: Update, args: List[str], bot) -> None:
             holdings = get_current_holdings(db, p.id)
             logger.info(f"Scout: loaded {len(holdings)} active traders for portfolio {p.id}")
 
-            from backend.scout.trader_scout import get_scout_runner
-            runner = get_scout_runner()
+            from backend.ai.eligibility_engine import filter_candidates
+            from backend.ai.scoring_engine import scout_holdings, rank_candidates
+            from backend.ai.action_planner import format_display
+            active_usernames = {h.get("username", "").lower() for h in holdings if h.get("username")}
             available_balance = p.available_cash or p.total_value * 0.1
-            report = await runner.run(holdings, candidates, available_balance=available_balance)
+            eligible, excluded = filter_candidates(candidates, active_usernames, available_balance)
+            hs = scout_holdings(holdings)
+            discovery_scored = rank_candidates(holdings, eligible)
+            holdings_ranked = sorted(hs.get("scored", []), key=lambda x: x.get("score", 0), reverse=True)
+            weakest = hs.get("weakest")
+            top_swaps = discovery_scored[:3] if discovery_scored else []
+            avg_score = hs.get("avg_score", 0)
+
+            # Build action plan for display
+            from backend.ai.portfolio_engine import analyze_portfolio
+            from backend.ai.action_planner import build_action_plan
+            portfolio_analysis = analyze_portfolio(holdings, total_value=p.total_value or 0, available_cash=p.available_cash or 0)
+            action_plan = build_action_plan(portfolio_analysis, discovery_scored, excluded, holdings)
+            display = format_display(action_plan)
 
             # ── Optional AI narrator (1 sentence) ──
             ai_summary = None
             try:
                 from backend.ai.groq_scout import GroqScout
                 groq = GroqScout()
-                if groq.enabled and report.get("holdings_ranked"):
+                if groq.enabled and holdings_ranked:
                     prompt = (
                         "Summarise this portfolio scout report in ONE plain-English sentence "
                         "(max 20 words). No formatting, no JSON.\n\n"
-                        f"Weakest trader: {report['weakest']['username']} "
-                        f"(score {report['weakest']['final_score']}/100).\n"
-                        f"Best swap: {report['top_swaps'][0]['username']} "
-                        f"(score {report['top_swaps'][0]['final_score']}/100)"
-                        if report.get("top_swaps") else ""
-                        f"\nPortfolio avg score: {report['avg_score']}/100."
+                        f"Weakest trader: {weakest['username']} "
+                        f"(score {weakest['score']}/100).\n"
+                        f"Best swap: {top_swaps[0]['username']} "
+                        f"(score {top_swaps[0]['score']}/100)"
+                        if top_swaps else ""
+                        f"\nPortfolio avg score: {avg_score}/100."
                     )
                     import asyncio
                     def _call():
@@ -274,7 +289,6 @@ async def cmd_scout(update: Update, args: List[str], bot) -> None:
             except Exception as e:
                 logger.warning("AI narrator unavailable for scout: %s", e)
 
-            display = report.get("display", "Scout report unavailable.")
             if ai_summary:
                 display += f"\n\n_{ai_summary}_"
 

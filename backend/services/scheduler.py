@@ -501,7 +501,8 @@ class SchedulerService:
         from backend.database.connection import db_session
         from backend.database.models import Portfolio, Alert, AlertType
         from backend.services.market_data import get_current_holdings, fetch_market_news, discover_top_traders
-        from backend.scout.trader_scout import get_scout_runner
+        from backend.ai.eligibility_engine import filter_candidates
+        from backend.ai.scoring_engine import scout_holdings, rank_candidates
         from backend.services.rebalance_service import calculate_rebalance_orders
 
         try:
@@ -516,14 +517,19 @@ class SchedulerService:
                         logger.info("Skipping market scout — no active traders for portfolio %d", portfolio.id)
                         continue
 
-                    runner = get_scout_runner()
+                    active_usernames = {h.get("username", "").lower() for h in holdings if h.get("username")}
                     available_balance = portfolio.available_cash or portfolio.total_value * 0.1
-                    report = await runner.run(holdings, candidates, available_balance=available_balance)
+                    eligible, _ = filter_candidates(candidates, active_usernames, available_balance)
 
-                    holdings_ranked = report.get("holdings_ranked", [])
-                    top_swaps = report.get("top_swaps", [])
-                    weakest = report.get("weakest")
-                    avg_score = report.get("avg_score", 0)
+                    hs = scout_holdings(holdings)
+                    holdings_ranked = sorted(
+                        hs.get("scored", []),
+                        key=lambda x: x.get("score", 0),
+                        reverse=True,
+                    )
+                    top_swaps = rank_candidates(holdings, eligible, top_n=3)
+                    weakest = hs.get("weakest")
+                    avg_score = hs.get("avg_score", 0)
 
                     # ── Determine if action is needed ──
                     action_required = bool(weakest and weakest["final_score"] < 50 and top_swaps)

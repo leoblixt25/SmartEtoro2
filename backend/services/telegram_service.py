@@ -597,9 +597,10 @@ class TelegramBot:
         from backend.database.connection import db_session
         from backend.database.models import Portfolio
         from backend.services.market_data import get_current_holdings, fetch_market_news, discover_top_traders
-        from backend.scout.trader_scout import get_scout_runner
-        from backend.scout.trader_filter import summarize_constraints
-        from backend.services.allocation_logic import calculate_equal_weight_target
+        from backend.ai.eligibility_engine import filter_candidates
+        from backend.ai.scoring_engine import scout_holdings, rank_candidates
+        from backend.ai.portfolio_engine import analyze_portfolio
+        from backend.ai.action_planner import build_action_plan, format_display, summarize_constraints
 
         await self._reply(update, "🔍 Running Growth Scout...")
 
@@ -616,13 +617,23 @@ class TelegramBot:
                 holdings = get_current_holdings(db, p.id)
                 logger.info(f"Scout: loaded {len(holdings)} active traders for portfolio {p.id}")
 
-                runner = get_scout_runner()
+                active_usernames = {h.get("username", "").lower() for h in holdings if h.get("username")}
                 available_balance = p.available_cash or p.total_value * 0.1
-                report = await runner.run(holdings, candidates, available_balance=available_balance)
-                holdings_ranked = report.get("holdings_ranked", [])
-                top_swaps = report.get("top_swaps", [])
-                weakest = report.get("weakest")
-                avg_score = report.get("avg_score", 0)
+                eligible, excluded = filter_candidates(candidates, active_usernames, available_balance)
+
+                hs = scout_holdings(holdings)
+                discovery_scored = rank_candidates(holdings, eligible)
+                holdings_ranked = sorted(
+                    hs.get("scored", []), key=lambda x: x.get("score", 0), reverse=True,
+                )
+                weakest = hs.get("weakest")
+                avg_score = hs.get("avg_score", 0)
+                top_swaps = discovery_scored[:3] if discovery_scored else []
+
+                portfolio_analysis = analyze_portfolio(
+                    holdings, total_value=p.total_value or 0, available_cash=p.available_cash or 0,
+                )
+                action_plan = build_action_plan(portfolio_analysis, discovery_scored, excluded, holdings)
 
                 # ── AI narrator (optional) ──
                 ai_summary = None
@@ -638,7 +649,7 @@ class TelegramBot:
                             "(max 20 words). No formatting, no JSON.\n\n"
                             f"Active traders: {trader_count}.\n"
                             f"Weakest trader: {weakest['username']} "
-                            f"(score {weakest['final_score']}/100).\n"
+                            f"(score {weakest['score']}/100).\n"
                             f"Best swap: {best_name}.\n"
                             f"Portfolio avg score: {avg_score}/100."
                         )
@@ -658,14 +669,13 @@ class TelegramBot:
                 # ── Build display lines ──
                 lines = []
 
-                lines.append("<b>📊 Weighted Growth Scores</b>")
+                lines.append("<b>📊 Decision Dashboard</b>")
                 if holdings_ranked:
                     for s in holdings_ranked:
-                        icon = "🟢" if s["final_score"] >= 60 else ("🟡" if s["final_score"] >= 30 else "🔴")
+                        score = s.get("score", 0) or s.get("final_score", 0)
+                        icon = "🟢" if score >= 60 else ("🟡" if score >= 30 else "🔴")
                         lines.append(
-                            f"{icon} <b>{s['username']}</b> — {s['final_score']}/100 "
-                            f"(P:{s['performance_score']} R:{s['risk_score_category']} "
-                            f"S:{s['stability_score']})"
+                            f"{icon} <b>{s['username']}</b> — {score}/100"
                         )
                 else:
                     lines.append("  No active copied traders found.")
@@ -677,15 +687,15 @@ class TelegramBot:
 
                 # Diversification check (before weakest-link check)
                 is_under_diversified = len(holdings_ranked) <= 1
-                candidates_ranked = report.get("candidates_ranked", [])
 
                 if is_under_diversified:
                     lines.append(f"\n⚠️ <b>Critically Under-Diversified</b> — only {len(holdings_ranked)} trader(s)")
-                    if candidates_ranked:
+                    if discovery_scored:
                         lines.append(f"Consider adding traders from the discovery list below.")
-                elif weakest and weakest["final_score"] < 50 and top_swaps:
+                elif weakest and weakest.get("score", 0) < 50 and top_swaps:
+                    ws = weakest.get("score", 0)
                     lines.append(
-                        f"\n⚠️ <b>Weakest Link:</b> {weakest['username']} ({weakest['final_score']}/100)"
+                        f"\n⚠️ <b>Weakest Link:</b> {weakest['username']} ({ws}/100)"
                     )
                     warnings = summarize_constraints(weakest)
                     for w in warnings:
@@ -694,9 +704,9 @@ class TelegramBot:
                     lines.append(f"\n<b>Top Swap Recommendation</b>")
                     for i, swap in enumerate(top_swaps[:3], 1):
                         lines.append(
-                            f"{i}. <b>{swap['username']}</b> — {swap['final_score']}/100 "
-                            f"(return {swap['total_return_pct']:.1f}%, "
-                            f"risk {swap['risk_score']:.1f})"
+                            f"{i}. <b>{swap['username']}</b> — {swap.get('score', 0)}/100 "
+                            f"(return {swap.get('total_return_pct', 0):.1f}%, "
+                            f"risk {swap.get('risk_score', 5):.1f})"
                         )
                     lines.append(
                         f"\nReply <code>/swap {weakest['username']} {top_swaps[0]['username']}</code>"
@@ -705,34 +715,32 @@ class TelegramBot:
                     lines.append(f"\n✅ <b>Portfolio Healthy</b> — all traders score well")
 
                 # Top 3 Discovery Candidates
-                if candidates_ranked:
-                    display_candidates = candidates_ranked[:3]
+                if discovery_scored:
+                    display_candidates = discovery_scored[:3]
                     lines.append(f"\n<b>🔍 Top 3 Discovery</b>")
                     for i, c in enumerate(display_candidates, 1):
                         lines.append(
-                            f"{i}. <b>{c['username']}</b> — {c['final_score']}/100 "
-                            f"(return {c['total_return_pct']:.1f}%, "
-                            f"risk {c['risk_score']:.1f})"
+                            f"{i}. <b>{c['username']}</b> — {c.get('score', 0)}/100 "
+                            f"(return {c.get('total_return_pct', 0):.1f}%, "
+                            f"risk {c.get('risk_score', 5):.1f})"
                         )
 
-                # Allocation plan: combine best holdings + discovery to always show 3-way split
-                plan_traders = list(holdings_ranked)
-                existing_names = {h["username"] for h in plan_traders}
-                for c in candidates_ranked:
-                    if len(plan_traders) >= 3:
-                        break
-                    if c["username"] not in existing_names:
-                        plan_traders.append(c)
-                if plan_traders:
-                    target = calculate_equal_weight_target(plan_traders[:3], p.total_value or 10000)
+                # Allocation plan from action_plan
+                eq_plan = action_plan.get("recommendations", {}).get("equal_weight_plan", [])
+                if eq_plan:
+                    from backend.services.allocation_logic import calculate_equal_weight_target
                     from backend.services.rebalance_service import calculate_rebalance_orders
+                    existing_names = {h.get("username") for h in holdings if h.get("username")}
+                    target = calculate_equal_weight_target(
+                        eq_plan[:3], p.total_value or 10000,
+                    )
                     current_positions = [
                         {"username": h["username"],
                          "current_value": h.get("allocation_pct", 0) * 0.01 * (p.total_value or 10000)}
                         for h in holdings
                     ]
                     orders = calculate_rebalance_orders(
-                        p.total_value or 0, current_positions, target
+                        p.total_value or 0, current_positions, target,
                     )
                     lines.append(f"\n---\n<b>📊 33.3% Equal-Weight Plan</b>")
                     for a in target["target_portfolio"]:
