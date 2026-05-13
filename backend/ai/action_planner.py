@@ -1,0 +1,268 @@
+"""
+Action Planner — builds the dashboard-ready output from all engine results.
+
+Answers:
+  - What changed?
+  - Who is eligible now?
+  - What should I do next?
+  - Why was each trader included or excluded?
+
+Output sections:
+  Active Portfolio   — current copied traders with allocation and risk
+  Discovery          — new eligible traders ranked by score
+  Excluded           — why each trader was rejected (grouped by reason)
+  Recommendations    — suggested swaps and equal-weight plan
+  Summary            — compact debug report
+"""
+
+import logging
+from typing import Dict, List
+
+logger = logging.getLogger(__name__)
+
+TARGET_COUNT = 3
+TARGET_ALLOCATION_PCT = round(100.0 / TARGET_COUNT, 1)  # 33.3
+
+
+def build_action_plan(
+    portfolio_analysis: Dict,
+    discovery_scored: List[Dict],
+    excluded: List[Dict],
+    holdings: List[Dict],
+) -> Dict:
+    """Build the complete action plan from all engine outputs.
+
+    Args:
+        portfolio_analysis: Output from portfolio_engine.analyze_portfolio().
+        discovery_scored: Scored discovery candidates (from scoring_engine).
+        excluded: Excluded candidates with reasons (from eligibility_engine).
+        holdings: Raw active holdings list.
+
+    Returns:
+        Dict with dashboard-ready sections.
+    """
+    # ── 1. Active Portfolio ──
+    active_section = []
+    for h in portfolio_analysis.get("holdings_detail", []):
+        active_section.append({
+            "username": h["username"],
+            "allocation_pct": h["allocation_pct"],
+            "value_pct": h["allocation_pct"],
+            "risk_score": h["risk_score"],
+            "total_return_pct": h["total_return_pct"],
+            "final_score": h["final_score"],
+            "max_drawdown": h["max_drawdown"],
+        })
+
+    # ── 2. Discovery (new eligible, ranked) ──
+    discovery_ranked = sorted(
+        [s for s in discovery_scored if s.get("score", 0) > 0],
+        key=lambda x: x.get("score", 0),
+        reverse=True,
+    )
+    discovery_section = []
+    for s in discovery_ranked:
+        discovery_section.append({
+            "username": s.get("username", "?"),
+            "score": s.get("score", 0),
+            "source": s.get("source", "unknown"),
+            "confidence": s.get("confidence_score", 0),
+            "source_valid": s.get("source_valid", False),
+            "explanation": s.get("explanation", []),
+            "details": {
+                "return_12m": s.get("details", {}).get("return_12m", 0),
+                "risk_score": s.get("details", {}).get("risk_score", 0),
+                "max_drawdown": s.get("details", {}).get("max_drawdown", 0),
+            },
+        })
+
+    # ── 3. Excluded (grouped by reason) ──
+    excluded_grouped: Dict[str, List[str]] = {}
+    for e in excluded:
+        reasons = e.get("exclusion_reasons", [])
+        for r in reasons:
+            key = r.split("(")[0].strip()
+            if key not in excluded_grouped:
+                excluded_grouped[key] = []
+            excluded_grouped[key].append(e.get("username", "?"))
+
+    excluded_section = []
+    for reason, usernames in sorted(excluded_grouped.items()):
+        excluded_section.append({
+            "reason": reason,
+            "count": len(usernames),
+            "traders": sorted(usernames),
+        })
+
+    # ── 4. Recommendations ──
+    recommended_swap = None
+    equal_weight_plan = []
+    weakest = portfolio_analysis.get("weakest")
+
+    if discovery_ranked and weakest:
+        best = discovery_ranked[0]
+        if best.get("score", 0) > weakest.get("final_score", 0):
+            recommended_swap = {
+                "replace": weakest["username"],
+                "with": best["username"],
+                "reason": (
+                    f"{best['username']} ({best['score']}/100) "
+                    f"scores higher than {weakest['username']} "
+                    f"({weakest['final_score']}/100)"
+                ),
+                "delta": round(best["score"] - weakest["final_score"], 1),
+            }
+
+    # Equal-weight plan: combine current weakest + top 2 discovery
+    eq_targets = []
+    if weakest:
+        eq_targets.append({
+            "username": weakest["username"],
+            "allocation_pct": TARGET_ALLOCATION_PCT,
+            "source": "current",
+        })
+    for s in discovery_ranked[:2]:
+        eq_targets.append({
+            "username": s["username"],
+            "allocation_pct": TARGET_ALLOCATION_PCT,
+            "source": "discovery",
+            "score": s["score"],
+        })
+
+    if eq_targets:
+        equal_weight_plan = eq_targets[:3]
+        # Pad with more discovery if less than 3
+        while len(equal_weight_plan) < 3 and len(discovery_ranked) >= len(equal_weight_plan) + 1:
+            idx = len(equal_weight_plan)
+            if idx < len(discovery_ranked):
+                equal_weight_plan.append({
+                    "username": discovery_ranked[idx]["username"],
+                    "allocation_pct": TARGET_ALLOCATION_PCT,
+                    "source": "discovery",
+                    "score": discovery_ranked[idx]["score"],
+                })
+            else:
+                break
+
+    # ── 5. Summary ──
+    total_scanned = (
+        len(active_section)
+        + len(discovery_section)
+        + sum(g["count"] for g in excluded_section)
+    )
+
+    summary = (
+        f"Portfolio: {len(active_section)} active, "
+        f"{len(discovery_section)} eligible, "
+        f"{sum(g['count'] for g in excluded_section)} excluded, "
+        f"{total_scanned} total scanned. "
+        f"{'Diversified' if not portfolio_analysis.get('under_diversified', True) else 'Under-diversified'}. "
+        f"{'Concentration risk' if portfolio_analysis.get('concentration_risk', False) else 'No concentration risk'}. "
+    )
+    if recommended_swap:
+        summary += f"Swap {recommended_swap['replace']} -> {recommended_swap['with']} (delta +{recommended_swap['delta']})."
+
+    result = {
+        "active_portfolio": active_section,
+        "discovery": discovery_section,
+        "excluded": excluded_section,
+        "recommendations": {
+            "recommended_swap": recommended_swap,
+            "equal_weight_plan": equal_weight_plan,
+        },
+        "summary": summary,
+        "debug": {
+            "active_count": len(active_section),
+            "eligible_count": len(discovery_section),
+            "excluded_count": sum(g["count"] for g in excluded_section),
+            "total_scanned": total_scanned,
+            "under_diversified": portfolio_analysis.get("under_diversified", True),
+            "concentration_risk": portfolio_analysis.get("concentration_risk", False),
+            "avg_score": portfolio_analysis.get("avg_score", 0),
+        },
+    }
+
+    logger.info("Action plan built: %s", summary)
+    return result
+
+
+def format_display(action_plan: Dict) -> str:
+    """Format the action plan into a Telegram/console-ready display string."""
+    lines = []
+
+    # Header
+    lines.append("\U0001f4ca **Decision Dashboard**")
+    lines.append("")
+
+    # Active Portfolio
+    active = action_plan.get("active_portfolio", [])
+    lines.append(f"**Active Portfolio ({len(active)}):**")
+    if active:
+        for t in active:
+            score = t.get("final_score", 0)
+            icon = "\U0001f7e2" if score >= 60 else ("\U0001f7e1" if score >= 30 else "\U0001f534")
+            lines.append(
+                f"  {icon} {t['username']} \u2014 {score}/100"
+                f" (alloc {t['allocation_pct']:.1f}%, risk {t['risk_score']:.1f})"
+            )
+    else:
+        lines.append("  No active traders.")
+    lines.append("")
+
+    # Discovery
+    discovery = action_plan.get("discovery", [])
+    lines.append(f"**New Eligible Traders ({len(discovery)}):**")
+    if discovery:
+        for i, s in enumerate(discovery[:5], 1):
+            expl = s.get("explanation", [])
+            expl_str = f" \u2014 {'; '.join(str(e) for e in expl[:3])}" if expl else ""
+            lines.append(
+                f"  {i}. {s['username']} \u2014 {s['score']}/100"
+                f" (src={s['source']}, conf={s['confidence']}){expl_str}"
+            )
+        if len(discovery) > 5:
+            lines.append(f"  ... and {len(discovery) - 5} more")
+    else:
+        lines.append("  No eligible traders found.")
+    lines.append("")
+
+    # Excluded
+    excluded = action_plan.get("excluded", [])
+    if excluded:
+        lines.append(f"**Excluded ({sum(g['count'] for g in excluded)}):**")
+        for g in excluded[:4]:
+            lines.append(f"  \u274c {g['reason']} ({g['count']}): {', '.join(g['traders'][:3])}")
+            if len(g['traders']) > 3:
+                lines.append(f"    ... and {len(g['traders']) - 3} more")
+        if len(excluded) > 4:
+            lines.append(f"  ... and {len(excluded) - 4} other exclusion reasons")
+        lines.append("")
+
+    # Recommendations
+    recs = action_plan.get("recommendations", {})
+    swap = recs.get("recommended_swap")
+    eq_plan = recs.get("equal_weight_plan", [])
+
+    if swap:
+        lines.append("\U0001f3c6 **Recommended Swap:**")
+        lines.append(f"  \U0001f519 {swap['replace']} \u2192 {swap['with']}")
+        lines.append(f"  {swap['reason']}")
+        lines.append("")
+
+    if eq_plan:
+        lines.append("**Equal-Weight Plan (target 33.3% each):**")
+        for t in eq_plan:
+            src_tag = "\U0001fa84" if t.get("source") == "discovery" else "\U0001f4cc"
+            lines.append(f"  {src_tag} {t['username']} \u2014 {t['allocation_pct']}%")
+        lines.append("")
+
+    # Summary
+    debug = action_plan.get("debug", {})
+    lines.append(f"**Summary:** {action_plan.get('summary', '')}")
+    lines.append(f"  Avg score: {debug.get('avg_score', 0)}/100")
+    if debug.get("under_diversified"):
+        lines.append("  \u26a0\ufe0f Under-diversified (less than 3 traders)")
+    if debug.get("concentration_risk"):
+        lines.append("  \u26a0\ufe0f Concentration risk (>40% in one trader)")
+
+    return "\n".join(lines)

@@ -867,15 +867,21 @@ class AutomationEngine:
         Both paths close the current trader, wait 60s for cash settlement,
         then start all 3 traders at 33.3% each (risk path replaces ALL three
         with the seed list; scout path keeps current + 2 new).
+
+        Both paths filter out already-copied traders to avoid recommending
+        new copies of traders already in the active portfolio.
         """
         if len(traders) != 1:
             return None
 
         current = traders[0]
+        active_usernames = {t.trader_username.lower() for t in traders if t.trader_username}
         total_value = portfolio.total_value or 10000
         amount_per = round(total_value / 3, 2)
 
         top_swaps = (scored_data or {}).get("top_swaps", []) if scored_data else []
+        # Safety filter: exclude any top_swap that is already an active trader
+        top_swaps = [s for s in top_swaps if s.get("username", "").lower() not in active_usernames]
 
         # rule can be None (called from risk bridge) — use safe defaults
         rule_id = rule.id if rule else 0
@@ -909,7 +915,13 @@ class AutomationEngine:
             )
 
         # Path 2: Risk-triggered — replace ALL 3 from REBALANCE_SEED_LIST
-        seed_list = self.REBALANCE_SEED_LIST[:3]
+        # Filter out any seed traders already in the active portfolio
+        seed_list = [name for name in self.REBALANCE_SEED_LIST if name.lower() not in active_usernames][:3]
+        if len(seed_list) < 3:
+            logger.warning(
+                f"Risk-triggered rebalance: only {len(seed_list)} eligible seed traders "
+                f"after excluding active traders — need 3 for equal split"
+            )
         logger.info(
             f"Risk-triggered rebalance: closing {current.trader_username}, "
             f"splitting into {seed_list} at ${amount_per:,.2f} each"

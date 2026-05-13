@@ -840,10 +840,20 @@ class EToroSyncService:
 
         currency = "EUR" if cp.get("accountCurrencyId") == 2 else "USD"
 
-        logger.info(
-            f"Portfolio total calculated: {total_value} "
-            f"(equity={api_equity}, source={equity_source})"
-        )
+        # ── Validation: compare API equity vs computed total ──
+        if api_equity is not None and api_equity > 0:
+            diff = total_value - api_equity
+            diff_pct = (diff / api_equity) * 100
+            log_level = logger.warning if abs(diff_pct) > 5.0 else logger.info
+            log_level(
+                f"EQUITY CHECK: api_{equity_field}={api_equity:.2f}, "
+                f"computed={total_value:.2f}, diff={diff:.2f} ({diff_pct:+.2f}%)"
+            )
+        else:
+            logger.info(
+                f"EQUITY CHECK: no API equity field found — using computed total={total_value:.2f}"
+            )
+
         logger.info(
             f"  invested={invested}, unrealized_pnl={unrealized_pnl}, "
             f"realized_pnl={realized_pnl}, cash={available_cash}"

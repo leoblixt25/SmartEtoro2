@@ -145,34 +145,48 @@ class SchedulerService:
             with db_session() as db:
                 portfolios = db.query(Portfolio).all()
 
-                # Fetch discovery candidates for growth_swap evaluation
+                # ── Run Decision Pipeline ────────────────────────────────
+                # Uses the new orchestrator: eligibility → portfolio analysis →
+                # discovery separation → scoring → action plan → alerts
+                from backend.ai.orchestrator import run_full_pipeline
+                pipeline_result = {}
                 scored_data = None
                 try:
-                    from backend.services.market_data import discover_top_traders, _default_trader_candidates
-                    from backend.ai.scoring_engine import generate_scout_report
-                    from backend.services.market_data import get_current_holdings
-                    discovery = await discover_top_traders()
-                    # Force fallback if API returned fewer than 3 candidates
-                    if not discovery or len(discovery) < 3:
-                        logger.warning("Discovery returned < 3 candidates — forcing static fallback")
-                        discovery = _default_trader_candidates()
-                    if discovery and portfolios:
-                        holdings = get_current_holdings(db, portfolios[0].id)
-                        if holdings:
-                            scored_data = generate_scout_report(holdings, discovery)
+                    if portfolios:
+                        pipeline_result = await run_full_pipeline(db, portfolios[0].id)
+                        discovery_scored = pipeline_result.get("discovery_scored", [])
+                        portfolio_analysis = pipeline_result.get("portfolio_analysis", {})
+                        # Build scored_data compat dict for automation engine
+                        weakest = portfolio_analysis.get("weakest")
+                        scored_data = {
+                            "top_swaps": discovery_scored,
+                            "weakest": weakest,
+                            "action_required": bool(
+                                weakest and weakest.get("final_score", 100) < 50
+                                and discovery_scored
+                            ),
+                        }
                 except Exception as e:
-                    logger.info(f"Scout data unavailable for rule eval, using fallback (non-fatal): {e}")
+                    logger.warning("Full pipeline failed (%s) — using fallback discovery", e)
                     try:
                         from backend.services.market_data import _default_trader_candidates
-                        from backend.ai.scoring_engine import generate_scout_report
+                        from backend.ai.scoring_engine import generate_scout_report, rank_candidates
                         from backend.services.market_data import get_current_holdings
+                        from backend.ai.eligibility_engine import filter_candidates
+                        from backend.ai.portfolio_engine import get_active_usernames
                         discovery = _default_trader_candidates()
                         if discovery and portfolios:
                             holdings = get_current_holdings(db, portfolios[0].id)
                             if holdings:
-                                scored_data = generate_scout_report(holdings, discovery)
+                                active_usernames = get_active_usernames(holdings)
+                                p = portfolios[0]
+                                bal = p.available_cash or (p.total_value or 0) * 0.1
+                                eligible, _ = filter_candidates(discovery, active_usernames, bal)
+                                if eligible:
+                                    scored_data = generate_scout_report(holdings, eligible)
+                                    pipeline_result = {"discovery_scored": scored_data.get("top_swaps", [])}
                     except Exception as fallback_err:
-                        logger.warning("Scout fallback also failed: %s", fallback_err)
+                        logger.warning("Fallback pipeline also failed: %s", fallback_err)
 
                 for portfolio in portfolios:
                     traders = [t for t in portfolio.copied_traders if t.is_active and not t.is_paused]
@@ -244,6 +258,40 @@ class SchedulerService:
                                         )
                                 except Exception as tg_err:
                                     logger.warning(f"Failed to send Telegram failure notification: {tg_err}")
+
+                # ── Consolidated Debug Report ─────────────────────────────
+                if pipeline_result:
+                    estats = pipeline_result.get("eligibility_stats", {})
+                    action_plan = pipeline_result.get("action_plan", {})
+                    d = action_plan.get("debug", {})
+                    logger.info(
+                        "EVAL REPORT: scanned=%d, active=%d, "
+                        "eligible=%d, excluded=%d, "
+                        "diversified=%s, concentration=%s, "
+                        "avg_score=%.1f, alerts=%d",
+                        estats.get("total_scanned", 0),
+                        estats.get("active_traders", 0),
+                        estats.get("eligible", 0),
+                        estats.get("excluded", 0),
+                        not d.get("under_diversified", True),
+                        d.get("concentration_risk", False),
+                        d.get("avg_score", 0),
+                        len(pipeline_result.get("alerts", [])),
+                    )
+                    if pipeline_result.get("discovery_scored"):
+                        swaps = pipeline_result["discovery_scored"]
+                        top_names = [s.get("username", "?") for s in swaps[:3]]
+                        logger.info("EVAL DISCOVERY: %d swaps, top=%s", len(swaps), top_names)
+                    for portfolio in portfolios:
+                        active_traders = [t for t in portfolio.copied_traders if t.is_active and not t.is_paused]
+                        logger.info(
+                            "EVAL PORTFOLIO %d: state=%s, value=%.2f, cash=%.2f, traders=%s",
+                            portfolio.id,
+                            "recovery" if len(active_traders) <= 1 else ("degraded" if len(active_traders) == 2 else "healthy"),
+                            portfolio.total_value or 0,
+                            portfolio.available_cash or 0,
+                            [t.trader_username for t in active_traders],
+                        )
 
                 # ── Risk → Auto-Rebalance Bridge ──────────────────────────
                 # Check for insufficient_diversification violations and

@@ -1,8 +1,8 @@
 """
-Deterministic High-Growth Scoring Engine
-────────────────────────────────────────────────────────────────────
-Replaces AI-driven /scout with a repeatable, transparent math model.
-Every trader gets a score (0-100) using fixed weights and penalties.
+Deterministic Scoring Engine — single source of truth per trader.
+
+Rule: One trader → one data source. No mixing endpoints.
+If the data source is unreliable, the trader is not scored.
 
 Weights:
   12M Return   35%  — long-term track record
@@ -12,13 +12,19 @@ Weights:
   Consistency  10%  — stable monthly performance
 
 Penalties:
-  Risk > 7                  → subtract 30 points
-  Max Drawdown > 25%        → subtract 20 points
-  12M Return < 10%          → score = 0 (growth filter fails)
+  Risk > 7           → subtract 30 points
+  Max Drawdown > 25% → subtract 20 points
+  12M Return < 10%   → score = 0 (growth filter fails)
+
+Source validation:
+  tradeinfo (confidence=1.0) → authoritative, always score
+  Other sources with confidence >= 0.8 → score normally
+  confidence < 0.8 or zero return from low-confidence → reject
 """
 
 from __future__ import annotations
 import logging
+from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -30,20 +36,42 @@ W_MAX_DRAWDOWN = 0.15
 W_CONSISTENCY = 0.10
 
 # ── Penalties ──────────────────────────────────────────────────────
-PENALTY_RISK_HIGH = 30       # risk > 7
-PENALTY_DRAWDOWN_HIGH = 20   # max_drawdown > 25%
-GROWTH_FILTER_MIN_12M = 10.0 # if 12M return < 10%, score = 0
+PENALTY_RISK_HIGH = 30
+PENALTY_DRAWDOWN_HIGH = 20
+GROWTH_FILTER_MIN_12M = 10.0
+
+# ── Source validation thresholds ───────────────────────────────────
+MIN_CONFIDENCE_TO_SCORE = 0.8
+
+
+def validate_data_source(trader: dict) -> Optional[str]:
+    """Validate that the trader's data comes from a single reliable source.
+
+    Returns None if valid, or a string reason if the source is unreliable.
+    """
+    source = trader.get("source", "unknown")
+    confidence = float(trader.get("confidence", 0.0) or 0.0)
+    total_return = float(trader.get("total_return_pct", 0.0) or 0.0)
+
+    # tradeinfo is always authoritative
+    if source == "tradeinfo" or confidence >= 1.0:
+        return None
+
+    # Zero return from non-authoritative source = no real data
+    if total_return == 0.0 and confidence < 1.0:
+        return f"zero return from {source} (confidence={confidence})"
+
+    # Low confidence = unreliable
+    if confidence < MIN_CONFIDENCE_TO_SCORE:
+        return f"low confidence {confidence} from {source} (min {MIN_CONFIDENCE_TO_SCORE})"
+
+    return None
 
 
 def apply_constraints(candidates: list[dict]) -> list[dict]:
-    """Filter out candidates that fail constraint checks.
+    """Filter out candidates that fail hard constraint checks.
 
-    Disqualification rules (applied BEFORE scoring):
-      - max_drawdown > 15%  (excessive risk — eliminates before penalty)
-      - track_record_days < 365  (less than 1 year history)
-
-    Missing fields are treated as "pass" (no disqualification), except
-    max_drawdown which defaults to 0 (pass).
+    Applied AFTER source validation but BEFORE scoring.
     """
     qualified = []
     for c in candidates:
@@ -69,16 +97,12 @@ def apply_constraints(candidates: list[dict]) -> list[dict]:
 
 
 def calculate_growth_efficiency_score(trader: dict) -> float:
-    """Compute Growth Efficiency = avg_monthly_return / max_drawdown, scaled 0-100.
-
-    Rewards traders who achieve strong monthly returns with lower drawdown
-    (risk-adjusted performance measure). A ratio of 0.5+ maps to 100.
-    """
+    """Compute Growth Efficiency = avg_monthly_return / max_drawdown, scaled 0-100."""
     avg_monthly = float(trader.get("avg_monthly_return", 0) or 0)
     max_dd = float(trader.get("max_drawdown", 1) or 1)
 
     if max_dd <= 0:
-        return 50.0  # neutral score when drawdown data is missing
+        return 50.0
 
     ratio = avg_monthly / max_dd
     score = min(100.0, max(0.0, ratio * 200))
@@ -86,16 +110,7 @@ def calculate_growth_efficiency_score(trader: dict) -> float:
 
 
 def _compute_confidence(trader: dict) -> float:
-    """Compute data confidence score 0-1 based on available fields.
-
-    Measures how much of the expected data was actually provided
-    (vs default/fallback values). Used by calculate_growth_score to
-    distinguish "missing data" from "bad data".
-
-    Returns 0.3 (minimum confidence) when no real data is present,
-    up to 1.0 when all fields are populated.
-    """
-    # Fields that should be populated by a complete data source
+    """Compute data confidence score 0-1 based on available fields."""
     checks = {
         "return_12m":          lambda v: v is not None and float(v) != 0,
         "total_return_pct":    lambda v: v is not None and float(v) != 0,
@@ -111,7 +126,7 @@ def _compute_confidence(trader: dict) -> float:
 
 
 def _has_return_data(trader: dict) -> bool:
-    """Check if trader has actual return/growth data (not defaults)."""
+    """Check if trader has actual return data (not defaults)."""
     for key in ["return_12m", "return_6m", "total_return_pct", "avg_monthly_return"]:
         val = trader.get(key)
         if val is not None and float(val) != 0:
@@ -120,7 +135,6 @@ def _has_return_data(trader: dict) -> bool:
 
 
 def _get_return_12m(trader: dict) -> float:
-    """Derive 12‑month return from available fields."""
     v = trader.get("return_12m")
     if v is not None:
         return float(v)
@@ -134,14 +148,12 @@ def _get_return_12m(trader: dict) -> float:
 
 
 def _get_return_6m(trader: dict) -> float:
-    """Derive 6‑month return from available fields."""
     v = trader.get("return_6m")
     if v is not None:
         return float(v)
     v = trader.get("avg_monthly_return")
     if v is not None:
         return float(v) * 6
-    # fallback to total_return_pct / 2 as rough estimate
     v = trader.get("total_return_pct")
     if v is not None:
         return float(v) * 0.5
@@ -157,15 +169,12 @@ def _get_drawdown(trader: dict) -> float:
 
 
 def _get_consistency(trader: dict) -> float:
-    """Consistency score 0–100. Higher = more stable."""
     v = trader.get("consistency_score")
     if v is not None:
         return min(100.0, max(0.0, float(v)))
-    # derive from sharpe * 20, capped at 100
     sharpe = trader.get("sharpe_score")
     if sharpe is not None:
         return min(100.0, max(0.0, float(sharpe) * 20))
-    # derive from volatility (lower = more consistent), inverted
     vol = trader.get("volatility")
     if vol is not None:
         v = float(vol)
@@ -175,16 +184,79 @@ def _get_consistency(trader: dict) -> float:
     return 50.0
 
 
-def calculate_growth_score(trader: dict) -> dict:
-    """Compute deterministic growth score (0–100) for a single trader.
+def _build_explanation(trader: dict, score: float, confidence: float, source: str, penalties: list) -> list:
+    """Build human-readable explanation for a score."""
+    parts = []
+    username = trader.get("username", "?")
 
-    Returns a dict with:
-      score            — final score (0–100)
-      confidence_score — data completeness (0-1); low means data was missing
-      details          — breakdown of each component
-      penalties        — list of applied penalty descriptions
-      growth_filter    — True if score zeroed by growth filter
+    parts.append(f"source={source}")
+    parts.append(f"confidence={confidence}")
+
+    r12 = _get_return_12m(trader)
+    r6 = _get_return_6m(trader)
+    risk = _get_risk(trader)
+    dd = _get_drawdown(trader)
+
+    if r12 > 0:
+        parts.append(f"12M={r12:.1f}%")
+    if r6 > 0:
+        parts.append(f"6M={r6:.1f}%")
+    parts.append(f"risk={risk:.1f}")
+    parts.append(f"dd={dd:.1f}%")
+
+    for p in penalties:
+        parts.append(p)
+
+    if score >= 70:
+        parts.append("strong candidate")
+    elif score >= 40:
+        parts.append("moderate candidate")
+    else:
+        parts.append("weak candidate")
+
+    return parts
+
+
+def calculate_growth_score(trader: dict) -> dict:
+    """Compute deterministic growth score (0-100) for a single trader.
+
+    Validates data source before scoring. Rejects unreliable data.
+
+    Returns:
+      score            — final score (0-100), 0.0 if rejected
+      confidence_score — data completeness (0-1)
+      source           — data source used
+      source_valid     — True if source passed validation
+      explanation      — human-readable scoring reasons
+      details          — component breakdown
+      penalties        — applied penalties
+      growth_filter    — True if zeroed by growth filter
     """
+    # ── Step 1: Validate data source ──
+    source = trader.get("source", "unknown")
+    source_valid = False
+    source_reason = validate_data_source(trader)
+    if source_reason is None:
+        source_valid = True
+
+    if not source_valid:
+        logger.info(
+            "Rejected %s: unreliable source (%s)",
+            trader.get("username", "?"), source_reason,
+        )
+        return {
+            "score": 0.0,
+            "confidence_score": _compute_confidence(trader),
+            "source": source,
+            "source_valid": False,
+            "source_reason": source_reason or "unknown",
+            "explanation": [f"rejected: {source_reason}"],
+            "details": {},
+            "penalties": [],
+            "growth_filter": False,
+        }
+
+    # ── Step 2: Compute score ──
     confidence = _compute_confidence(trader)
     r12 = _get_return_12m(trader)
     r6 = _get_return_6m(trader)
@@ -195,14 +267,17 @@ def calculate_growth_score(trader: dict) -> dict:
     penalties = []
     growth_filter = False
 
-    # ── Growth filter — only when data is present ───────────────────────
-    # When return data is missing (all return fields at default/zero),
-    # skip the hard-zero filter and score conservatively instead.
     if _has_return_data(trader) and r12 < GROWTH_FILTER_MIN_12M:
-        logger.info(f"Growth filter: 12M return {r12:.1f}% < 10% — score = 0")
-        return {
+        result = {
             "score": 0.0,
             "confidence_score": confidence,
+            "source": source,
+            "source_valid": True,
+            "source_reason": None,
+            "explanation": _build_explanation(
+                trader, 0.0, confidence, source,
+                [f"12M return {r12:.1f}% below 10% threshold"],
+            ),
             "details": {
                 "return_12m": r12,
                 "return_6m": r6,
@@ -211,31 +286,18 @@ def calculate_growth_score(trader: dict) -> dict:
                 "consistency": consistency,
                 "growth_efficiency": calculate_growth_efficiency_score(trader),
             },
-            "penalties": [f"12M return {r12:.1f}% below 10% threshold — growth filter"],
+            "penalties": [f"12M return {r12:.1f}% below 10% threshold"],
             "growth_filter": True,
         }
+        logger.info("Growth filter: %s 12M=%.1f%% — score=0", trader.get("username", "?"), r12)
+        return result
 
-    if not _has_return_data(trader):
-        logger.info(
-            f"Growth filter skipped for {trader.get('username', '?')}: "
-            f"no return data available (confidence={confidence})"
-        )
-
-    # ── Normalise each component to 0–100 ────────────────────────────────
-    # Return: cap at 100% for scoring purposes
-    r12_norm = min(100.0, max(0.0, r12 * 5))       # 20% return → 100
-    r6_norm = min(100.0, max(0.0, r6 * 8))          # 12.5% return → 100
-
-    # Risk: invert so lower risk = higher score (0.5 scale step = 1 point)
-    risk_norm = min(100.0, max(0.0, (10.0 - risk) * 12.5))  # risk 2 → 100, risk 10 → 0
-
-    # Drawdown: invert so lower drawdown = higher score (1% = ~4 points)
+    r12_norm = min(100.0, max(0.0, r12 * 5))
+    r6_norm = min(100.0, max(0.0, r6 * 8))
+    risk_norm = min(100.0, max(0.0, (10.0 - risk) * 12.5))
     dd_norm = min(100.0, max(0.0, 100.0 - dd * 4))
-
-    # Consistency: already 0–100
     cons_norm = min(100.0, max(0.0, consistency))
 
-    # ── Compute base score ──────────────────────────────────────────────
     base_score = (
         r12_norm * W_12M +
         r6_norm * W_6M +
@@ -244,21 +306,23 @@ def calculate_growth_score(trader: dict) -> dict:
         cons_norm * W_CONSISTENCY
     )
 
-    # ── Apply penalties ─────────────────────────────────────────────────
     score = base_score
     if risk > 7:
         score -= PENALTY_RISK_HIGH
-        penalties.append(f"Risk {risk:.1f} > 7: −{PENALTY_RISK_HIGH} pts")
-
+        penalties.append(f"risk={risk:.1f} > 7: -{PENALTY_RISK_HIGH}pts")
     if dd > 25:
         score -= PENALTY_DRAWDOWN_HIGH
-        penalties.append(f"Drawdown {dd:.1f}% > 25%: −{PENALTY_DRAWDOWN_HIGH} pts")
+        penalties.append(f"dd={dd:.1f}% > 25%: -{PENALTY_DRAWDOWN_HIGH}pts")
 
     score = max(0.0, round(score, 1))
 
-    return {
+    result = {
         "score": score,
         "confidence_score": confidence,
+        "source": source,
+        "source_valid": True,
+        "source_reason": None,
+        "explanation": _build_explanation(trader, score, confidence, source, penalties),
         "details": {
             "return_12m": round(r12, 1),
             "return_6m": round(r6, 1),
@@ -278,16 +342,15 @@ def calculate_growth_score(trader: dict) -> dict:
         "growth_filter": False,
     }
 
+    logger.info(
+        "Scored %s: %.1f (source=%s, conf=%.2f, r12=%.1f%%, risk=%.1f, dd=%.1f%%)",
+        trader.get("username", "?"), score, source, confidence, r12, risk, dd,
+    )
+    return result
+
 
 def scout_holdings(holdings: list[dict]) -> dict:
-    """Score all current holdings and identify the weakest link.
-
-    Returns:
-      scored     — list of {username, score, confidence_score, details, penalties, growth_filter}
-      weakest    — the trader dict with lowest score
-      top        — the trader dict with highest score
-      avg_score  — average score across all holdings
-    """
+    """Score all current holdings and identify the weakest link."""
     if not holdings:
         return {"scored": [], "weakest": None, "top": None, "avg_score": 0.0}
 
@@ -303,20 +366,13 @@ def scout_holdings(holdings: list[dict]) -> dict:
     scored.sort(key=lambda x: x["score"])
     weakest = scored[0] if scored else None
     top = scored[-1] if scored else None
-    avg_score = round(sum(s["score"] for s in scored) / len(scored), 1)
+    avg_score = round(sum(s["score"] for s in scored) / len(scored), 1) if scored else 0.0
 
     return {"scored": scored, "weakest": weakest, "top": top, "avg_score": avg_score}
 
 
 def rank_candidates(holdings: list[dict], candidates: list[dict], top_n: int = 10) -> list[dict]:
-    """Score discovery candidates and return best swaps by score delta.
-
-    Applies constraint checks first (drawdown > 15% or track record
-    < 1 year disqualify). The delta is measured against the weakest
-    current holding. If no holdings, delta = candidate score.
-
-    Returns top_n candidates (default 10) for expanded discovery.
-    """
+    """Score discovery candidates and return best swaps by score delta."""
     candidates = apply_constraints(candidates)
     holdings_result = scout_holdings(holdings)
     weakest_score = holdings_result["weakest"]["score"] if holdings_result["weakest"] else 0.0
@@ -337,18 +393,12 @@ def rank_candidates(holdings: list[dict], candidates: list[dict], top_n: int = 1
 
 
 def generate_scout_report(holdings: list[dict], candidates: list[dict]) -> dict:
-    """Full deterministic scout report — no AI required.
-
-    Returns a dict usable anywhere the old AI scout output was expected.
-    """
+    """Full deterministic scout report."""
     hs = scout_holdings(holdings)
     top_swaps = rank_candidates(holdings, candidates)
 
     weakest = hs["weakest"]
     best_swap = top_swaps[0] if top_swaps else None
-
-    # Build a simple "action_required" flag
-    # Flag if weakest score < 50 OR weakest delta to best swap > 20
     action_required = False
     flagged_trader = None
     recommended_swap = None
@@ -361,7 +411,7 @@ def generate_scout_report(holdings: list[dict], candidates: list[dict]) -> dict:
             f"Weakest link: {weakest['username']} (score {weakest['score']:.1f}/100)"
         )
         for p in weakest.get("penalties", []):
-            reasoning_lines.append(f"  ⚠ {p}")
+            reasoning_lines.append(f"  \u26a0 {p}")
         if best_swap and best_swap["score"] > weakest["score"]:
             recommended_swap = best_swap["username"]
             reasoning_lines.append(
@@ -371,7 +421,7 @@ def generate_scout_report(holdings: list[dict], candidates: list[dict]) -> dict:
         else:
             reasoning_lines.append("No suitable swap found among candidates.")
     else:
-        reasoning_lines.append("All traders score ≥ 50. Portfolio is healthy.")
+        reasoning_lines.append("All traders score \u2265 50. Portfolio is healthy.")
 
     return {
         "action_required": action_required,
@@ -386,13 +436,7 @@ def generate_scout_report(holdings: list[dict], candidates: list[dict]) -> dict:
 
 
 def rank_combined(holdings: list[dict], candidates: list[dict], top_n: int = 3) -> list[dict]:
-    """Return the top N discovery candidates for the allocation plan.
-
-    The allocation plan ALWAYS prioritises discovery candidates — even
-    if a current holding scores higher, the plan recommends switching
-    to the best discovery traders. This ensures the Equal-Weight Plan
-    always shows actionable swaps rather than "keep everything".
-    """
+    """Return the top N discovery candidates for the allocation plan."""
     candidates = apply_constraints(candidates)
     discovery_scored = []
     for c in candidates:
@@ -405,11 +449,9 @@ def rank_combined(holdings: list[dict], candidates: list[dict], top_n: int = 3) 
         })
     discovery_scored.sort(key=lambda x: x["score"], reverse=True)
 
-    # Always return top N discovery traders if enough exist
     if len(discovery_scored) >= top_n:
         return discovery_scored[:top_n]
 
-    # If fewer than top_n discovery candidates, fill from current holdings
     holdings_scored = []
     for h in holdings:
         result = calculate_growth_score(h)

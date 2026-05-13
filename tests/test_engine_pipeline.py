@@ -82,6 +82,8 @@ class TestCalculateGrowthScore:
         from backend.ai.scoring_engine import calculate_growth_score
         trader = {
             "username": "test_trader",
+            "source": "tradeinfo",
+            "confidence": 1.0,
             "risk_score": 5.0,
             "max_drawdown": 0.0,
         }
@@ -95,6 +97,8 @@ class TestCalculateGrowthScore:
         from backend.ai.scoring_engine import calculate_growth_score
         trader = {
             "username": "low_return",
+            "source": "tradeinfo",
+            "confidence": 1.0,
             "return_12m": 3.0,
             "risk_score": 4.0,
         }
@@ -123,6 +127,8 @@ class TestCalculateGrowthScore:
         from backend.ai.scoring_engine import calculate_growth_score
         trader = {
             "username": "good_trader",
+            "source": "tradeinfo",
+            "confidence": 1.0,
             "return_12m": 22.0,
             "return_6m": 14.0,
             "total_return_pct": 22.0,
