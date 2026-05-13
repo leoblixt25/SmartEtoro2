@@ -37,7 +37,4 @@ IS_SIMULATION: Optional[str] = os.environ.get("IS_SIMULATION")
 def is_production() -> bool:
     return APP_ENV == "production"
 
-def is_simulation_mode() -> bool:
-    """Determine simulation mode from env var. Returns True by default."""
-    val = os.environ.get("IS_SIMULATION", "true")
-    return val.lower() == "true"
+

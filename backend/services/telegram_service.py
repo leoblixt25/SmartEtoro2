@@ -101,7 +101,6 @@ class TelegramBot:
         BotCommand("swap", "Execute a trader swap from Scout recommendation"),
         BotCommand("db_check", "Verify database persistence"),
         BotCommand("db_status", "Database status overview"),
-        BotCommand("mode", "Toggle simulation/real mode"),
     ]
 
     MAIN_KEYBOARD = [
@@ -190,9 +189,8 @@ class TelegramBot:
             "/scout": self._cmd_scout,
             "/swap": self._cmd_swap,
             "/db_check": self._cmd_db_check,
-            "/db_status": self._cmd_db_status,
-            "/mode": self._cmd_mode,
-        }
+        "/db_status": self._cmd_db_status,
+    }
         handler = handlers.get(command)
         if handler:
             await handler(update, args)
@@ -217,8 +215,7 @@ class TelegramBot:
             "/scout – Run Growth Scout\n"
             "/swap &lt;old&gt; &lt;new&gt; – Execute Scout swap\n"
             "/db_check – Database diagnostics\n"
-            "/db_status – Database status overview\n"
-            "/mode &lt;real|simulation&gt; – Toggle live/simulation mode"
+            "/db_status – Database status overview"
         )
         await self._reply(update, text, parse_mode="HTML")
 
@@ -300,48 +297,6 @@ class TelegramBot:
 
         await self._reply(update, "\n".join(lines), parse_mode="HTML")
 
-    async def _cmd_mode(self, update: Update, args: list[str]) -> None:
-        """Toggle between simulation and real (live) trading mode.
-
-        Usage: /mode real      → disables simulation, enables live trading
-               /mode simulation → enables simulation (safe for testing)
-        """
-        if not args or args[0].lower() not in ("real", "simulation"):
-            await self._reply(update,
-                "Usage: <code>/mode real</code> or <code>/mode simulation</code>",
-                parse_mode="HTML",
-            )
-            return
-
-        from backend.database.connection import db_session
-        from backend.database.models import Portfolio
-
-        target_sim = args[0].lower() == "simulation"
-
-        try:
-            with db_session() as db:
-                p = db.query(Portfolio).first()
-                if not p:
-                    await self._reply(update, "No portfolio found.")
-                    return
-
-                old_mode = p.is_simulation
-                p.is_simulation = target_sim
-                db.commit()
-
-                mode_label = "🧪 SIMULATION" if target_sim else "🔴 LIVE"
-                await self._reply(update,
-                    f"<b>Mode Changed</b>\n\n"
-                    f"Was: {'Simulation' if old_mode else 'Live'}\n"
-                    f"Now: {mode_label}\n\n"
-                    f"{'⚠️ Live trades will execute on eToro.' if not target_sim else '✅ Safe — no real trades.'}",
-                    parse_mode="HTML",
-                )
-                logger.info(f"Portfolio mode changed: simulation={old_mode} → {target_sim}")
-        except Exception as e:
-            logger.error(f"/mode error: {e}")
-            await self._reply(update, f"Error: {e}")
-
     async def _cmd_status(self, update: Update, args: list[str]) -> None:
         from backend.database.connection import db_session
         from backend.database.models import Portfolio
@@ -355,14 +310,13 @@ class TelegramBot:
                 s = self._sym(p.currency)
                 total_return = p.total_value - p.invested_amount
                 return_pct = (total_return / p.invested_amount * 100) if p.invested_amount else 0
-                mode = "🧪 SIM" if p.is_simulation else "🔴 LIVE"
                 text = (
                     f"<b>📊 CopyVault Status</b>\n"
                     f"Value: {s}{p.total_value:,.2f}  |  Invested: {s}{p.invested_amount:,.2f}\n"
                     f"Return: {s}{total_return:+,.2f} ({return_pct:+.2f}%)\n"
                     f"Unrealized: {s}{p.unrealized_pnl:+,.2f}  |  Realized: {s}{p.realized_pnl:+,.2f}\n"
                     f"Cash: {s}{p.available_cash:,.2f}  |  Health: {p.health_score:.0f}/100\n"
-                    f"{mode}  |  {p.currency}\n"
+                    f"🔴 LIVE  |  {p.currency}\n"
                     f"Updated: {p.last_updated.strftime('%H:%M UTC') if p.last_updated else '—'}"
                 )
                 await self._reply(update, text, parse_mode="HTML")
@@ -384,7 +338,6 @@ class TelegramBot:
                 total_return = p.total_value - p.invested_amount
                 return_pct = (total_return / p.invested_amount * 100) if p.invested_amount else 0
                 trader_count = len(p.copied_traders) if p.copied_traders else 0
-                mode = "Simulation" if p.is_simulation else "LIVE"
                 text = (
                     f"<b>📋 Portfolio Breakdown</b>\n\n"
                     f"💰 <b>Value</b>\n"
@@ -400,7 +353,7 @@ class TelegramBot:
                     f"Monthly: {s}{p.monthly_pnl:+,.2f}\n\n"
                     f"🏥 Health: {p.health_score:.0f}/100\n"
                     f"👥 Copied Traders: {trader_count}\n"
-                    f"💱 {p.currency}  |  Mode: {mode}\n"
+                    f"💱 {p.currency}  |  Mode: LIVE\n"
                     f"🕐 {p.last_updated.strftime('%Y-%m-%d %H:%M UTC') if p.last_updated else '—'}"
                 )
                 await self._reply(update, text, parse_mode="HTML")
@@ -850,7 +803,7 @@ class TelegramBot:
                 if mirror_id:
                     # Step 1: Close the old mirror position
                     await self._reply(update, f"⏳ Closing copy of {old_username}...")
-                    close_result = await client.execute_close_mirror(mirror_id, is_simulation=p.is_simulation)
+                    close_result = await client.execute_close_mirror(mirror_id)
                     if close_result and close_result.get("error"):
                         detail = close_result.get("detail", "Unknown error")
                         await self._reply(update, f"❌ Failed to close {old_username}: {detail}")

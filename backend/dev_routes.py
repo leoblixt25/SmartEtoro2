@@ -17,10 +17,10 @@ router = APIRouter(prefix="/api/dev", tags=["Development"])
 
 @router.post("/seed/{portfolio_id}")
 def seed_portfolio(portfolio_id: int, db: Session = Depends(get_db)):
-    """Seed portfolio with realistic simulation data for demos."""
+    """Seed portfolio with realistic demo data."""
     if os.getenv("APP_ENV", "development") == "production":
         from fastapi import HTTPException
         raise HTTPException(status_code=403, detail="Not available in production")
 
-    DataService().seed_simulation_data(db, portfolio_id)
-    return {"message": f"Portfolio {portfolio_id} seeded with simulation data."}
+    DataService().seed_demo_data(db, portfolio_id)
+    return {"message": f"Portfolio {portfolio_id} seeded with demo data."}

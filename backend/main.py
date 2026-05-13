@@ -268,13 +268,6 @@ def create_portfolio(payload: PortfolioCreate, db: Session = Depends(get_db)):
 
 @app.get("/api/portfolios/{portfolio_id}", response_model=PortfolioResponse)
 def get_portfolio(portfolio_id: int, db: Session = Depends(get_db)):
-    portfolio = _get_portfolio_or_404(db, portfolio_id)
-    
-    # Force simulation mode if env var is set (overrides database)
-    force_sim = os.getenv("IS_SIMULATION")
-    if force_sim is not None:
-        portfolio.is_simulation = (force_sim.lower() == 'true')
-        
     return portfolio
 
 
@@ -657,7 +650,6 @@ def get_settings(db: Session = Depends(get_db)):
         "etoro_account_id": _load_setting("etoro_account_id"),
         "telegram_bot_token": _load_setting("telegram_bot_token"),
         "telegram_chat_id": _load_setting("telegram_chat_id"),
-        "is_simulation": _load_setting("is_simulation", "true").lower() == "true",
     }
 
 
@@ -684,12 +676,6 @@ def update_settings(settings: dict, db: Session = Depends(get_db)):
             db.add(setting)
         else:
             setting.value = value
-
-    # Sync simulation mode with default portfolio
-    if "is_simulation" in settings:
-        portfolio = db.query(Portfolio).first()
-        if portfolio:
-            portfolio.is_simulation = settings["is_simulation"]
 
     db.commit()
     logger.info("Settings updated successfully")

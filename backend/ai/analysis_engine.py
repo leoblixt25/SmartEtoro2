@@ -183,7 +183,6 @@ PORTFOLIO DATA:
 - Monthly PnL: ${portfolio.monthly_pnl:+,.2f}
 - Unrealized PnL: ${portfolio.unrealized_pnl:+,.2f}
 - Health Score: {portfolio.health_score:.1f}/100
-- Simulation Mode: {portfolio.is_simulation}
 
 HEALTH ANALYSIS:
 - Diversification Score: {health.diversification_score:.1f}/100

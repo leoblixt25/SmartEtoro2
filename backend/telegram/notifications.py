@@ -30,7 +30,7 @@ def format_status(portfolio) -> str:
     unrealized = portfolio.unrealized_pnl or 0
     cash = portfolio.available_cash or 0
     health = portfolio.health_score or 0
-    mode = "SIM" if portfolio.is_simulation else "LIVE"
+    mode = "LIVE"
     total_return = tv - invested
     return_pct = (total_return / invested * 100) if invested else 0
 

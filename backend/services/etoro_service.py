@@ -36,27 +36,11 @@ class EToroAPIClient:
         self.api_key = os.getenv("ETORO_API_SECRET")
         self.account_id = os.getenv("ETORO_ACCOUNT_ID", "")
 
-        # ETORO_ENV overrides the environment segment in all API URLs.
-        # Set to "demo" to force /demo/ paths even when portfolio.is_simulation=False.
-        # This is needed when your API keys only have demo permissions.
-        self.forced_env = os.getenv("ETORO_ENV", "").strip().lower()
-
         if not self.api_key or not self.user_key:
             logger.warning("eToro API credentials not configured")
             self.enabled = False
         else:
             self.enabled = True
-
-    def _resolve_env(self, is_simulation: bool) -> str:
-        """Return the environment segment for API URL paths.
-
-        If ETORO_ENV is set (e.g. "demo"), it takes precedence over
-        the portfolio's simulation flag. Otherwise falls back to
-        ``"demo" if is_simulation else "real"``.
-        """
-        if self.forced_env in ("demo", "real"):
-            return self.forced_env
-        return "demo" if is_simulation else "real"
 
     def _get_headers(self) -> Dict[str, str]:
         return {
@@ -79,7 +63,7 @@ class EToroAPIClient:
             return False
         return True
 
-    async def get_portfolio_data(self, is_simulation: bool = True) -> Optional[Dict]:
+    async def get_portfolio_data(self) -> Optional[Dict]:
         """
         Fetch portfolio + PnL + positions + mirrors in one call.
         Retries up to 3 times with 5-second backoff on failure.
@@ -87,7 +71,7 @@ class EToroAPIClient:
         if not self.enabled:
             return None
 
-        env = self._resolve_env(is_simulation)
+        env = "real"
         last_error = None
         import asyncio
 
@@ -122,7 +106,7 @@ class EToroAPIClient:
         logger.error(f"eToro API failed after 3 attempts: {last_error}")
         return None
 
-    async def execute_close_mirror(self, mirror_id: int, is_simulation: bool = True) -> Optional[Dict]:
+    async def execute_close_mirror(self, mirror_id: int) -> Optional[Dict]:
         """Close a copy-trade mirror position on eToro using the retail API.
 
         Uses DELETE /api/v1/trading/mirrors/{env}/{mirrorId} — the standard
@@ -138,7 +122,7 @@ class EToroAPIClient:
         if not self._validate_mirror_id(mirror_id, "close_mirror"):
             return {"error": True, "detail": f"Invalid mirror_id={mirror_id} — cannot close"}
 
-        env = self._resolve_env(is_simulation)
+        env = "real"
         url = f"{self.BASE_URL}/api/v1/trading/mirrors/{env}/{mirror_id}"
         logger.info(f"Closing mirror via DELETE {url}")
 
@@ -181,7 +165,7 @@ class EToroAPIClient:
             logger.error(f"Unexpected error closing mirror {mirror_id}: {e}")
             return {"error": True, "detail": str(e), "endpoint": url}
 
-    async def execute_change_mirror_amount(self, mirror_id: int, new_amount: float, is_simulation: bool = True) -> Optional[Dict]:
+    async def execute_change_mirror_amount(self, mirror_id: int, new_amount: float) -> Optional[Dict]:
         """Change the allocated amount of a copy-trade mirror on eToro.
 
         eToro API: POST /api/v1/trading/mirrors/{mirrorId}/change-amount
@@ -193,7 +177,7 @@ class EToroAPIClient:
         if not self._validate_mirror_id(mirror_id, "change_mirror_amount"):
             return {"error": True, "detail": f"Invalid mirror_id={mirror_id} — cannot change amount"}
 
-        env = self._resolve_env(is_simulation)
+        env = "real"
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(
@@ -215,7 +199,7 @@ class EToroAPIClient:
             logger.error(f"Unexpected error changing mirror {mirror_id} amount: {e}")
             return {"error": True, "detail": str(e)}
 
-    async def execute_pause_mirror(self, mirror_id: int, is_simulation: bool = True) -> Optional[Dict]:
+    async def execute_pause_mirror(self, mirror_id: int) -> Optional[Dict]:
         """Pause a copy-trade mirror on eToro.
 
         eToro API: POST /api/v1/trading/mirrors/{mirrorId}/pause
@@ -226,7 +210,7 @@ class EToroAPIClient:
         if not self._validate_mirror_id(mirror_id, "pause_mirror"):
             return {"error": True, "detail": f"Invalid mirror_id={mirror_id} — cannot pause"}
 
-        env = self._resolve_env(is_simulation)
+        env = "real"
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(
@@ -248,7 +232,7 @@ class EToroAPIClient:
             logger.error(f"Unexpected error pausing mirror {mirror_id}: {e}")
             return {"error": True, "detail": str(e)}
 
-    async def execute_unpause_mirror(self, mirror_id: int, is_simulation: bool = True) -> Optional[Dict]:
+    async def execute_unpause_mirror(self, mirror_id: int) -> Optional[Dict]:
         """Unpause a copy-trade mirror on eToro.
 
         eToro API: POST /api/v1/trading/mirrors/{mirrorId}/unpause
@@ -259,7 +243,7 @@ class EToroAPIClient:
         if not self._validate_mirror_id(mirror_id, "unpause_mirror"):
             return {"error": True, "detail": f"Invalid mirror_id={mirror_id} — cannot unpause"}
 
-        env = self._resolve_env(is_simulation)
+        env = "real"
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(
@@ -281,7 +265,7 @@ class EToroAPIClient:
             logger.error(f"Unexpected error unpausing mirror {mirror_id}: {e}")
             return {"error": True, "detail": str(e)}
 
-    async def execute_start_mirror(self, username: str, amount: float, is_simulation: bool = True) -> Dict:
+    async def execute_start_mirror(self, username: str, amount: float) -> Dict:
         """Start copying a trader on eToro via the retail API.
 
         Tries multiple endpoint formats since the retail/demo API may not
@@ -299,8 +283,8 @@ class EToroAPIClient:
             logger.error(f"Cannot start mirror for {username}: amount ${amount:,.2f} is below eToro's $200 minimum")
             return {"error": True, "detail": f"Amount ${amount:,.2f} is below eToro's $200 minimum copy amount"}
 
-        env = self._resolve_env(is_simulation)
-        body = {"username": username, "amount": amount, "isDemo": is_simulation}
+        env = "real"
+        body = {"username": username, "amount": amount, "isDemo": False}
 
         # Attempt 1: POST /api/v1/trading/mirrors/{env}
         urls_to_try = [
@@ -466,9 +450,7 @@ class EToroSyncService:
                 logger.error("eToro API not configured — sync aborted")
                 return False
 
-            raw = await self.client.get_portfolio_data(
-                is_simulation=portfolio.is_simulation
-            )
+            raw = await self.client.get_portfolio_data()
             if not raw:
                 logger.error("eToro API returned no data — sync aborted")
                 return False

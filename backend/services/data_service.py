@@ -1,8 +1,8 @@
 """
 Data Service
 ────────────────────────────────────────────────────────────────────
-Abstracts data retrieval — supports both live eToro API (future)
-and simulation/mock data for development and paper-trading mode.
+Abstracts data retrieval — supports live eToro API
+and mock data for development mode.
 """
 
 from __future__ import annotations
@@ -15,17 +15,16 @@ from backend.analytics.trader_analytics import TraderMetrics
 class DataService:
     """
     Provides market data and trader metrics.
-    In simulation mode: generates realistic mock data.
-    In live mode: calls eToro API (pluggable).
+    Generates realistic mock data for development mode.
     """
 
     def build_trader_metrics(self, trader: CopiedTrader) -> TraderMetrics:
         """
         Build a TraderMetrics object from the trader record.
-        If live data is not available, uses simulation data.
+        If live data is not available, uses generated data.
         """
         # In production: fetch from eToro API using trader.trader_id
-        # For now: generate realistic simulation data based on trader's stored values
+        # For now: generate realistic data based on trader's stored values
         return TraderMetrics(
             trader_id=trader.trader_id,
             username=trader.trader_username,
@@ -65,9 +64,9 @@ class DataService:
         count = random.randint(3, 10)
         return random.sample(all_instruments, min(count, len(all_instruments)))
 
-    def seed_simulation_data(self, db, portfolio_id: int):
+    def seed_demo_data(self, db, portfolio_id: int):
         """
-        Seed a portfolio with realistic simulation data.
+        Seed a portfolio with realistic demo data.
         Useful for demo and testing.
         """
         from backend.database.models import Portfolio, CopiedTrader, PortfolioSnapshot

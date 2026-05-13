@@ -139,7 +139,7 @@ class AutomationEngine:
                 "success": success,
                 "etoro_response": etoro_response or {},
             },
-            was_simulated=portfolio.is_simulation,
+            was_simulated=False,
             was_approved=success,
         )
         db.add(log_entry)
@@ -159,7 +159,7 @@ class AutomationEngine:
         status = "SUCCESS" if success else "FAILED"
         logger.info(
             f"Action {status}: [{action.action_type}] {action.description} "
-            f"(simulation={portfolio.is_simulation}, approved_by={approved_by})"
+            f"(approved_by={approved_by})"
         )
         return log_entry
 
@@ -178,7 +178,6 @@ class AutomationEngine:
         Tracks success_count for every sub-action. If zero sub-actions succeed,
         the overall result is marked as FAILED with error=True.
         """
-        is_sim = portfolio.is_simulation
         action_type = action.action_type
         trader_id = action.details.get("trader_id")
 
@@ -207,6 +206,7 @@ class AutomationEngine:
                     CopiedTrader.is_paused.is_(False),
                 ).all()
                 results = []
+                retail_api_limited = False
                 for m in mirrors:
                     mirror_id = int(m.trader_id) if m.trader_id and m.trader_id.isdigit() and int(m.trader_id) > 0 else None
                     if mirror_id is None:
@@ -215,11 +215,20 @@ class AutomationEngine:
                                         "detail": "Invalid mirror ID — run /sync first"})
                         continue
                     resp = await etoro_client.execute_close_mirror(
-                        mirror_id, is_simulation=is_sim
+                        mirror_id
                     )
                     results.append({"mirror_id": m.trader_id, "response": resp})
                     if resp and resp.get("error"):
-                        logger.error(f"Failed to close mirror {m.trader_id}: {resp.get('detail')}")
+                        if resp.get("status") == 404:
+                            retail_api_limited = True
+                            logger.warning(f"Mirror close not available for {m.trader_username}: retail API does not expose mirrorId. This is a known limitation.")
+                        else:
+                            logger.error(f"Failed to close mirror {m.trader_id}: {resp.get('detail')}")
+                if retail_api_limited:
+                    logger.info("Take-profit: retail API does not support mirror closing. Entering cooldown.")
+                    return {"action": "take_profit", "results": results,
+                            "success_count": 0, "total": len(results),
+                            "detail": "Mirror closing not available on retail API plan — entering cooldown"}
                 success_count = _count_successes(results)
                 if success_count == 0 and len(results) > 0:
                     return {"error": True, "action": "take_profit", "results": results,
@@ -244,7 +253,7 @@ class AutomationEngine:
                         results.append({"mirror_id": m.trader_id, "skipped": True, "detail": "Invalid mirror ID"})
                         continue
                     resp = await etoro_client.execute_change_mirror_amount(
-                        mirror_id, new_amount, is_simulation=is_sim
+                        mirror_id, new_amount
                     )
                     results.append({"mirror_id": m.trader_id, "new_amount": new_amount, "response": resp})
                     if resp and resp.get("error"):
@@ -271,7 +280,7 @@ class AutomationEngine:
                         results.append({"mirror_id": m.trader_id, "skipped": True, "detail": "Invalid mirror ID"})
                         continue
                     resp = await etoro_client.execute_pause_mirror(
-                        mirror_id, is_simulation=is_sim
+                        mirror_id
                     )
                     results.append({"mirror_id": m.trader_id, "response": resp})
                     if resp and resp.get("error"):
@@ -300,7 +309,7 @@ class AutomationEngine:
                         results.append({"mirror_id": m.trader_id, "skipped": True, "detail": "Invalid mirror ID"})
                         continue
                     resp = await etoro_client.execute_change_mirror_amount(
-                        mirror_id, new_amount, is_simulation=is_sim
+                        mirror_id, new_amount
                     )
                     results.append({"mirror_id": m.trader_id, "new_amount": new_amount, "response": resp})
                     if resp and resp.get("error"):
@@ -331,7 +340,7 @@ class AutomationEngine:
                             results.append({"mirror_id": mirror.trader_id, "skipped": True, "detail": "Invalid mirror ID"})
                             continue
                         resp = await etoro_client.execute_change_mirror_amount(
-                            rebal_id, new_amount, is_simulation=is_sim
+                            rebal_id, new_amount
                         )
                         results.append({"mirror_id": mirror.trader_id, "new_amount": new_amount, "response": resp})
                         if resp and resp.get("error"):
@@ -356,7 +365,7 @@ class AutomationEngine:
                 # Step 1: Close the old mirror
                 logger.info(f"Swap step 1/3: closing mirror {mirror_id} ({old_username})")
                 close_resp = await etoro_client.execute_close_mirror(
-                    int(mirror_id), is_simulation=is_sim
+                    int(mirror_id)
                 )
                 close_ok = _is_exec_result_successful(close_resp)
                 if not close_ok:
@@ -388,7 +397,7 @@ class AutomationEngine:
                 # Step 3: Start the new mirror
                 logger.info(f"Swap step 3/3: starting mirror for {new_username} with ${new_amount:,.2f}")
                 start_resp = await etoro_client.execute_start_mirror(
-                    new_username, new_amount, is_simulation=is_sim
+                    new_username, new_amount
                 )
                 start_ok = _is_exec_result_successful(start_resp)
                 if not start_ok:
@@ -440,7 +449,7 @@ class AutomationEngine:
                 # Step 1: Close the current mirror
                 logger.info(f"EqualRebalance step 1/4: closing mirror {current_trader_id} ({current_trader})")
                 close_resp = await etoro_client.execute_close_mirror(
-                    int(current_trader_id), is_simulation=is_sim
+                    int(current_trader_id)
                 )
                 if close_resp and not close_resp.get("error"):
                     close_ok = True
@@ -468,7 +477,7 @@ class AutomationEngine:
                 for target in all_targets:
                     logger.info(f"EqualRebalance step 3/4: starting mirror for {target} with ${amount_per:,.2f}")
                     resp = await etoro_client.execute_start_mirror(
-                        target, amount_per, is_simulation=is_sim
+                        target, amount_per
                     )
                     if resp and not resp.get("error"):
                         start_successes += 1

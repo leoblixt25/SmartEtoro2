@@ -49,7 +49,6 @@ async def cmd_help(update: Update, args: List[str], bot) -> None:
         "/swap <old> <new> — Swap traders",
         "/sync — Force eToro sync",
         "/pause — Emergency stop all rules",
-        "/mode <sim|live> — Toggle trading mode",
         "/db_status — Database status",
         "/ping — Liveness check",
     ]
@@ -325,7 +324,7 @@ async def cmd_swap(update: Update, args: List[str], bot) -> None:
                 await bot._reply(update, f"Invalid mirror ID for {old_user}. Cannot close automatically.")
                 return
 
-            result = await client.execute_close_mirror(mirror_id, p.is_simulation)
+            result = await client.execute_close_mirror(mirror_id)
             trader.is_active = False
             trader.is_paused = True
             trader.paused_reason = f"Swapped to {new_user}"
@@ -347,28 +346,6 @@ async def cmd_swap(update: Update, args: List[str], bot) -> None:
         except Exception as e:
             logger.exception("Swap failed")
             await bot._reply(update, f"❌ Swap failed: {e}")
-
-
-async def cmd_mode(update: Update, args: List[str], bot) -> None:
-    if not args:
-        await bot._reply(update, "Usage: /mode <sim|live>")
-        return
-
-    mode = args[0].lower()
-    if mode not in ("sim", "live"):
-        await bot._reply(update, "Mode must be 'sim' or 'live'.")
-        return
-
-    is_sim = mode == "sim"
-    with db_session() as db:
-        from backend.database.storage import get_portfolio
-        p = db.query(Portfolio).first()
-        if not p:
-            await bot._reply(update, "No portfolio found.")
-            return
-        p.is_simulation = is_sim
-        db.commit()
-        await bot._reply(update, f"✅ Mode set to **{mode.upper()}**. Run /sync to refresh data.")
 
 
 async def cmd_db_status(update: Update, args: List[str], bot) -> None:
