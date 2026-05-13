@@ -376,6 +376,8 @@ class EToroAPIClient:
             "available": False,
             "source": "none",
             "confidence": 0.0,
+            "is_copyable": True,
+            "min_copy_amount": 200.0,
         }
 
     async def _api_get_with_retry(
@@ -442,12 +444,20 @@ class EToroAPIClient:
             params={"period": "LastTwoYears"},
         )
         if tradeinfo:
+            # Extract copyability info if available in the response
+            is_copyable = tradeinfo.get("IsCopyable", tradeinfo.get("isCopyable"))
+            if is_copyable is None:
+                logger.debug(f"No copyability info in tradeinfo for {username} — assuming copyable")
+                is_copyable = True
+            min_copy = float(tradeinfo.get("MinimumInvestment", tradeinfo.get("minCopyAmount", 200.0)) or 200.0)
             result.update({
                 "avg_return": float(tradeinfo.get("avgReturn", 0.0) or 0.0),
                 "risk_score": float(tradeinfo.get("riskScore", 5.0) or 5.0),
                 "max_drawdown": float(tradeinfo.get("maxMonthlyDrawdown", 0.0) or 0.0),
                 "volatility": float(tradeinfo.get("volatility", 0.0) or 0.0),
                 "total_return_pct": float(tradeinfo.get("gainPerc", 0.0) or tradeinfo.get("gain", 0.0) or 0.0),
+                "is_copyable": bool(is_copyable),
+                "min_copy_amount": min_copy,
                 "available": True,
                 "source": "tradeinfo",
                 "confidence": 1.0,
@@ -546,6 +556,9 @@ class EToroAPIClient:
                 # Reject candidates where fallback endpoints returned
                 # 0.0% return — means the endpoint has no real data.
                 # tradeinfo (confidence=1.0) is authoritative even at 0.0%.
+                is_copyable = metrics.get("is_copyable", True)
+                min_copy = metrics.get("min_copy_amount", 200.0)
+
                 if metrics["total_return_pct"] == 0.0 and metrics.get("confidence", 0.0) < 1.0:
                     unavailable.append({
                         "username": username,
@@ -560,6 +573,25 @@ class EToroAPIClient:
                         f"{metrics['source']} (confidence={metrics.get('confidence', 0.0)})"
                     )
                     continue
+
+                if not is_copyable:
+                    unavailable.append({
+                        "username": username,
+                        "reason": "not_copyable",
+                        "detail": f"is_copyable={is_copyable}",
+                    })
+                    logger.info(f"Rejected {username}: copyable={is_copyable}")
+                    continue
+
+                if min_copy > 200:
+                    unavailable.append({
+                        "username": username,
+                        "reason": "min_copy_too_high",
+                        "detail": f"minimum_copy={min_copy}",
+                    })
+                    logger.info(f"Rejected {username}: minimum_copy={min_copy}, copyable={is_copyable}")
+                    continue
+
                 available.append({
                     "username": username,
                     "risk_score": metrics["risk_score"],
@@ -567,9 +599,10 @@ class EToroAPIClient:
                     "max_drawdown": metrics["max_drawdown"],
                     "volatility": metrics["volatility"],
                     "avg_return": metrics["avg_return"],
+                    "avg_monthly_return": metrics["avg_return"],
                     "copiers": 0,
-                    "is_copiable": True,
-                    "min_copy_amount": 200,
+                    "is_copiable": is_copyable,
+                    "min_copy_amount": min_copy,
                     "source": metrics["source"],
                 })
                 logger.info(

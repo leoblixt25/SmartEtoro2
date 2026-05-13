@@ -41,7 +41,7 @@ def performance_score(trader: Dict) -> float:
     """Evaluate past returns and profitability. Range: 0-100."""
     r12 = trader.get("total_return_pct", 0.0) or 0.0
     r6 = trader.get("return_6m", r12 * 0.4) or 0.0
-    monthly = trader.get("avg_monthly_return", 0.0) or 0.0
+    monthly = (trader.get("avg_monthly_return") or trader.get("avg_return") or 0.0)
 
     r12_clamped = max(MIN_12M_RETURN_FLOOR, min(100, r12))
     r6_clamped = max(MIN_12M_RETURN_FLOOR, min(100, r6))
@@ -53,7 +53,15 @@ def performance_score(trader: Dict) -> float:
     # Monthly consistency bonus: positive monthly return adds up to 20pts
     monthly_bonus = min(20, monthly * 10) if monthly > 0 else 0
 
-    return r12_score * 0.5 + r6_score * 0.3 + monthly_bonus
+    perf = r12_score * 0.5 + r6_score * 0.3 + monthly_bonus
+    logger.info(
+        f"perf_score({trader.get('username', '?')}): "
+        f"r12={r12:.1f}%, r12_score={r12_score:.1f}, "
+        f"r6={r6:.1f}%, r6_score={r6_score:.1f}, "
+        f"monthly={monthly:.2f}, bonus={monthly_bonus:.1f}, "
+        f"perf={perf:.1f}"
+    )
+    return perf
 
 
 def risk_score(trader: Dict) -> float:
@@ -177,6 +185,19 @@ def calculate_weighted_score(trader: Dict) -> Dict:
     ) - penalty
 
     final = max(0, min(100, final))
+
+    logger.info(
+        f"{trader.get('username', '?')} scoring: "
+        f"return={trader.get('total_return_pct', 0.0):.1f}%, "
+        f"risk={trader.get('risk_score', 5.0)}, "
+        f"P={perf:.1f}, "
+        f"R={risk:.1f}, "
+        f"S={stab:.1f}, "
+        f"M={market:.1f}, "
+        f"C={copy:.1f}, "
+        f"penalty={penalty:.1f}, "
+        f"final={final:.1f}"
+    )
 
     return {
         "username": trader.get("username", "unknown"),
