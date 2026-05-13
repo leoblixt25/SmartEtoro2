@@ -220,7 +220,7 @@ class TelegramBot:
             "/db_status – Database status overview\n"
             "/mode <real|simulation> – Toggle live/simulation mode"
         )
-        await self._reply(update, text, parse_mode="Markdown")
+        await self._reply(update, text, parse_mode="HTML")
 
     async def _cmd_ping(self, update: Update, args: list[str]) -> None:
         await self._reply(update, "✅ CopyVault Bot is active!")
@@ -458,15 +458,15 @@ class TelegramBot:
                 if not violations:
                     await self._reply(update, "✅ No risk violations. Portfolio is healthy.")
                     return
-                lines = [f"⚠️ *{len(violations)} Risk Violation(s)*\n"]
+                lines = [f"⚠️ <b>{len(violations)} Risk Violation(s)</b>\n"]
                 for v in violations:
                     icon = "🔴" if v.severity == "critical" else ("🟡" if v.severity == "warning" else "🔵")
-                    lines.append(f"{icon} *{v.title}*")
+                    lines.append(f"{icon} <b>{v.title}</b>")
                     lines.append(f"  {v.message}")
                     if v.suggested_action:
                         lines.append(f"  💡 {v.suggested_action}")
                     lines.append("")
-                await self._reply(update, "\n".join(lines), parse_mode="Markdown")
+                await self._reply(update, "\n".join(lines), parse_mode="HTML")
         except Exception as e:
             logger.error(f"/risk error: {e}")
             await self._reply(update, f"Error: {e}")
@@ -487,13 +487,13 @@ class TelegramBot:
                 if not alerts:
                     await self._reply(update, "✅ No unread alerts.")
                     return
-                lines = [f"🔔 *{len(alerts)} Unread Alerts*\n"]
+                lines = [f"🔔 <b>{len(alerts)} Unread Alerts</b>\n"]
                 for a in alerts:
                     icon = {"critical": "🔴", "warning": "🟡", "info": "🔵"}.get(a.severity, "⚪")
-                    lines.append(f"{icon} *{a.title}*")
+                    lines.append(f"{icon} <b>{a.title}</b>")
                     lines.append(f"  {a.message[:200]}")
-                    lines.append(f"  _{a.created_at.strftime('%m/%d %H:%M')}_\n")
-                await self._reply(update, "\n".join(lines), parse_mode="Markdown")
+                    lines.append(f"  <i>{a.created_at.strftime('%m/%d %H:%M')}</i>\n")
+                await self._reply(update, "\n".join(lines), parse_mode="HTML")
         except Exception as e:
             logger.error(f"/alerts error: {e}")
             await self._reply(update, f"Error: {e}")
@@ -517,13 +517,13 @@ class TelegramBot:
                 if not alerts:
                     await self._reply(update, "✅ No pending approvals.")
                     return
-                lines = [f"⏳ *{len(alerts)} Pending Approval(s)*\n"]
+                lines = [f"⏳ <b>{len(alerts)} Pending Approval(s)</b>\n"]
                 for a in alerts:
                     lines.append(f"• {a.title}")
                     lines.append(f"  {a.message[:200]}")
-                    lines.append(f"  _{a.created_at.strftime('%m/%d %H:%M')}_\n")
+                    lines.append(f"  <i>{a.created_at.strftime('%m/%d %H:%M')}</i>\n")
                 lines.append("Use /approve <rule_id> to execute.")
-                await self._reply(update, "\n".join(lines), parse_mode="Markdown")
+                await self._reply(update, "\n".join(lines), parse_mode="HTML")
         except Exception as e:
             logger.error(f"/pending error: {e}")
             await self._reply(update, f"Error: {e}")
@@ -573,12 +573,12 @@ class TelegramBot:
                 if success:
                     count_info = f" ({resp.get('success_count', '?')}/{resp.get('total', '?')} actions succeeded)" if "success_count" in (resp or {}) else ""
                     await self._reply(update, 
-                        f"✅ *{rule.name}* executed.{count_info}\n{match.description}",
-                        parse_mode="Markdown",
+                        f"✅ <b>{rule.name}</b> executed.{count_info}\n{match.description}",
+                        parse_mode="HTML",
                     )
                 else:
                     detail = (resp or {}).get("detail", "Unknown")
-                    await self._reply(update, f"❌ *{rule.name}* FAILED.\n{detail}", parse_mode="Markdown")
+                    await self._reply(update, f"❌ <b>{rule.name}</b> FAILED.\n{detail}", parse_mode="HTML")
         except Exception as e:
             logger.error(f"/approve error: {e}")
             await self._reply(update, f"Error: {e}")
@@ -604,7 +604,7 @@ class TelegramBot:
                         f"✅ Sync complete.\n"
                         f"Value: {s}{p.total_value:,.2f}  |  "
                         f"Updated: {p.last_updated.strftime('%H:%M UTC')}",
-                        parse_mode="Markdown",
+                        parse_mode="HTML",
                     )
                 else:
                     await self._reply(update, "❌ Sync failed. Check API credentials / logs.")
@@ -626,10 +626,10 @@ class TelegramBot:
                     return
                 count = engine.emergency_stop(db, p.id)
                 await self._reply(update, 
-                    f"⛔ *Emergency Stop Activated*\n"
+                    f"⛔ <b>Emergency Stop Activated</b>\n"
                     f"{count} automation rule(s) paused.\n"
                     "Use the web dashboard to re-enable.",
-                    parse_mode="Markdown",
+                    parse_mode="HTML",
                 )
         except Exception as e:
             logger.error(f"/pause error: {e}")
@@ -673,15 +673,19 @@ class TelegramBot:
                     from backend.ai.groq_scout import GroqScout
                     groq = GroqScout()
                     if groq.enabled:
+                        best_swap = report['top_swaps'][0] if report['top_swaps'] else None
                         prompt = (
                             "Summarise this portfolio scout report in ONE plain-English sentence "
                             "(max 20 words). No formatting, no JSON, no commentary.\n\n"
                             f"Weakest trader: {report['weakest']['username']} "
                             f"(score {report['weakest']['score']}/100).\n"
-                            f"Best swap: {report['top_swaps'][0]['username']} "
-                            f"(score {report['top_swaps'][0]['score']}/100, "
-                            f"delta +{report['top_swaps'][0]['delta']}).\n"
-                            f"Portfolio avg score: {report['avg_score']}/100."
+                            + (
+                                f"Best swap: {best_swap['username']} "
+                                f"(score {best_swap['score']}/100, "
+                                f"delta +{best_swap['delta']}).\n"
+                                if best_swap else "No swap candidates available.\n"
+                            )
+                            + f"Portfolio avg score: {report['avg_score']}/100."
                         )
                         import asyncio
                         def _call():
@@ -795,10 +799,10 @@ class TelegramBot:
         """
         if len(args) < 2:
             await self._reply(update,
-                "Usage: `/swap <old_username> <new_username>`\n\n"
-                "Example: `/swap booker03 ConsistentCapital`\n"
+                "Usage: <code>/swap &lt;old_username&gt; &lt;new_username&gt;</code>\n\n"
+                "Example: <code>/swap booker03 ConsistentCapital</code>\n"
                 "Run /scout first to get a recommendation.",
-                parse_mode="Markdown",
+                parse_mode="HTML",
             )
             return
 
@@ -809,7 +813,7 @@ class TelegramBot:
         from backend.database.models import Portfolio, CopiedTrader, Alert, AlertType
         from backend.services.etoro_service import EToroSyncService
 
-        await self._reply(update, f"⚙️ Processing swap: *{old_username}* → *{new_username}*...", parse_mode="Markdown")
+        await self._reply(update, f"⚙️ Processing swap: <b>{old_username}</b> → <b>{new_username}</b>...", parse_mode="HTML")
 
         sync_service = EToroSyncService()
         client = sync_service.client
@@ -869,12 +873,12 @@ class TelegramBot:
                 db.commit()
 
                 await self._reply(update,
-                    f"✅ *Swap Complete*\n\n"
-                    f"❌ Stopped copying *{old_username}*\n"
-                    f"➡️ Ready to copy *{new_username}*\n\n"
+                    f"✅ <b>Swap Complete</b>\n\n"
+                    f"❌ Stopped copying <b>{old_username}</b>\n"
+                    f"➡️ Ready to copy <b>{new_username}</b>\n\n"
                     f"Note: Starting a new copy must be done via the eToro UI "
                     f"or by adding the trader through the dashboard.",
-                    parse_mode="Markdown",
+                    parse_mode="HTML",
                 )
 
         except Exception as e:

@@ -412,6 +412,14 @@ class EToroAPIClient:
                             f"Response: {resp_body[:300]}"
                         )
                         continue
+                    elif resp.status_code == 404:
+                        # 404 = endpoint doesn't exist on this API plan.
+                        # No point trying other param formats — break immediately.
+                        logger.warning(
+                            "Discovery returned 404 RouteNotFound — endpoint not available on "
+                            "this API plan. Stopping all format attempts."
+                        )
+                        return []
                     else:
                         logger.warning(
                             f"Discovery format {fmt_index + 1} returned {resp.status_code}: "
@@ -649,10 +657,15 @@ class EToroSyncService:
                 continue
 
             username = m.get("parentUsername", "Unknown")
+            # allocated_amount = mirror equity (what's actually at stake for this trader)
+            # Used by partial_profit_lock and reduce_on_drawdown to compute new amounts
+            allocated_amount = mirror_equity
+
             result.append({
                 "trader_id": str(mirror_id),
                 "username": username,
                 "allocation_pct": (mirror_equity / max(total_value, 1.0)) * 100,
+                "allocated_amount": round(allocated_amount, 2),
                 "avg_return": 0.0,
                 "max_drawdown": 0.0,
                 "volatility": 0.0,
@@ -688,6 +701,7 @@ class EToroSyncService:
             if trader:
                 trader.trader_username = info.get("username", trader.trader_username)
                 trader.allocation_pct = info.get("allocation_pct", trader.allocation_pct)
+                trader.allocated_amount = info.get("allocated_amount", trader.allocated_amount)
                 trader.avg_monthly_return = info.get("avg_return", trader.avg_monthly_return)
                 trader.max_drawdown = info.get("max_drawdown", trader.max_drawdown)
                 trader.volatility = info.get("volatility", trader.volatility)

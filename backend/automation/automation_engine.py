@@ -733,7 +733,7 @@ class AutomationEngine:
         volatility_threshold = rule.threshold or 30.0
         to_reduce = [
             t.trader_username for t in traders
-            if t.volatility >= volatility_threshold
+            if (t.volatility or 0.0) >= volatility_threshold
         ]
 
         if to_reduce:

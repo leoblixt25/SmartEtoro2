@@ -129,7 +129,7 @@ async def lifespan(app: FastAPI):
             logger.info(f"Telegram webhook set to {webhook_url}")
             await telegram_bot.setup_commands()
             await telegram_bot.send_message(
-                "🚀 *CopyVault Server Started*\n\n"
+                "🚀 <b>CopyVault Server Started</b>\n\n"
                 "eToro sync is active.\n"
                 "Use the menu below or tap /help for commands.",
                 show_keyboard=True,
@@ -225,7 +225,7 @@ async def telegram_test():
     if not telegram_bot.enabled:
         raise HTTPException(status_code=400, detail="Telegram bot is not enabled. Check TELEGRAM_BOT_TOKEN and TELEGRAM_ALLOWED_USER_ID.")
     try:
-        await telegram_bot.send_message("✅ *Test message*\n\nCopyVault Telegram bot is connected and operational.\nServer time: " + datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"), show_keyboard=True)
+        await telegram_bot.send_message("✅ <b>Test message</b>\n\nCopyVault Telegram bot is connected and operational.\nServer time: " + datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"), show_keyboard=True)
         return {"status": "ok", "message": "Test message sent successfully"}
     except Exception as e:
         telegram_bot.last_error = str(e)

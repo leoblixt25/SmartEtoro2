@@ -188,11 +188,13 @@ class SchedulerService:
                             # Validate real success: check error flag AND success_count
                             has_error = (etoro_response or {}).get("error", False)
                             success_count = (etoro_response or {}).get("success_count", None)
-                            # success = no top-level error AND (no success_count metric OR at least 1 success)
+                            total = (etoro_response or {}).get("total", None)
+                            # success = no error AND (no count metric OR at least 1 succeeded OR nothing to act on)
                             if has_error:
                                 success = False
-                            elif success_count is not None:
-                                success = success_count > 0
+                            elif success_count is not None and total is not None:
+                                # 0/0 = nothing to do (no active traders) — not a failure
+                                success = success_count > 0 or total == 0
                             else:
                                 success = True  # legacy actions without success_count
                             engine.log_execution(
@@ -280,10 +282,11 @@ class SchedulerService:
                                 )
                                 has_error = (etoro_response or {}).get("error", False)
                                 success_count = (etoro_response or {}).get("success_count", None)
+                                total = (etoro_response or {}).get("total", None)
                                 if has_error:
                                     success = False
-                                elif success_count is not None:
-                                    success = success_count > 0
+                                elif success_count is not None and total is not None:
+                                    success = success_count > 0 or total == 0
                                 else:
                                     success = True
                                 engine.log_execution(
@@ -431,14 +434,14 @@ class SchedulerService:
                         from backend.ai.groq_scout import GroqScout
                         groq = GroqScout()
                         if groq.enabled:
+                            _best = report["top_swaps"][0] if report["top_swaps"] else None
                             prompt = (
                                 "Summarise this portfolio scout report in ONE plain-English sentence "
                                 "(max 20 words). No formatting, no JSON.\n\n"
                                 f"Weakest trader: {report['weakest']['username']} "
                                 f"(score {report['weakest']['score']}/100).\n"
-                                f"Best swap: {report['top_swaps'][0]['username']} "
-                                f"(score {report['top_swaps'][0]['score']}/100).\n"
-                                f"Portfolio avg score: {report['avg_score']}/100."
+                                + (f"Best swap: {_best['username']} (score {_best['score']}/100).\n" if _best else "No swap candidates.\n")
+                                + f"Portfolio avg score: {report['avg_score']}/100."
                             )
                             import asyncio
                             def _call():
@@ -465,10 +468,11 @@ class SchedulerService:
                         for pnl in w.get("penalties", []):
                             message_parts.append(f"⚠ {pnl}")
                         if report["top_swaps"]:
+                            _ts = report["top_swaps"][0]
                             message_parts.append(
-                                f"Recommended swap: {report['top_swaps'][0]['username']} "
-                                f"(score {report['top_swaps'][0]['score']}/100, "
-                                f"delta +{report['top_swaps'][0]['delta']})"
+                                f"Recommended swap: {_ts['username']} "
+                                f"(score {_ts['score']}/100, "
+                                f"delta +{_ts['delta']})"
                             )
                         severity = "warning"
                     else:
@@ -530,11 +534,12 @@ class SchedulerService:
                             for pnl in report["weakest"].get("penalties", []):
                                 msg += f"⚠️ {pnl}\n"
                             if report["top_swaps"]:
+                                _sw = report["top_swaps"][0]
                                 msg += (
-                                    f"\n<b>Top swap:</b> {report['top_swaps'][0]['username']} "
-                                    f"(score {report['top_swaps'][0]['score']}/100, "
-                                    f"delta +{report['top_swaps'][0]['delta']})\n\n"
-                                    f"Reply <code>/swap {report['flagged_trader']} {report['top_swaps'][0]['username']}</code>"
+                                    f"\n<b>Top swap:</b> {_sw['username']} "
+                                    f"(score {_sw['score']}/100, "
+                                    f"delta +{_sw['delta']})\n\n"
+                                    f"Reply <code>/swap {report['flagged_trader']} {_sw['username']}</code>"
                                 )
                             if ai_summary:
                                 msg += f"\n\n🤖 <i>{ai_summary}</i>"
