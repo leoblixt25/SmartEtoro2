@@ -518,15 +518,157 @@ class EToroAPIClient:
         logger.warning(f"{username} unavailable across all endpoints")
         return result
 
-    async def discover_candidates(self) -> Dict:
+    async def enrich_candidates(
+        self, usernames: List[str], max_concurrent: int = 10,
+    ) -> Dict:
+        """Enrich a list of usernames via tradeinfo API with concurrency limit.
+
+        Args:
+            usernames: List of eToro usernames to enrich.
+            max_concurrent: Maximum concurrent API calls (default 10).
+
+        Returns:
+            Same dict format as discover_candidates().
+        """
+        if not usernames:
+            return {"available": [], "unavailable": [], "scanned": 0, "valid_count": 0, "rejected": 0}
+
+        import asyncio
+        sem = asyncio.Semaphore(max_concurrent)
+
+        async def _fetch(username: str) -> tuple:
+            async with sem:
+                metrics = await self.get_trader_metrics(username)
+                return username, metrics
+
+        logger.info(f"Enriching {len(usernames)} candidates (concurrency={max_concurrent})")
+
+        results = await asyncio.gather(*[_fetch(u) for u in usernames], return_exceptions=True)
+
+        available = []
+        unavailable = []
+
+        for r in results:
+            if isinstance(r, Exception):
+                logger.warning(f"Enrichment error: {r}")
+                continue
+            username, metrics = r
+
+            if metrics["available"]:
+                is_copyable = metrics.get("is_copyable", True)
+                min_copy = metrics.get("min_copy_amount", 200.0)
+
+                if metrics["total_return_pct"] == 0.0 and metrics.get("confidence", 0.0) < 1.0:
+                    unavailable.append({
+                        "username": username,
+                        "reason": "no_return_data",
+                        "detail": (
+                            f"source={metrics['source']} returned 0.0% return "
+                            f"(confidence={metrics.get('confidence', 0.0)})"
+                        ),
+                    })
+                    continue
+
+                if not is_copyable:
+                    unavailable.append({
+                        "username": username,
+                        "reason": "not_copyable",
+                        "detail": f"is_copyable={is_copyable}",
+                    })
+                    continue
+
+                if min_copy > 200:
+                    unavailable.append({
+                        "username": username,
+                        "reason": "min_copy_too_high",
+                        "detail": f"minimum_copy={min_copy}",
+                    })
+                    continue
+
+                available.append({
+                    "username": username,
+                    "risk_score": metrics["risk_score"],
+                    "total_return_pct": metrics["total_return_pct"],
+                    "max_drawdown": metrics["max_drawdown"],
+                    "volatility": metrics["volatility"],
+                    "avg_return": metrics["avg_return"],
+                    "avg_monthly_return": metrics["avg_return"],
+                    "copiers": 0,
+                    "is_copiable": is_copyable,
+                    "min_copy_amount": min_copy,
+                    "source": metrics["source"],
+                })
+            else:
+                unavailable.append({"username": username, "reason": "all_endpoints_failed"})
+
+        result = {
+            "available": available,
+            "unavailable": unavailable,
+            "scanned": len(usernames),
+            "valid_count": len(available),
+            "rejected": len(unavailable),
+        }
+
+        logger.info(
+            f"Enrichment: {len(available)} valid / {len(unavailable)} rejected "
+            f"(total {len(usernames)} scanned)"
+        )
+        return result
+
+    async def discover_social_top(self, limit: int = 100) -> List[str]:
+        """Try to discover popular traders from eToro's social/ranking APIs.
+
+        Tries multiple eToro web API endpoints used by the etoro.com UI.
+        Returns a deduplicated list of usernames found.
+        """
+        discovered: List[str] = []
+        endpoints = [
+            f"{self.BASE_URL}/api/v1/rankings/traders?limit={limit}",
+            f"{self.BASE_URL}/api/v1/social/top/monthly?limit={limit}",
+            f"https://www.etoro.com/api/social/top/month?limit={limit}",
+            f"https://www.etoro.com/api/social/top/week?limit={limit}",
+        ]
+
+        for url in endpoints:
+            try:
+                data = await self._api_get_with_retry(url, timeout=10.0)
+                if data is None:
+                    continue
+
+                raw_list = []
+                if isinstance(data, list):
+                    raw_list = data
+                elif isinstance(data, dict):
+                    raw_list = data.get("data", data.get("results", data.get("PopularCopyTraders", [])))
+
+                for entry in raw_list:
+                    if not isinstance(entry, dict):
+                        continue
+                    username = entry.get("Username") or entry.get("username")
+                    if username and isinstance(username, str) and username.strip():
+                        discovered.append(username.strip())
+
+            except Exception as e:
+                logger.debug(f"Social discovery endpoint {url} failed: {e}")
+                continue
+
+        unique = list(dict.fromkeys(discovered))
+        if unique:
+            logger.info(f"Social discovery: found {len(unique)} unique traders from {len(endpoints)} endpoints")
+        else:
+            logger.info("Social discovery: no traders found from any endpoint")
+        return unique
+
+    async def discover_candidates(self, usernames: Optional[List[str]] = None) -> Dict:
         """Discover trader candidates with resilient multi-endpoint fallback.
+
+        Args:
+            usernames: Optional list of usernames to check. If None, uses
+                       CANDIDATE_TRADERS env var or FALLBACK_TRADERS constant.
 
         Uses get_trader_metrics() which tries:
           1. Primary: /api/v1/user-info/people/{username}/tradeinfo
           2. Fallback: portfolio/live, gain, daily-gain
-
-        A candidate is valid if ANY endpoint returns data.
-        Only rejected when ALL endpoints fail.
 
         Returns dict with:
           available   — candidates with metrics from any source
@@ -537,14 +679,15 @@ class EToroAPIClient:
         """
         from backend.utils.constants import FALLBACK_TRADERS, CANDIDATE_TRADERS_ENV
 
-        raw = os.getenv(CANDIDATE_TRADERS_ENV, "")
-        usernames = [u.strip() for u in raw.split(",") if u.strip()] if raw else FALLBACK_TRADERS[:]
+        if usernames is None:
+            raw = os.getenv(CANDIDATE_TRADERS_ENV, "")
+            usernames = [u.strip() for u in raw.split(",") if u.strip()] if raw else FALLBACK_TRADERS[:]
 
         if not usernames:
             logger.warning("No candidate traders configured — scout will have no discovery targets")
             return {"available": [], "unavailable": [], "scanned": 0, "valid_count": 0, "rejected": 0}
 
-        logger.info(f"Discovering {len(usernames)} candidate traders: {usernames}")
+        logger.info(f"Discovering {len(usernames)} candidate traders")
 
         available = []
         unavailable = []
@@ -553,9 +696,6 @@ class EToroAPIClient:
             metrics = await self.get_trader_metrics(username)
 
             if metrics["available"]:
-                # Reject candidates where fallback endpoints returned
-                # 0.0% return — means the endpoint has no real data.
-                # tradeinfo (confidence=1.0) is authoritative even at 0.0%.
                 is_copyable = metrics.get("is_copyable", True)
                 min_copy = metrics.get("min_copy_amount", 200.0)
 

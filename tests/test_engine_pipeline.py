@@ -182,13 +182,15 @@ class TestRankCandidates:
 
 
 class TestDiscoverTopTraders:
-    """discover_top_traders handles new Dict response and fallback."""
+    """discover_top_traders uses multi-source strategy with fallback."""
 
     @pytest.mark.asyncio
-    async def test_dict_with_available_returns_list(self):
+    async def test_enrich_candidates_returns_available(self):
         with patch("backend.services.etoro_service.EToroAPIClient") as MockClient:
             client = AsyncMock()
-            client.discover_candidates = AsyncMock(return_value={
+            client.enabled = True
+            client.discover_social_top = AsyncMock(return_value=[])
+            client.enrich_candidates = AsyncMock(return_value={
                 "available": [{"username": "trader1"}, {"username": "trader2"}],
                 "unavailable": [],
                 "scanned": 2,
@@ -203,16 +205,18 @@ class TestDiscoverTopTraders:
             assert result[0]["username"] == "trader1"
 
     @pytest.mark.asyncio
-    async def test_dict_with_empty_available_triggers_fallback(self):
+    async def test_empty_enrichment_triggers_emergency_fallback(self):
         with patch("backend.services.etoro_service.EToroAPIClient") as MockClient:
             client = AsyncMock()
-            client.discover_candidates = AsyncMock(return_value={
+            client.enabled = True
+            client.discover_social_top = AsyncMock(return_value=[])
+            client.enrich_candidates = AsyncMock(return_value={
                 "available": [],
                 "unavailable": [
-                    {"username": "bad1", "reason": "tradeinfo_not_found"},
-                    {"username": "bad2", "reason": "tradeinfo_not_found"},
+                    {"username": "bad1", "reason": "all_endpoints_failed"},
+                    {"username": "bad2", "reason": "all_endpoints_failed"},
                 ],
-                "scanned": 3,
+                "scanned": 2,
                 "valid_count": 0,
                 "rejected": 2,
             })
@@ -220,50 +224,35 @@ class TestDiscoverTopTraders:
 
             from backend.services.market_data import discover_top_traders
             result = await discover_top_traders()
-            # Should fall back to _default_trader_candidates
-            assert len(result) > 0
-            assert result[0]["username"] in [
-                "JeppeKirkBonde", "CPHequities", "Jaynemesis",
-                "booker03", "ConsistentCapital", "GrowthEngine",
-                "AlphaPulse", "SmartMoneyFX",
-            ]
-
-    @pytest.mark.asyncio
-    async def test_exception_triggers_fallback(self):
-        with patch("backend.services.etoro_service.EToroAPIClient") as MockClient:
-            client = AsyncMock()
-            client.discover_candidates = AsyncMock(side_effect=Exception("API down"))
-            MockClient.return_value = client
-
-            from backend.services.market_data import discover_top_traders
-            result = await discover_top_traders()
+            # Should fall back to legacy
             assert len(result) > 0
 
     @pytest.mark.asyncio
-    async def test_partial_unavailable_logged_not_included(self):
+    async def test_exception_triggers_emergency_fallback(self):
         with patch("backend.services.etoro_service.EToroAPIClient") as MockClient:
             client = AsyncMock()
-            client.discover_candidates = AsyncMock(return_value={
-                "available": [{"username": "good"}],
-                "unavailable": [{"username": "bad", "reason": "tradeinfo_not_found"}],
-                "scanned": 2,
-                "valid_count": 1,
-                "rejected": 1,
+            client.enabled = True
+            client.discover_social_top = AsyncMock(side_effect=Exception("API down"))
+            client.enrich_candidates = AsyncMock(return_value={
+                "available": [],
+                "unavailable": [{"username": "x", "reason": "error"}],
+                "scanned": 45,
+                "valid_count": 0,
+                "rejected": 45,
             })
             MockClient.return_value = client
 
             from backend.services.market_data import discover_top_traders
             result = await discover_top_traders()
-            assert len(result) == 1
-            assert result[0]["username"] == "good"
+            assert len(result) > 0
 
 
-class TestDefaultTraderCandidates:
-    """_default_trader_candidates returns expected static list."""
+class TestLegacyDefaultCandidates:
+    """_legacy_default_candidates returns expected static list."""
 
     def test_returns_known_traders(self):
-        from backend.services.market_data import _default_trader_candidates
-        result = _default_trader_candidates()
+        from backend.services.market_data import _legacy_default_candidates
+        result = _legacy_default_candidates()
         assert len(result) == 8
         usernames = [t["username"] for t in result]
         assert "JeppeKirkBonde" in usernames

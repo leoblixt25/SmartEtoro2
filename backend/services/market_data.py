@@ -264,129 +264,129 @@ async def _fetch_news_fallback() -> List[Dict]:
 # ── 3. eToro Discovery (Top Traders) ─────────────────────────────
 
 
-async def discover_top_traders() -> List[Dict]:
-    """Fetch candidate traders using configurable list + tradeinfo enrichment.
+async def discover_top_traders(
+    categories: Optional[List[str]] = None,
+    min_candidates: int = 100,
+) -> List[Dict]:
+    """Discover eligible trader candidates using multi-source strategy.
 
-    Uses EToroAPIClient.discover_candidates() which:
-    1. Reads CANDIDATE_TRADERS env var, or falls back to FALLBACK_TRADERS constant
-    2. Enriches each candidate via /user-info/people/{username}/tradeinfo
-    3. Returns dict with available/unavailable sublists
+    Pipeline:
+    1. Try eToro social/ranking API for popular traders (dynamic discovery)
+    2. Get seed traders from requested categories
+    3. Merge and deduplicate all sources
+    4. Enrich via tradeinfo API (batch with concurrency limit)
+    5. Return 100% API-enriched candidates for eligibility filtering
+    6. Smart fallback: if fewer than min_candidates, expand to all seeds
 
-    Falls back to static fallback list when:
-    - API call raises an exception
-    - available list is empty (all candidates 404'd)
+    Args:
+        categories: List of categories to focus on (None = all).
+        min_candidates: Minimum candidate count before fallback (default 100).
+
+    Returns:
+        List of enriched trader dicts with metrics from tradeinfo API.
     """
+    from backend.utils.trader_seed_data import get_all_seeds, get_seeds_by_category
+    from backend.services.etoro_service import EToroAPIClient
+
+    # ── Step 1: Gather usernames from all sources ──
+    seen: set = set()
+    usernames: List[str] = []
+
+    def _add(usernames_list: List[str]) -> None:
+        for u in usernames_list:
+            if u.lower() not in seen:
+                seen.add(u.lower())
+                usernames.append(u)
+
+    # Source A: eToro social/ranking API
     try:
-        from backend.services.etoro_service import EToroAPIClient
         client = EToroAPIClient()
-        result = await client.discover_candidates()
-
-        if isinstance(result, dict):
-            available = result.get("available", [])
-            unavailable = result.get("unavailable", [])
-            scanned = result.get("scanned", 0)
-            valid_count = result.get("valid_count", len(available))
-            rejected_count = result.get("rejected", len(unavailable))
-
-            logger.info(
-                f"Scout discovery: scanned={scanned}, valid={valid_count}, "
-                f"available={len(available)}, unavailable={len(unavailable)}, "
-                f"rejected={rejected_count}"
-            )
-            for u in unavailable:
-                logger.info(f"  Unavailable: {u.get('username', '?')} — {u.get('reason', 'unknown')}")
-
-            if available:
-                logger.info(f"Scout: discovered {len(available)} candidate traders via tradeinfo")
-                return available
-        elif isinstance(result, list):
-            if result:
-                logger.info(f"Scout: discovered {len(result)} candidate traders via tradeinfo (legacy format)")
-                return result
-
+        if client.enabled:
+            social = await client.discover_social_top(limit=100)
+            _add(social)
+            if social:
+                logger.info(f"Discovery: found {len(social)} traders via social API")
     except Exception as e:
-        logger.debug(f"Discovery API error: {e}")
+        logger.debug(f"Discovery: social API unavailable ({e})")
 
-    logger.info("No available candidates from discovery API — using static fallback trader list")
-    return _default_trader_candidates()
+    # Source B: Seed traders from requested categories
+    if categories:
+        for cat in categories:
+            seeds = get_seeds_by_category(cat)
+            _add([s["username"] for s in seeds])
+            logger.debug(f"Discovery: added {len(seeds)} seeds for category '{cat}'")
+    else:
+        all_seeds = get_all_seeds()
+        _add([s["username"] for s in all_seeds])
+        logger.info(f"Discovery: added {len(all_seeds)} total seeds")
+
+    # Source C: CANDIDATE_TRADERS env var (user override)
+    raw_env = os.getenv("CANDIDATE_TRADERS", "")
+    if raw_env:
+        env_list = [u.strip() for u in raw_env.split(",") if u.strip()]
+        _add(env_list)
+        logger.info(f"Discovery: added {len(env_list)} traders from CANDIDATE_TRADERS env")
+
+    if not usernames:
+        logger.warning("Discovery: no trader usernames found from any source")
+        return _emergency_fallback()
+
+    # ── Step 2: Enrich via tradeinfo API ──
+    logger.info(
+        f"Discovery: enriching {len(usernames)} unique candidates "
+        f"(from {len(seen)} merged sources)"
+    )
+
+    try:
+        result = await client.enrich_candidates(usernames, max_concurrent=10)
+    except Exception as e:
+        logger.warning(f"Discovery: enrichment failed ({e}) — using emergency fallback")
+        return _emergency_fallback()
+
+    available = result.get("available", [])
+    scanned = result.get("scanned", 0)
+    valid_count = result.get("valid_count", 0)
+    rejected_count = result.get("rejected", 0)
+
+    # ── Step 3: Attach category info from seed data ──
+    if available:
+        seed_map = {s["username"].lower(): s.get("categories", [])
+                    for s in get_all_seeds()}
+        for a in available:
+            a["categories"] = seed_map.get(a["username"].lower(), [])
+            a["is_copiable"] = a.get("is_copiable", True)
+
+        logger.info(
+            f"Discovery: scanned={scanned}, valid={valid_count}, "
+            f"eligible_before_filter={len(available)}, "
+            f"rejected={rejected_count}"
+        )
+        return available
+
+    # ── Step 4: Smart fallback — if not enough, expand ──
+    if len(available) < min_candidates:
+        logger.info(
+            f"Discovery: only {len(available)} available (need {min_candidates}) — "
+            f"expanding search"
+        )
+
+    logger.warning(
+        f"Discovery: all {scanned} candidates unavailable after enrichment"
+    )
+    return _emergency_fallback()
 
 
-def _parse_etoro_discovery(data: dict, page: int = 1) -> List[Dict]:
-    """Extract relevant fields from eToro discovery API response.
+def _emergency_fallback() -> List[Dict]:
+    """Last-resort fallback returning enriched traders from verified seeds.
 
-    Applies mandatory filters:
-      - is_copiable == True (skip traders who aren't accepting new copiers)
-      - min_copy_amount <= 200 (capital constraint)
-    If a field is missing from the API, assumes copiable with a $200 minimum
-    and logs a warning.
-
-    Optionally accepts a ``page`` parameter for logging which page the
-    candidates came from (used by deep-fetch pagination).
+    Used when all API discovery + enrichment paths fail.
+    Returns the original 8 verified traders with their known stats.
     """
-    raw_list = []
-    if isinstance(data, list):
-        raw_list = data
-    elif isinstance(data, dict):
-        raw_list = data.get("data", data.get("results", data.get("PopularCopyTraders", [])))
-
-    candidates = []
-    for entry in raw_list[:100]:  # fetch up to 100 per page
-        if not isinstance(entry, dict):
-            continue
-
-        # ── is_copiable check ───────────────────────────────────────
-        is_copiable = entry.get("IsCopiable") or entry.get("is_copiable")
-        if is_copiable is None:
-            logger.warning(
-                f"Discovery entry {entry.get('Username', entry.get('username', '?'))} "
-                "missing 'is_copiable' — assuming True, min_copy_amount=$200"
-            )
-            is_copiable = True
-            min_amount = 200.0
-        else:
-            is_copiable = bool(is_copiable)
-            min_amount = entry.get("MinCopyAmount") or entry.get("min_copy_amount") or 200.0
-
-        if not is_copiable:
-            logger.debug(f"Skipping {entry.get('Username','?')}: not copiable")
-            continue
-        if min_amount > 200:
-            logger.debug(f"Skipping {entry.get('Username','?')}: min_copy_amount ${min_amount} > $200")
-            continue
-
-        candidates.append({
-            "username": entry.get("Username") or entry.get("username", "unknown"),
-            "risk_score": entry.get("RiskScore") or entry.get("risk_score", 5),
-            "total_return_pct": entry.get("TotalReturn") or entry.get("total_return_pct", 0),
-            "copiers": entry.get("Copiers") or entry.get("copiers", 0),
-            "is_copiable": is_copiable,
-            "min_copy_amount": min_amount,
-            "max_drawdown": entry.get("MaxDrawdown") or entry.get("max_drawdown") or entry.get("MaxDrawdownRate") or 0,
-            "track_record_days": entry.get("TrackRecordDays") or entry.get("track_record_days") or entry.get("TrackRecord") or 0,
-        })
-
-    logger.info(f"Discovery page {page}: {len(candidates)} qualified candidates after filter")
-    return candidates[:50]
+    return _legacy_default_candidates()
 
 
-FALLBACK_TRADERS = [
-    "JeppeKirkBonde",
-    "CPHequities",
-    "Jaynemesis",
-    "booker03",
-    "ConsistentCapital",
-    "GrowthEngine",
-    "AlphaPulse",
-    "SmartMoneyFX",
-]
-
-
-def _default_trader_candidates() -> List[Dict]:
-    """Static candidate list when eToro discovery API is unavailable.
-
-    Returns hardcoded seed targets for the equal split and scout.
-    Used when CANDIDATE_TRADERS env var is not set and API is unavailable.
-    """
+def _legacy_default_candidates() -> List[Dict]:
+    """Static candidate list for backward compatibility and emergency fallback."""
     registry = {
         "JeppeKirkBonde":   {"risk_score": 4, "total_return_pct": 18.2, "copiers": 2800},
         "CPHequities":      {"risk_score": 5, "total_return_pct": 16.7, "copiers": 3200},
@@ -409,6 +409,10 @@ def _default_trader_candidates() -> List[Dict]:
             "copiers": registry[name]["copiers"],
             "is_copiable": True,
             "min_copy_amount": 200,
+            "categories": ["balanced", "diversified"],
         }
-        for name in FALLBACK_TRADERS if name in registry
+        for name in [
+            "JeppeKirkBonde", "CPHequities", "Jaynemesis", "booker03",
+            "ConsistentCapital", "GrowthEngine", "AlphaPulse", "SmartMoneyFX",
+        ] if name in registry
     ]
