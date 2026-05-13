@@ -241,7 +241,8 @@ async def cmd_scout(update: Update, args: List[str], bot) -> None:
 
             from backend.scout.trader_scout import get_scout_runner
             runner = get_scout_runner()
-            report = await runner.run(holdings, candidates)
+            available_balance = p.available_cash or p.total_value * 0.1
+            report = await runner.run(holdings, candidates, available_balance=available_balance)
 
             # ── Optional AI narrator (1 sentence) ──
             ai_summary = None

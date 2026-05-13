@@ -154,6 +154,67 @@ def copy_suitability_score(trader: Dict) -> float:
     return max(0, min(100, raw))
 
 
+# ── Recommendation Explanations ─────────────────────────────────────
+
+def explain_recommendation(trader: Dict) -> List[str]:
+    """Generate human-readable reasons why a trader was recommended.
+
+    Returns a list of bullet-point reasons based on the trader's metrics.
+    """
+    reasons = []
+    username = trader.get("username", "?")
+
+    perf = trader.get("performance_score", 0)
+    risk_cat = trader.get("risk_score_category", 0)
+    rtrn = trader.get("total_return_pct", 0.0) or 0.0
+    risk = trader.get("risk_score", 5.0) or 5.0
+    dd = trader.get("max_drawdown", 0.0) or 0.0
+    vol = trader.get("volatility", 0.0) or 0.0
+    monthly = (trader.get("avg_monthly_return") or trader.get("avg_return") or 0.0)
+    min_copy = trader.get("min_copy_amount", 200.0) or 200.0
+    sharpe = trader.get("sharpe_score", 0.0) or 0.0
+    copiers = trader.get("copiers", 0) or 0
+
+    if rtrn > 15:
+        reasons.append(f"Strong {rtrn:.1f}% return")
+    elif rtrn > 5:
+        reasons.append(f"Positive {rtrn:.1f}% return")
+    if dd < 10:
+        reasons.append(f"Low drawdown ({dd:.1f}%)")
+    if risk <= 5:
+        reasons.append(f"Risk score within range ({risk:.1f})")
+    if min_copy <= 500:
+        reasons.append(f"Affordable to copy (${min_copy:.0f} minimum)")
+    elif min_copy <= 2000:
+        reasons.append(f"Copiable with ${min_copy:.0f} minimum")
+    if monthly > 0.5:
+        reasons.append(f"Consistent monthly returns ({monthly:.2f}%)")
+    if sharpe > 1.0:
+        reasons.append(f"Strong risk-adjusted returns (Sharpe {sharpe:.2f})")
+    if copiers > 1000:
+        reasons.append(f"Popular with {copiers}+ copiers")
+    if 1 <= trader.get("trade_frequency", 0) <= 5:
+        reasons.append("Stable trade frequency")
+    if perf >= 60:
+        reasons.append("High performance score")
+    if risk_cat >= 60:
+        reasons.append("Low risk profile")
+
+    reasons.append("Not already copied")
+
+    logger.info(f"Recommendation explanations for {username}: {reasons}")
+    return reasons
+
+
+def explain_exclusion(excluded: Dict) -> List[str]:
+    """Format exclusion reasons for display."""
+    reasons = excluded.get("exclusion_reasons", [])
+    if not reasons:
+        raw = excluded.get("exclusion_reason", "")
+        reasons = [raw] if raw else ["unknown"]
+    return reasons
+
+
 # ── Composite Score ─────────────────────────────────────────────────
 
 def calculate_weighted_score(trader: Dict) -> Dict:

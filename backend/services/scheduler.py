@@ -469,7 +469,8 @@ class SchedulerService:
                         continue
 
                     runner = get_scout_runner()
-                    report = await runner.run(holdings, candidates)
+                    available_balance = portfolio.available_cash or portfolio.total_value * 0.1
+                    report = await runner.run(holdings, candidates, available_balance=available_balance)
 
                     holdings_ranked = report.get("holdings_ranked", [])
                     top_swaps = report.get("top_swaps", [])

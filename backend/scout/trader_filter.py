@@ -5,7 +5,7 @@ unsuitable for copying. All filters are deterministic.
 """
 
 import logging
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +16,103 @@ DEFAULT_SEED_TRADERS = [
     "CPHequities",
     "Jaynemesis",
 ]
+
+
+# ── Eligibility Filters (pre-scoring) ──────────────────────────────
+
+def filter_already_copied(candidates: List[Dict], holdings_usernames: set) -> Tuple[List[Dict], List[Dict]]:
+    """Split candidates into not-copied (eligible) and already-copied (excluded)."""
+    eligible = []
+    excluded = []
+    for t in candidates:
+        username = t.get("username", "")
+        if username.lower() in holdings_usernames:
+            excluded.append({**t, "exclusion_reason": "already_copied"})
+        else:
+            eligible.append(t)
+    return eligible, excluded
+
+
+def filter_minimum_capital(candidates: List[Dict], available_balance: float) -> Tuple[List[Dict], List[Dict]]:
+    """Split candidates into affordable (eligible) and too-expensive (excluded)."""
+    eligible = []
+    excluded = []
+    for t in candidates:
+        min_copy = t.get("min_copy_amount", 200.0) or 200.0
+        if min_copy > available_balance:
+            excluded.append({
+                **t,
+                "exclusion_reason": "insufficient_capital",
+                "min_copy_amount": min_copy,
+                "available_balance": available_balance,
+            })
+        else:
+            eligible.append(t)
+    return eligible, excluded
+
+
+def eligibility_filter(
+    candidates: List[Dict],
+    holdings_usernames: set,
+    available_balance: float,
+    max_risk: float = 9.0,
+    min_copier_count: int = -1,
+) -> Tuple[List[Dict], List[Dict]]:
+    """Apply all eligibility checks BEFORE scoring.
+
+    A trader is eligible ONLY if:
+      - Not already copied
+      - min_copy_amount <= available_balance
+      - risk_score <= max_risk
+      - Has recent activity (non-zero return data)
+      - copier_count > min_copier_count
+
+    Note: min_copier_count defaults to -1 (effectively no filter)
+    because the eToro discovery API often sets copiers=0. Set to a
+    positive value to require a minimum copier base.
+
+    Returns (eligible, excluded_with_reasons).
+    """
+    eligible = []
+    excluded = []
+
+    for t in candidates:
+        reasons = []
+
+        # 1. Already copied
+        username = t.get("username", "")
+        if username.lower() in holdings_usernames:
+            reasons.append("already_copied")
+
+        # 2. Minimum capital
+        min_copy = t.get("min_copy_amount", 200.0) or 200.0
+        if min_copy > available_balance:
+            reasons.append(f"insufficient_capital (min=${min_copy:.0f}, available=${available_balance:.0f})")
+
+        # 3. Risk score cap
+        risk = t.get("risk_score", 5.0) or 5.0
+        if risk > max_risk:
+            reasons.append(f"risk_score {risk:.1f} exceeds {max_risk:.0f}")
+
+        # 4. Recent activity — must have non-zero return data
+        has_return = any(
+            (t.get(k) or 0) != 0
+            for k in ("total_return_pct", "avg_monthly_return", "avg_return", "return_12m", "return_6m")
+        )
+        if not has_return:
+            reasons.append("no_return_data")
+
+        # 5. Copier count threshold (default -1 = no filter)
+        copiers = t.get("copiers", 0) or 0
+        if min_copier_count >= 0 and copiers <= min_copier_count:
+            reasons.append(f"copier_count {copiers} <= {min_copier_count}")
+
+        if reasons:
+            excluded.append({**t, "exclusion_reasons": reasons})
+        else:
+            eligible.append(t)
+
+    return eligible, excluded
 
 # ── Hard Constraints ────────────────────────────────────────────────
 

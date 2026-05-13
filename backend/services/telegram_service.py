@@ -617,7 +617,8 @@ class TelegramBot:
                 logger.info(f"Scout: loaded {len(holdings)} active traders for portfolio {p.id}")
 
                 runner = get_scout_runner()
-                report = await runner.run(holdings, candidates)
+                available_balance = p.available_cash or p.total_value * 0.1
+                report = await runner.run(holdings, candidates, available_balance=available_balance)
                 holdings_ranked = report.get("holdings_ranked", [])
                 top_swaps = report.get("top_swaps", [])
                 weakest = report.get("weakest")
