@@ -6,7 +6,6 @@ Smart portfolio assistant commands: monitor, analyze, decide.
 from __future__ import annotations
 import logging
 import os
-import time
 from datetime import datetime
 from typing import Optional
 
@@ -30,8 +29,6 @@ class TelegramBot:
         self._bot: Optional[Bot] = None
         self._started_at: Optional[datetime] = None
         self.last_error: Optional[str] = None
-        self._last_discovery: dict[int, float] = {}
-        self._discovery_cooldown: int = 86400  # 24 hours
 
         if not TELEGRAM_AVAILABLE:
             self.enabled = False
@@ -311,25 +308,11 @@ class TelegramBot:
             await self._reply(update, f"Error: {e}")
 
     async def _cmd_discovery(self, update: Update, args: list[str]) -> None:
-        chat_id = update.effective_chat.id if update.effective_chat else 0
-        now = time.time()
-        last = self._last_discovery.get(chat_id, 0)
-        remaining = self._discovery_cooldown - (now - last)
-        if remaining > 0:
-            hours = int(remaining // 3600)
-            minutes = int((remaining % 3600) // 60)
-            await self._reply(
-                update,
-                f"Discovery already ran. Try again in {hours}h {minutes}m.",
-            )
-            return
-
         from backend.database.connection import db_session
         from backend.database.models import Portfolio
         from backend.services.discovery_service import discover_eligible_traders
 
         try:
-            self._last_discovery[chat_id] = now
             await self._reply(update, "Scanning for eligible traders...")
             with db_session() as db:
                 p = db.query(Portfolio).first()

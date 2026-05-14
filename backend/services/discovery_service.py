@@ -47,7 +47,7 @@ async def discover_eligible_traders(
     available_balance = portfolio.available_cash or (portfolio.total_value or 0) * 0.1
 
     # ── 1. Discover candidates from seed data + social API ──
-    candidates = await discover_top_traders(categories=categories)
+    candidates = await discover_top_traders(categories=categories, min_traders=30)
 
     # ── 2. Eligibility filter ──
     eligible, excluded = filter_candidates(

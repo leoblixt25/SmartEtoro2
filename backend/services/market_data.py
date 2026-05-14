@@ -266,22 +266,26 @@ async def _fetch_news_fallback() -> List[Dict]:
 
 async def discover_top_traders(
     categories: Optional[List[str]] = None,
+    min_traders: int = 100,
 ) -> List[Dict]:
     """Discover eligible trader candidates dynamically from eToro API data.
 
     Pipeline:
     1. Discover usernames via 15+ eToro API endpoints concurrently
-    2. Enrich all usernames via tradeinfo API (batch, concurrency=20)
-    3. Return enriched candidates for eligibility filtering
-    4. Empty list if no real traders found (no fake/mock data)
+    2. Supplement with bootstrap traders if pool is below min_traders
+    3. Enrich all usernames via tradeinfo API (batch, concurrency=20)
+    4. Return enriched candidates for eligibility filtering
+    5. Empty list if no real traders found (no fake/mock data)
 
     Args:
         categories: Ignored (discovery is dynamic, not category-filtered).
+        min_traders: Minimum traders required before enrichment (default 100).
 
     Returns:
         List of enriched trader dicts with metrics from tradeinfo API.
     """
     from backend.services.etoro_service import EToroAPIClient
+    from backend.utils.bootstrap_traders import BOOTSTRAP_TRADERS
 
     client = EToroAPIClient()
     usernames: List[str] = []
@@ -293,15 +297,20 @@ async def discover_top_traders(
         except Exception as e:
             logger.warning(f"Discovery: API unavailable ({e})")
 
-    # Step 2: Bootstrap fallback when API returns nothing
-    if not usernames:
-        from backend.utils.bootstrap_traders import BOOTSTRAP_TRADERS
-        usernames = list(BOOTSTRAP_TRADERS)
-        logger.warning(
-            f"DISCOVERY FAILURE: API returned 0 traders — "
-            f"using {len(usernames)} bootstrap traders as fallback. "
-            f"Total scanned will be too few (< 100)."
-        )
+    # Step 2: Supplement with bootstrap traders if pool is below minimum
+    if len(usernames) < min_traders:
+        existing = {u.lower() for u in usernames}
+        added = 0
+        for name in BOOTSTRAP_TRADERS:
+            if name.lower() not in existing:
+                usernames.append(name)
+                existing.add(name.lower())
+                added += 1
+        if added:
+            logger.info(
+                f"Discovery: added {added} bootstrap traders "
+                f"(pool now {len(usernames)}, target {min_traders})"
+            )
 
     # Step 3: CANDIDATE_TRADERS env var (user override)
     raw_env = os.getenv("CANDIDATE_TRADERS", "")
@@ -317,7 +326,7 @@ async def discover_top_traders(
         logger.warning("Discovery: no traders found from any source")
         return []
 
-    # Step 3: Enrich via tradeinfo API
+    # Step 4: Enrich via tradeinfo API
     logger.info(f"Discovery: enriching {len(usernames)} candidates")
     try:
         result = await client.enrich_candidates(usernames, max_concurrent=50)
@@ -330,12 +339,12 @@ async def discover_top_traders(
     valid_count = result.get("valid_count", 0)
     rejected_count = result.get("rejected", 0)
 
-    if scanned < 100:
+    if scanned < min_traders:
         logger.warning(
-            "DISCOVERY FAILURE: scanned too few traders (%d < 100). "
-            "Discovery requires at least 100 traders for meaningful selection. "
+            "DISCOVERY FAILURE: scanned too few traders (%d < %d). "
+            "Discovery requires at least %d traders for meaningful selection. "
             "Returning empty list — no recommendations will be generated.",
-            scanned,
+            scanned, min_traders, min_traders,
         )
         return []
 

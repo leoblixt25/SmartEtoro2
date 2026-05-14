@@ -66,8 +66,17 @@ class SchedulerService:
             **interval_kwargs,
         )
 
+        # Daily Discovery Report (08:00 UTC)
+        self._scheduler.add_job(
+            self._daily_discovery_job,
+            CronTrigger(hour=8, minute=0),
+            id="daily_discovery",
+            name="Daily Discovery Report",
+            **interval_kwargs,
+        )
+
         self._scheduler.start()
-        logger.info("Scheduler started with 3 jobs (overlap prevention enabled)")
+        logger.info("Scheduler started with 4 jobs (overlap prevention enabled)")
 
     def stop(self):
         if self._scheduler:
@@ -155,3 +164,52 @@ class SchedulerService:
                                 )
         except Exception as e:
             logger.exception("Trader monitor job failed")
+
+    async def _daily_discovery_job(self):
+        """Daily discovery report — find new eligible traders and send summary."""
+        from backend.database.connection import db_session
+        from backend.database.models import Portfolio
+        from backend.services.discovery_service import discover_eligible_traders
+        from backend.services.telegram_service import TelegramBot
+
+        try:
+            bot = TelegramBot()
+            if not bot.enabled:
+                return
+
+            with db_session() as db:
+                p = db.query(Portfolio).first()
+                if not p:
+                    logger.warning("Daily discovery: no portfolio found")
+                    return
+
+                eligible, excluded, stats = await discover_eligible_traders(db, p.id)
+
+                lines = ["Daily Discovery Report\n"]
+                lines.append(
+                    f"Scanned: {stats.get('total_scanned', 0)}  "
+                    f"Eligible: {stats.get('eligible', 0)}  "
+                    f"Excluded: {stats.get('excluded', 0)}\n"
+                )
+
+                if eligible:
+                    for i, t in enumerate(eligible[:5], 1):
+                        score = t.get("score", 0)
+                        ret = t.get("total_return_pct", 0)
+                        risk = t.get("risk_score", 5)
+                        mincpy = t.get("min_copy_amount", 200)
+                        copiers = t.get("copiers", "?")
+                        lines.append(
+                            f"{i}. {t['username']} \u2014 {score}/100\n"
+                            f"   Return: {ret:+.1f}%  Risk: {risk:.1f}  "
+                            f"Copiers: {copiers}  Min copy: ${mincpy:.0f}"
+                        )
+                    if len(eligible) > 5:
+                        lines.append(f"\n... and {len(eligible) - 5} more")
+                else:
+                    lines.append("No eligible traders found this cycle.")
+
+                await bot.send_message("\n".join(lines))
+                logger.info("Daily discovery report sent")
+        except Exception as e:
+            logger.exception("Daily discovery job failed")
