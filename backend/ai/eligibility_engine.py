@@ -99,7 +99,14 @@ def has_reliable_data(trader: Dict) -> Tuple[bool, Optional[str]]:
     confidence = trader.get("confidence", 0.0)
     total_return = trader.get("total_return_pct", 0.0) or 0.0
 
-    # tradeinfo is always authoritative regardless of return
+    # Reject zero-return when trader also lacks copiers/positions (no real substance)
+    if total_return == 0.0:
+        copiers = trader.get("copiers")
+        positions = trader.get("positions_count")
+        if (copiers is None or copiers == 0) and (positions is None or positions == 0):
+            return False, "no_valid_return_data"
+
+    # tradeinfo is authoritative when it has return data
     if source == "tradeinfo" or confidence >= 1.0:
         return True, None
 
