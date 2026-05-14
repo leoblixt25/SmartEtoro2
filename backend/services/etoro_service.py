@@ -378,8 +378,8 @@ class EToroAPIClient:
             "confidence": 0.0,
             "is_copyable": True,
             "min_copy_amount": 200.0,
-            "copiers": 0,
-            "positions_count": 0,
+            "copiers": None,
+            "positions_count": None,
         }
 
     async def _api_get_with_retry(
@@ -452,6 +452,8 @@ class EToroAPIClient:
                 logger.debug(f"No copyability info in tradeinfo for {username} — assuming copyable")
                 is_copyable = True
             min_copy = float(tradeinfo.get("MinimumInvestment", tradeinfo.get("minCopyAmount", 200.0)) or 200.0)
+            copiers_raw = tradeinfo.get("Copiers", tradeinfo.get("numOfCopiers"))
+            positions_raw = tradeinfo.get("NumberOfOpenPositions", tradeinfo.get("numOfOpenPositions"))
             result.update({
                 "avg_return": float(tradeinfo.get("avgReturn", 0.0) or 0.0),
                 "risk_score": float(tradeinfo.get("riskScore", 5.0) or 5.0),
@@ -463,8 +465,8 @@ class EToroAPIClient:
                 "available": True,
                 "source": "tradeinfo",
                 "confidence": 1.0,
-                "copiers": int(tradeinfo.get("Copiers", tradeinfo.get("numOfCopiers", 0)) or 0),
-                "positions_count": int(tradeinfo.get("NumberOfOpenPositions", tradeinfo.get("numOfOpenPositions", 0)) or 0),
+                "copiers": int(copiers_raw) if copiers_raw is not None else None,
+                "positions_count": int(positions_raw) if positions_raw is not None else None,
             })
             logger.info(f"Tradeinfo for {username} loaded successfully")
             return result
@@ -601,6 +603,8 @@ class EToroAPIClient:
                     "positions_count": metrics.get("positions_count", 0),
                     "is_copiable": is_copyable,
                     "min_copy_amount": min_copy,
+                    "available": metrics.get("available", True),
+                    "confidence": metrics.get("confidence", 0.0),
                     "source": metrics["source"],
                 })
             else:
@@ -749,6 +753,8 @@ class EToroAPIClient:
                     "positions_count": metrics.get("positions_count", 0),
                     "is_copiable": is_copyable,
                     "min_copy_amount": min_copy,
+                    "available": metrics.get("available", True),
+                    "confidence": metrics.get("confidence", 0.0),
                     "source": metrics["source"],
                 })
                 logger.info(

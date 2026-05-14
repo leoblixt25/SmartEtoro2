@@ -161,19 +161,19 @@ def is_real_trader(trader: Dict) -> Tuple[bool, Optional[str]]:
     Auto-reject if:
       - No tradeinfo response (available=False)
       - Empty username
-      - Copiers < 50 (no one copies them = not a real popular investor)
-      - Open positions < 5 (no real trading activity)
       - Risk score is 0 or default (no data)
       - total_return_pct is None (no performance data)
       - Source is not authoritative tradeinfo (confidence 1.0)
+      - Copiers < 50 (only when API provides copiers data)
+      - Open positions < 5 (only when API provides positions data)
 
     Returns:
         (True, None) if trader is real, (False, reason) otherwise.
     """
     available = trader.get("available", False)
     username = trader.get("username", "")
-    copiers = int(trader.get("copiers", 0) or 0)
-    positions = int(trader.get("positions_count", 0) or 0)
+    copiers = trader.get("copiers")
+    positions = trader.get("positions_count")
     risk = float(trader.get("risk_score", 0) or 0)
     total_return = trader.get("total_return_pct")
     source = trader.get("source", "unknown")
@@ -182,16 +182,16 @@ def is_real_trader(trader: Dict) -> Tuple[bool, Optional[str]]:
         return False, "trader_not_found"
     if not username:
         return False, "missing_username"
-    if copiers < 50:
-        return False, f"insufficient_copiers ({copiers})"
-    if positions < 5:
-        return False, f"insufficient_positions ({positions})"
     if risk <= 0:
         return False, "missing_risk_score"
     if total_return is None:
         return False, "missing_return_data"
     if source != "tradeinfo":
         return False, f"unreliable_source ({source})"
+    if copiers is not None and copiers < 50:
+        return False, f"insufficient_copiers ({copiers})"
+    if positions is not None and positions < 5:
+        return False, f"insufficient_positions ({positions})"
     return True, None
 
 
