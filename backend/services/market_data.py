@@ -17,6 +17,11 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+
+class _ResultList(List[Dict]):
+    """A list that carries enrichment metadata as attributes."""
+
+
 # ── Yahoo Finance RSS / Public API ───────────────────────────────
 
 YAHOO_FEED = "https://finance.yahoo.com/news/rssindex"
@@ -334,29 +339,32 @@ async def discover_top_traders(
         logger.warning(f"Discovery: enrichment failed ({e})")
         return []
 
-    available = result.get("available", [])
+    available = _ResultList(result.get("available", []))
     scanned = result.get("scanned", 0)
-    valid_count = result.get("valid_count", 0)
-    rejected_count = result.get("rejected", 0)
+
+    for a in available:
+        a["is_copiable"] = a.get("is_copiable", True)
+
+    # Attach enrichment stats to the return list so callers can report them
+    available._enrich_scanned = scanned
+    available._enrich_valid = result.get("valid_count", 0)
+    available._enrich_rejected = result.get("rejected", 0)
 
     if scanned < min_traders:
         logger.warning(
-            "DISCOVERY FAILURE: scanned too few traders (%d < %d). "
-            "Discovery requires at least %d traders for meaningful selection. "
-            "Returning empty list — no recommendations will be generated.",
-            scanned, min_traders, min_traders,
+            "Discovery: scanned %d traders (below target %d). "
+            "Returning what we have — results may be limited.",
+            scanned, min_traders,
         )
-        return []
 
     if available:
-        for a in available:
-            a["is_copiable"] = a.get("is_copiable", True)
         logger.info(
-            f"Discovery: scanned={scanned}, valid={valid_count}, "
+            f"Discovery: scanned={scanned}, valid={result.get('valid_count', 0)}, "
             f"eligible_before_filter={len(available)}, "
-            f"rejected={rejected_count}"
+            f"rejected={result.get('rejected', 0)}"
         )
-        return available
-
-    logger.warning(f"Discovery: all {scanned} candidates unavailable after enrichment")
-    return []
+    else:
+        logger.warning(
+            f"Discovery: all {scanned} candidates unavailable after enrichment"
+        )
+    return available

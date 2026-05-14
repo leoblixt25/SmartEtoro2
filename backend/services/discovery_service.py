@@ -70,8 +70,9 @@ async def discover_eligible_traders(
     scored = rank_candidates(holdings, discovery, top_n=max_results)
 
     # ── 6. Stats and logging ──
+    enrichment_scanned = getattr(candidates, "_enrich_scanned", len(candidates))
     stats = {
-        "total_scanned": len(candidates),
+        "total_scanned": enrichment_scanned,
         "eligible": len(scored),
         "excluded": len(excluded),
         "active_traders": len(active_usernames),
@@ -80,7 +81,7 @@ async def discover_eligible_traders(
     }
 
     log_discovery_summary(
-        scanned_count=len(candidates),
+        scanned_count=enrichment_scanned,
         eligible_count=len(scored),
         excluded_count=len(excluded),
         active_count=len(active_usernames),
