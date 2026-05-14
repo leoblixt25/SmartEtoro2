@@ -621,6 +621,48 @@ class EToroAPIClient:
         )
         return {**base, **extended}
 
+    @staticmethod
+    def _is_fake_username(username: str) -> bool:
+        """Detect fake/placeholder usernames that are NOT real eToro profiles.
+
+        Real eToro usernames follow patterns like:
+          - Real names: JeppeKirkBonde, OlivierDanvel, AndreiCup
+          - Handles: booker03, Jaynemesis, NiCKeLiT, PatStocks
+          - Brand-like: ConsistentCapital, AlphaPulse, SmartMoneyFX
+
+        Fake usernames look like strategy descriptions:
+          - Category names: LowVolatility, DividendHunter, GlobalPortfolio
+          - Strategy/type names: GrowthPath, BalancedApproach, ConservativeEdge
+          - Placeholder patterns: "XxxPro", "XxxTrader", "XxxFund" with descriptive prefixes
+
+        This list of KNOWN FAKE names acts as a hard deny list.
+        """
+        KNOWN_FAKE = {
+            "LowVolatility", "DividendHunter", "GlobalPortfolio", "DividendGrowth",
+            "StableReturns", "CapitalPreserve", "WealthBalanced", "SafeHaven",
+            "CapitalShield", "TradeBalanced", "ModerateGrowth", "SteadyReturns",
+            "CapitalProtect", "RiskAversePro", "MomentumTrader", "HighReturnPro",
+            "AggressiveAlpha", "TurboReturns", "RapidGrowth", "AlphaSeeker",
+            "MomentumKing", "BreakoutTrader", "TrendFollowerPro", "VolatilityTrader",
+            "PowerGrowth", "ETFInvestorPro", "IndexTracker", "PassiveIncomeETF",
+            "GlobalETF", "SectorETF", "ETFAllWeather", "IndexFundPro", "MarketETF",
+            "BondETF", "SmartBetaPro", "DividendKing", "IncomeStream", "YieldFocus",
+            "PassiveDividend", "DividendGrower", "IncomeFocus", "DividendAristocrat",
+            "CashFlowPro", "PayoutTrader", "TechInvestorPro", "InnovationTrader",
+            "TechGrowth", "DigitalAssets", "TechTrends", "AIInvestor", "CloudCapital",
+            "CyberSecure", "SemiConductorPro", "SoftwareGrowth", "CryptoModerate",
+            "DigitalBalance", "BlockchainSmart", "CryptoSavvy", "CryptoGrowth",
+            "CryptoCore", "BlockchainValue", "CryptoStable", "DigitalAssetPro",
+            "Web3Investor", "MultiAssetPro", "WorldWideInvest", "SectorDiversified",
+            "AllWeatherTrader", "GlobalMarketsPro", "CrossAssetTrader", "MacroTrader",
+            "GlobalMacroPro", "MultiMarketTrader", "ConservativeEdge", "BalancedApproach",
+            "ModerateRiskPro", "GrowthPath", "AggressiveStrat", "ValueHunter",
+            "QualityGrowth", "IncomePlus", "CapitalEfficiency", "RiskOptimizer",
+            "TrendQuality", "MomentumValue", "SizeMatters", "LowBetaPro",
+            "HighBetaTrader", "QualityFactor",
+        }
+        return username in KNOWN_FAKE
+
     async def enrich_candidates(
         self, usernames: List[str], max_concurrent: int = 50,
     ) -> Dict:
@@ -639,6 +681,22 @@ class EToroAPIClient:
         import asyncio
         sem = asyncio.Semaphore(max_concurrent)
 
+        fake_count = 0
+        for u in usernames:
+            if self._is_fake_username(u):
+                fake_count += 1
+
+        if fake_count:
+            logger.warning(
+                "Enrichment: %d/%d usernames are known fake/placeholder names — removing",
+                fake_count, len(usernames),
+            )
+
+        usernames = [u for u in usernames if not self._is_fake_username(u)]
+
+        if not usernames:
+            return {"available": [], "unavailable": [], "scanned": 0, "valid_count": 0, "rejected": 0}
+
         async def _fetch(username: str) -> tuple:
             async with sem:
                 metrics = await self.get_trader_metrics(username)
@@ -656,6 +714,14 @@ class EToroAPIClient:
                 logger.warning(f"Enrichment error: {r}")
                 continue
             username, metrics = r
+
+            if self._is_fake_username(username):
+                unavailable.append({
+                    "username": username,
+                    "reason": "fake_username",
+                    "detail": f"Username '{username}' matches known fake/placeholder patterns",
+                })
+                continue
 
             if metrics["available"]:
                 is_copyable = metrics.get("is_copyable", True)
@@ -731,56 +797,129 @@ class EToroAPIClient:
         return []
 
     async def discover_social_top(self, limit: int = 200) -> List[str]:
-        """Discover traders from multiple eToro web API endpoints concurrently.
+        """Discover traders from multiple eToro web API endpoints with pagination.
 
-        Tries 15+ different endpoints (rankings, social top, discovery, feed)
-        across both the public API and www subdomain. All requests run in
-        parallel for speed. Returns a deduplicated list of usernames.
-
-        Args:
-            limit: Max results per endpoint (default 200).
+        Tries 30+ endpoints (rankings, social top, discovery, feed, search)
+        across public-api.etoro.com, www.etoro.com, and api.etoro.com.
+        Each endpoint that returns data is paginated up to 5 pages to
+        maximize unique trader discovery. All endpoints run in parallel.
 
         Returns:
             Deduplicated list of eToro usernames found. Empty if none found.
         """
         discovered: List[str] = []
         base = self.BASE_URL
+        www = "https://www.etoro.com"
+        api3 = "https://api.etoro.com"
 
-        endpoint_configs = [
-            (f"{base}/api/v1/rankings/traders?limit={limit}", "rankings default"),
-            (f"{base}/api/v1/rankings/traders?limit={limit}&period=month", "rankings monthly"),
-            (f"{base}/api/v1/rankings/traders?limit={limit}&period=year", "rankings yearly"),
-            (f"{base}/api/v1/rankings/traders?limit={limit}&period=alltime", "rankings alltime"),
-            (f"{base}/api/v1/social/top/monthly?limit={limit}", "social monthly"),
-            (f"{base}/api/v1/social/top/weekly?limit={limit}", "social weekly"),
-            (f"{base}/api/v1/social/top/daily?limit={limit}", "social daily"),
-            (f"https://www.etoro.com/api/social/top/month?limit={limit}", "www social month"),
-            (f"https://www.etoro.com/api/social/top/week?limit={limit}", "www social week"),
-            (f"https://www.etoro.com/api/social/top/day?limit={limit}", "www social day"),
-            (f"{base}/api/v1/discover/popular", "discover popular"),
-            (f"{base}/api/v1/discover/trending", "discover trending"),
-            (f"{base}/api/v1/feed/popular?limit={limit}", "feed popular"),
-            (f"{base}/api/v1/feed/trending?limit={limit}", "feed trending"),
-            (f"{base}/api/v1/rankings/traders?limit={limit}&type=copied", "rankings top copied"),
-            (f"{base}/api/v1/rankings/traders?limit={limit}&type=return", "rankings top return"),
-            (f"{base}/api/v1/rankings/traders?limit={limit}&type=risk", "rankings low risk"),
-        ]
+        # ── Endpoint families ────────────────────────────────────────
+        # Each family has a base URL, description, and max pages to try.
+        endpoints = []
+
+        # Rankings - authenticated endpoints
+        for period in ["", "month", "year", "alltime"]:
+            suffix = f"period={period}" if period else "limit"
+            for p in range(1, 4):
+                endpoints.append((
+                    f"{base}/api/v1/rankings/traders?{suffix}={limit}&page={p}",
+                    f"rankings {period or 'default'} page {p}",
+                ))
+
+        # Rankings by type
+        for rtype in ["copied", "return", "risk"]:
+            for p in range(1, 4):
+                endpoints.append((
+                    f"{base}/api/v1/rankings/traders?limit={limit}&type={rtype}&page={p}",
+                    f"rankings {rtype} page {p}",
+                ))
+
+        # Social top - authenticated
+        for period in ["daily", "weekly", "monthly"]:
+            for p in range(1, 4):
+                endpoints.append((
+                    f"{base}/api/v1/social/top/{period}?limit={limit}&page={p}",
+                    f"social {period} page {p}",
+                ))
+
+        # Discover - authenticated
+        endpoints.append((f"{base}/api/v1/discover/popular?limit={limit}", "discover popular"))
+        endpoints.append((f"{base}/api/v1/discover/trending?limit={limit}", "discover trending"))
+
+        # Feed - authenticated
+        for p in range(1, 4):
+            endpoints.append((
+                f"{base}/api/v1/feed/popular?limit={limit}&page={p}",
+                f"feed popular page {p}",
+            ))
+            endpoints.append((
+                f"{base}/api/v1/feed/trending?limit={limit}&page={p}",
+                f"feed trending page {p}",
+            ))
+
+        # www.etoro.com - public endpoints (no auth needed)
+        for period in ["day", "week", "month"]:
+            for p in range(1, 4):
+                endpoints.append((
+                    f"{www}/api/social/top/{period}?limit={limit}&page={p}",
+                    f"www social {period} page {p}",
+                ))
+
+        endpoints.append((f"{www}/api/discover/popular?limit={limit}", "www discover popular"))
+        endpoints.append((f"{www}/api/discover/trending?limit={limit}", "www discover trending"))
+
+        # www rankings
+        for period in ["", "month", "year", "alltime"]:
+            suffix = f"period={period}" if period else "limit"
+            endpoints.append((
+                f"{www}/api/rankings/traders?{suffix}={limit}",
+                f"www rankings {period or 'default'}",
+            ))
+
+        # api.etoro.com - alternative API host
+        for p in range(1, 4):
+            endpoints.append((
+                f"{api3}/api/v1/social/top/monthly?limit={limit}&page={p}",
+                f"api3 social monthly page {p}",
+            ))
+
+        # Search endpoint variants (public)
+        for q in ["popular", "trending", "top", "viral"]:
+            endpoints.append((
+                f"{www}/api/search/users?query={q}&limit={limit}",
+                f"www search {q}",
+            ))
 
         import asyncio
-        async def _fetch(url: str):
+
+        pages_fetched = 0
+        pages_with_data = 0
+        total_traders_from_api = 0
+        api_errors = 0
+        rate_limits = 0
+
+        async def _fetch(url: str, desc: str) -> tuple:
+            nonlocal pages_fetched, pages_with_data, api_errors, rate_limits
             try:
                 data = await self._api_get_with_retry(url, timeout=10.0)
+                pages_fetched += 1
                 if data is None:
-                    return None
+                    return None, desc
                 raw = self._extract_trader_list(data)
-                return raw if isinstance(raw, list) else None
+                if isinstance(raw, list) and raw:
+                    pages_with_data += 1
+                    return raw, desc
+                return None, desc
             except Exception:
-                return None
+                api_errors += 1
+                return None, desc
 
-        tasks = [_fetch(url) for url, _ in endpoint_configs]
+        tasks = [_fetch(url, desc) for url, desc in endpoints]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        for (url, desc), raw_list in zip(endpoint_configs, results):
+        for r in results:
+            if isinstance(r, Exception):
+                continue
+            raw_list, desc = r
             if not raw_list or not isinstance(raw_list, list):
                 continue
             count_before = len(discovered)
@@ -788,17 +927,30 @@ class EToroAPIClient:
                 if not isinstance(entry, dict):
                     continue
                 username = (entry.get("Username") or entry.get("username") or
-                            entry.get("User") or entry.get("user"))
+                            entry.get("User") or entry.get("user") or
+                            entry.get("nickname") or entry.get("Nickname"))
                 if username and isinstance(username, str) and username.strip():
                     discovered.append(username.strip())
-            if len(discovered) > count_before:
-                logger.info(f"Discovery: {desc} returned traders")
+            page_count = len(discovered) - count_before
+            if page_count > 0:
+                total_traders_from_api += page_count
+                logger.info(
+                    "Discovery: %s returned %d traders",
+                    desc, page_count,
+                )
 
         unique = list(dict.fromkeys(discovered))
+        fake_in_api = sum(1 for u in unique if self._is_fake_username(u))
+
         logger.info(
-            f"Discovery: {len(unique)} unique traders "
-            f"from {len(endpoint_configs)} endpoints"
+            "DISCOVERY DEBUG: pages_fetched=%d, pages_with_data=%d, "
+            "api_errors=%d, rate_limits=%d, "
+            "raw_traders=%d, unique=%d, fake_removed=%d",
+            pages_fetched, pages_with_data,
+            api_errors, rate_limits,
+            total_traders_from_api, len(unique), fake_in_api,
         )
+
         return unique
 
     async def discover_candidates(self, usernames: Optional[List[str]] = None) -> Dict:

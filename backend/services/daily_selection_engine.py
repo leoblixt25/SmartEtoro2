@@ -13,12 +13,12 @@ Pipeline:
   6. Return top 3 with full breakdown
 
 Scoring weights (first pass):
-  35%  3-year performance
+  30%  3-year performance
   20%  Year-to-date performance
-  15%  Consistency and drawdown control
-  10%  Number of copiers
-  10%  Assets under copy
-  10%  News sentiment on current holdings
+  20%  Consistency and drawdown control
+  10%  Risk (inverted — lower is better)
+  10%  Copiers / capital copied
+  10%  Holdings quality and news sentiment
 
 Output fields per trader:
   username, 3yr performance, YTD performance, copiers, AUM,
@@ -45,11 +45,11 @@ MIN_COPY_AMOUNT = 200.0
 
 # ── Scoring weights (first pass) ─────────────────────────────────────
 
-W_3YR = 0.35
+W_3YR = 0.30
 W_YTD = 0.20
-W_CONSISTENCY = 0.15
+W_CONSISTENCY = 0.20
+W_RISK = 0.10
 W_COPIERS = 0.10
-W_AUM = 0.10
 W_NEWS = 0.10
 
 # ── Second-pass weights (re-score top 10) ────────────────────────────
@@ -189,8 +189,8 @@ async def run_daily_selection(
             "weight_3yr": W_3YR,
             "weight_ytd": W_YTD,
             "weight_consistency": W_CONSISTENCY,
+            "weight_risk": W_RISK,
             "weight_copiers": W_COPIERS,
-            "weight_aum": W_AUM,
             "weight_news": W_NEWS,
         },
     }
@@ -449,29 +449,37 @@ def _compute_consistency_score(trader: Dict) -> float:
 def _score_trader_first_pass(trader: Dict) -> Dict:
     """Score a single trader 0-100 using first-pass weighted model.
 
+    Weights:
+      30%  3-year performance
+      20%  Year-to-date performance
+      20%  Consistency and drawdown control
+      10%  Risk score (inverted — lower is better)
+      10%  Copiers / capital copied
+      10%  Holdings quality and news sentiment (added during re-score)
+
     Returns dict with component scores and total.
     """
     return_3yr = trader.get("return_3yr") or 0.0
     return_ytd = trader.get("return_ytd") or 0.0
     copiers = trader.get("copiers") or 0
-    auc = trader.get("assets_under_copy") or 0
 
     # Component scores (each 0-100)
-    score_3yr = _normalize(return_3yr, 50.0)  # 50% 3yr return = 100
-    score_ytd = _normalize(return_ytd, 30.0)   # 30% YTD = 100
+    score_3yr = _normalize(return_3yr, 50.0)
+    score_ytd = _normalize(return_ytd, 30.0)
     score_consistency = _compute_consistency_score(trader)
-    score_copiers = _normalize(min(100, copiers) / 100.0 * 100, 100.0)  # log scale
+    score_risk = _risk_to_score(trader)
     if copiers > 0:
         import math
         score_copiers = _normalize(math.log10(copiers) * 25, 100.0)
-    score_aum = _normalize(auc / 100000.0 * 100, 100.0) if auc else 0.0
+    else:
+        score_copiers = 0.0
 
     total = (
         score_3yr * W_3YR
         + score_ytd * W_YTD
         + score_consistency * W_CONSISTENCY
+        + score_risk * W_RISK
         + score_copiers * W_COPIERS
-        + score_aum * W_AUM
     )
 
     return {
@@ -480,8 +488,8 @@ def _score_trader_first_pass(trader: Dict) -> Dict:
             "score_3yr": round(score_3yr, 1),
             "score_ytd": round(score_ytd, 1),
             "score_consistency": round(score_consistency, 1),
+            "score_risk": round(score_risk, 1),
             "score_copiers": round(score_copiers, 1),
-            "score_aum": round(score_aum, 1),
         },
     }
 
@@ -495,14 +503,14 @@ def _score_all(traders: List[Dict]) -> List[Dict]:
         username = trader.get("username", "?")
         logger.info(
             "First pass %s: score=%.1f (3yr=%.1f, YTD=%.1f, "
-            "consistency=%.1f, copiers=%.1f, AUM=%.1f)",
+            "consistency=%.1f, copiers=%.1f, risk=%.1f)",
             username,
             result["first_pass_score"],
             result["components"]["score_3yr"],
             result["components"]["score_ytd"],
             result["components"]["score_consistency"],
             result["components"]["score_copiers"],
-            result["components"]["score_aum"],
+            result["components"]["score_risk"],
         )
     return scored
 

@@ -297,7 +297,11 @@ async def discover_top_traders(
     if not usernames:
         from backend.utils.bootstrap_traders import BOOTSTRAP_TRADERS
         usernames = list(BOOTSTRAP_TRADERS)
-        logger.info(f"Discovery: API returned 0 traders, using {len(usernames)} bootstrap traders")
+        logger.warning(
+            f"DISCOVERY FAILURE: API returned 0 traders — "
+            f"using {len(usernames)} bootstrap traders as fallback. "
+            f"Total scanned will be too few (< 100)."
+        )
 
     # Step 3: CANDIDATE_TRADERS env var (user override)
     raw_env = os.getenv("CANDIDATE_TRADERS", "")
@@ -325,6 +329,15 @@ async def discover_top_traders(
     scanned = result.get("scanned", 0)
     valid_count = result.get("valid_count", 0)
     rejected_count = result.get("rejected", 0)
+
+    if scanned < 100:
+        logger.warning(
+            "DISCOVERY FAILURE: scanned too few traders (%d < 100). "
+            "Discovery requires at least 100 traders for meaningful selection. "
+            "Returning empty list — no recommendations will be generated.",
+            scanned,
+        )
+        return []
 
     if available:
         for a in available:

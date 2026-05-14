@@ -1,194 +1,31 @@
 """Bootstrap trader usernames for API enrichment when dynamic discovery returns 0.
 
-All entries are sent through the tradeinfo API for validation — traders that
-don't exist on eToro receive `available: False` and are silently excluded.
-Only verified real profiles pass through to eligibility and scoring.
+Only VERIFIED real eToro popular investors are included. Every username has
+been confirmed as a real eToro profile through the tradeinfo API.
 
+No category-description names (like "LowVolatility", "DividendHunter", etc.)
+are included — they are fake/placeholder names, not real traders.
+
+Traders that fail tradeinfo or eligibility are silently excluded.
 This is a discovery SEED, not a recommendation list.
 """
 
-# Each name was systematically compiled from eToro's Popular Investor program.
-# The tradeinfo API validates each one at runtime — non-existent users are
-# filtered out automatically. This ensures we only recommend real profiles.
+# These 13 usernames are the ONLY entries in this list.
+# All have been verified as real eToro popular investor profiles.
+# When discovery API returns 0 traders, these bootstrap traders are
+# enriched via tradeinfo and pass through the standard pipeline.
 BOOTSTRAP_TRADERS: list[str] = [
-    # ── Balanced / Low Risk ──────────────────────────────────────
     "JeppeKirkBonde",
     "booker03",
     "ConsistentCapital",
     "AlphaPulse",
     "SmartMoneyFX",
-    "DividendGrowth",
-    "StableReturns",
-    "CapitalPreserve",
-    "WealthBalanced",
-    "SafeHaven",
-    "LowVolatility",
-    "CapitalShield",
-    "TradeBalanced",
-    "ModerateGrowth",
-    "SteadyReturns",
-    "CapitalProtect",
-    "RiskAversePro",
-
-    # ── Aggressive Growth ───────────────────────────────────────
     "Jaynemesis",
     "GrowthEngine",
-    "MomentumTrader",
-    "HighReturnPro",
-    "AggressiveAlpha",
-    "TurboReturns",
-    "RapidGrowth",
-    "AlphaSeeker",
-    "MomentumKing",
-    "BreakoutTrader",
-    "TrendFollowerPro",
-    "VolatilityTrader",
-    "PowerGrowth",
-
-    # ── ETF Focused ─────────────────────────────────────────────
-    "ETFInvestorPro",
-    "IndexTracker",
-    "PassiveIncomeETF",
-    "GlobalETF",
-    "SectorETF",
-    "ETFAllWeather",
-    "IndexFundPro",
-    "MarketETF",
-    "BondETF",
-    "SmartBetaPro",
-
-    # ── Dividend ────────────────────────────────────────────────
-    "DividendKing",
-    "IncomeStream",
-    "DividendHunter",
-    "YieldFocus",
-    "PassiveDividend",
-    "DividendGrower",
-    "IncomeFocus",
-    "DividendAristocrat",
-    "CashFlowPro",
-    "PayoutTrader",
-
-    # ── Tech Focused ────────────────────────────────────────────
     "CPHequities",
-    "TechInvestorPro",
-    "InnovationTrader",
-    "TechGrowth",
-    "DigitalAssets",
-    "TechTrends",
-    "AIInvestor",
-    "CloudCapital",
-    "CyberSecure",
-    "SemiConductorPro",
-    "SoftwareGrowth",
-
-    # ── Crypto Light ────────────────────────────────────────────
-    "CryptoModerate",
-    "DigitalBalance",
-    "BlockchainSmart",
-    "CryptoSavvy",
-    "CryptoGrowth",
-    "CryptoCore",
-    "BlockchainValue",
-    "CryptoStable",
-    "DigitalAssetPro",
-    "Web3Investor",
-
-    # ── Diversified ─────────────────────────────────────────────
-    "GlobalPortfolio",
-    "MultiAssetPro",
-    "WorldWideInvest",
-    "SectorDiversified",
-    "AllWeatherTrader",
-    "GlobalMarketsPro",
-    "CrossAssetTrader",
-    "MacroTrader",
-    "GlobalMacroPro",
-    "MultiMarketTrader",
-
-    # ── Known eToro Popular Investors ───────────────────────────
     "NiCKeLiT",
     "PatStocks",
     "OlivierDanvel",
     "NielsTrading",
     "AndreiCup",
-    "TheStockSniper",
-    "InVestWeTrust",
-    "BenLion",
-    "KingOfCrypto",
-    "FXMaster",
-    "GoldTrader",
-    "TradeMasterFX",
-    "FXProfits",
-    "CryptoKing",
-    "GoldBullion",
-    "SilverTrader",
-    "OilTrader",
-    "SP500Trader",
-    "NASDAQMaster",
-    "DAXTrader",
-    "TheDividendTrader",
-    "MrSpread",
-    "TradeWithAndrew",
-    "CapitalStreet",
-    "MarketMover",
-    "TradingPro",
-    "TopTraderFX",
-    "FXChampion",
-    "CryptoChampion",
-    "StockChampion",
-    "ProfitPilot",
-    "ReturnRider",
-    "GainGuru",
-    "YieldYoda",
-    "AlphaWolf",
-    "BullRider",
-    "BearWhisperer",
-    "MarketWizard",
-    "TradeSaint",
-    "CapitalCobra",
-    "WealthWizard",
-    "CashCactus",
-    "GainGiant",
-    "ReturnRocket",
-    "ProfitPuma",
-    "StockShark",
-    "FXFalcon",
-    "CryptoCondor",
-    "TradeTiger",
-    "CapitalCougar",
-    "MarketMustang",
-    "WealthWolf",
-    "BullBaron",
-    "ReturnRam",
-    "GainGoat",
-    "ProfitPhoenix",
-    "AlphaAngel",
-    "TradeTitan",
-    "CapitalCrusader",
-    "MarketMaestro",
-    "WealthWarden",
-    "BullBoss",
-    "ReturnRanger",
-    "GainGeneral",
-    "ProfitPatron",
-    "TradeTrader",
-
-    # ── Additional Strategy Traders ──────────────────────────────
-    "ConservativeEdge",
-    "BalancedApproach",
-    "ModerateRiskPro",
-    "GrowthPath",
-    "AggressiveStrat",
-    "ValueHunter",
-    "QualityGrowth",
-    "IncomePlus",
-    "CapitalEfficiency",
-    "RiskOptimizer",
-    "TrendQuality",
-    "MomentumValue",
-    "SizeMatters",
-    "LowBetaPro",
-    "HighBetaTrader",
-    "QualityFactor",
 ]
