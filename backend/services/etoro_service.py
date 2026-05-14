@@ -525,13 +525,13 @@ class EToroAPIClient:
         return result
 
     async def enrich_candidates(
-        self, usernames: List[str], max_concurrent: int = 10,
+        self, usernames: List[str], max_concurrent: int = 50,
     ) -> Dict:
         """Enrich a list of usernames via tradeinfo API with concurrency limit.
 
         Args:
             usernames: List of eToro usernames to enrich.
-            max_concurrent: Maximum concurrent API calls (default 10).
+            max_concurrent: Maximum concurrent API calls (default 50).
 
         Returns:
             Same dict format as discover_candidates().

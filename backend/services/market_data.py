@@ -316,7 +316,7 @@ async def discover_top_traders(
     # Step 3: Enrich via tradeinfo API
     logger.info(f"Discovery: enriching {len(usernames)} candidates")
     try:
-        result = await client.enrich_candidates(usernames, max_concurrent=20)
+        result = await client.enrich_candidates(usernames, max_concurrent=50)
     except Exception as e:
         logger.warning(f"Discovery: enrichment failed ({e})")
         return []
