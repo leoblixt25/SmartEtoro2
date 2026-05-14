@@ -190,7 +190,7 @@ def is_real_trader(trader: Dict) -> Tuple[bool, Optional[str]]:
         return False, "missing_return_data"
     if source != "tradeinfo":
         return False, f"unreliable_source ({source})"
-    if copiers is not None and copiers < 50:
+    if copiers is None or copiers < 50:
         return False, f"insufficient_copiers ({copiers})"
     if positions is not None and positions < 5:
         return False, f"insufficient_positions ({positions})"
