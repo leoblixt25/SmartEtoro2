@@ -524,6 +524,103 @@ class EToroAPIClient:
         logger.warning(f"{username} unavailable across all endpoints")
         return result
 
+    async def get_trader_extended_metrics(self, username: str) -> Dict:
+        """Fetch extended trader metrics across multiple periods and sources.
+
+        Returns the base metrics from get_trader_metrics plus:
+          - return_3yr:     3-year return (tradeinfo LastThreeYears)
+          - return_ytd:     Year-to-date return (tradeinfo YearToDate)
+          - holdings:       List of current holding symbols (from portfolio/live)
+          - assets_under_copy:  Total AUM from tradeinfo
+          - track_record_days:  Estimated track record length
+
+        Never raises — always returns a dict with all keys present.
+        """
+        base = await self.get_trader_metrics(username)
+
+        import asyncio
+
+        async def fetch_period(period: str) -> Optional[Dict]:
+            return await self._api_get_with_retry(
+                f"{self.BASE_URL}/api/v1/user-info/people/{username}/tradeinfo",
+                params={"period": period},
+            )
+
+        # Fetch 3yr and YTD in parallel
+        t3, ytd, live = await asyncio.gather(
+            fetch_period("LastThreeYears"),
+            fetch_period("YearToDate"),
+            self._api_get_with_retry(
+                f"{self.BASE_URL}/api/v1/user-info/people/{username}/portfolio/live",
+            ),
+            return_exceptions=True,
+        )
+
+        extended = {
+            "return_3yr": None,
+            "return_ytd": None,
+            "holdings": [],
+            "assets_under_copy": None,
+            "track_record_days": None,
+        }
+
+        # Extract 3yr return
+        if isinstance(t3, dict) and t3:
+            extended["return_3yr"] = float(
+                t3.get("gainPerc") or t3.get("gain") or 0.0
+            )
+
+        # Extract YTD return
+        if isinstance(ytd, dict) and ytd:
+            extended["return_ytd"] = float(
+                ytd.get("gainPerc") or ytd.get("gain") or 0.0
+            )
+
+        # Extract assets under copy from either tradeinfo response
+        for response in [t3, ytd]:
+            if isinstance(response, dict):
+                for auc_field in (
+                    "TotalAssetsUnderCopy", "totalAssetsUnderCopy",
+                    "AUM", "aum", "TotalAssets", "totalAssets",
+                    "totalPositionSize", "TotalPositionSize",
+                ):
+                    v = response.get(auc_field)
+                    if v is not None:
+                        try:
+                            extended["assets_under_copy"] = float(v)
+                            break
+                        except (ValueError, TypeError):
+                            continue
+
+        # Extract holdings from live portfolio
+        if isinstance(live, dict) and live:
+            positions = live.get("positions", live.get("Positions", []))
+            if isinstance(positions, list):
+                symbols = []
+                for pos in positions:
+                    sym = (pos.get("symbol") or pos.get("instrument")
+                           or pos.get("Symbol") or pos.get("Instrument") or pos.get("name"))
+                    if sym and isinstance(sym, str) and sym.strip():
+                        symbols.append(sym.strip())
+                extended["holdings"] = symbols
+
+        # Estimate track record from base data
+        copiers = base.get("copiers")
+        positions_count = base.get("positions_count")
+        if copiers is not None and positions_count is not None:
+            extended["track_record_days"] = max(365, min(365 * 5, copiers * 2))
+
+        logger.info(
+            "Extended metrics for %s: 3yr=%.1f%%, YTD=%.1f%%, "
+            "holdings=%d, auc=%s",
+            username,
+            extended["return_3yr"] or 0.0,
+            extended["return_ytd"] or 0.0,
+            len(extended["holdings"]),
+            extended["assets_under_copy"] or "N/A",
+        )
+        return {**base, **extended}
+
     async def enrich_candidates(
         self, usernames: List[str], max_concurrent: int = 50,
     ) -> Dict:
