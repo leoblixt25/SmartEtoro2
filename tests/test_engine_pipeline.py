@@ -189,20 +189,22 @@ class TestDiscoverTopTraders:
         with patch("backend.services.etoro_service.EToroAPIClient") as MockClient:
             client = AsyncMock()
             client.enabled = True
-            client.discover_social_top = AsyncMock(return_value=["trader1", "trader2"])
+            traders_100 = [f"trader{i}" for i in range(100)]
+            available = [{"username": f"trader{i}"} for i in range(100)]
+            client.discover_social_top = AsyncMock(return_value=traders_100)
             client.enrich_candidates = AsyncMock(return_value={
-                "available": [{"username": "trader1"}, {"username": "trader2"}],
+                "available": available,
                 "unavailable": [],
-                "scanned": 2,
-                "valid_count": 2,
+                "scanned": 100,
+                "valid_count": 100,
                 "rejected": 0,
             })
             MockClient.return_value = client
 
             from backend.services.market_data import discover_top_traders
             result = await discover_top_traders()
-            assert len(result) == 2
-            assert result[0]["username"] == "trader1"
+            assert len(result) == 100
+            assert result[0]["username"] == "trader0"
 
     @pytest.mark.asyncio
     async def test_empty_enrichment_returns_empty_list(self):
