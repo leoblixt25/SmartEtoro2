@@ -267,74 +267,50 @@ async def _fetch_news_fallback() -> List[Dict]:
 async def discover_top_traders(
     categories: Optional[List[str]] = None,
 ) -> List[Dict]:
-    """Discover eligible trader candidates from real eToro data only.
+    """Discover eligible trader candidates dynamically from eToro API data.
 
     Pipeline:
-    1. Primary: eToro social/ranking API → get real usernames
-    2. Fallback: seed list of known eToro popular investors (only if API returns 0)
-    3. Enrich all usernames via tradeinfo API (batch with concurrency limit)
-    4. Return enriched candidates for eligibility filtering
-    5. NO fake/mock data — if no real traders found, return empty list.
+    1. Discover usernames via 15+ eToro API endpoints concurrently
+    2. Enrich all usernames via tradeinfo API (batch, concurrency=20)
+    3. Return enriched candidates for eligibility filtering
+    4. Empty list if no real traders found (no fake/mock data)
 
     Args:
-        categories: List of categories to focus on (None = all).
+        categories: Ignored (discovery is dynamic, not category-filtered).
 
     Returns:
         List of enriched trader dicts with metrics from tradeinfo API.
-        Empty list if no real traders found.
     """
-    from backend.utils.trader_seed_data import get_all_seeds, get_seeds_by_category
     from backend.services.etoro_service import EToroAPIClient
 
-    seen: set = set()
+    client = EToroAPIClient()
     usernames: List[str] = []
 
-    def _add(names: List[str]) -> None:
-        for u in names:
-            if u.lower() not in seen:
-                seen.add(u.lower())
-                usernames.append(u)
+    # Step 1: Dynamic discovery via eToro APIs (primary)
+    if client.enabled:
+        try:
+            usernames = await client.discover_social_top(limit=200)
+        except Exception as e:
+            logger.warning(f"Discovery: API unavailable ({e})")
 
-    client = EToroAPIClient()
-
-    # Source A (primary): eToro social/ranking API
-    try:
-        if client.enabled:
-            social = await client.discover_social_top(limit=100)
-            if social:
-                logger.info(f"Discovery: found {len(social)} traders via social API")
-                _add(social)
-    except Exception as e:
-        logger.debug(f"Discovery: social API unavailable ({e})")
-
-    # Source B (backup): seed list — only if social API returned nothing
-    if not usernames:
-        if categories:
-            for cat in categories:
-                seeds = get_seeds_by_category(cat)
-                _add([s["username"] for s in seeds])
-        else:
-            all_seeds = get_all_seeds()
-            _add([s["username"] for s in all_seeds])
-        if usernames:
-            logger.info(f"Discovery: using {len(usernames)} seed traders as backup")
-
-    # Source C: CANDIDATE_TRADERS env var (user override)
+    # Step 2: CANDIDATE_TRADERS env var (user override)
     raw_env = os.getenv("CANDIDATE_TRADERS", "")
     if raw_env:
         env_list = [u.strip() for u in raw_env.split(",") if u.strip()]
-        _add(env_list)
-        if env_list:
-            logger.info(f"Discovery: added {len(env_list)} traders from CANDIDATE_TRADERS env")
+        existing = {u.lower() for u in usernames}
+        for u in env_list:
+            if u.lower() not in existing:
+                usernames.append(u)
+                existing.add(u.lower())
 
     if not usernames:
-        logger.warning("Discovery: no trader usernames from any source")
+        logger.warning("Discovery: no traders found from any source")
         return []
 
-    # Enrich via tradeinfo API
-    logger.info(f"Discovery: enriching {len(usernames)} unique candidates")
+    # Step 3: Enrich via tradeinfo API
+    logger.info(f"Discovery: enriching {len(usernames)} candidates")
     try:
-        result = await client.enrich_candidates(usernames, max_concurrent=10)
+        result = await client.enrich_candidates(usernames, max_concurrent=20)
     except Exception as e:
         logger.warning(f"Discovery: enrichment failed ({e})")
         return []
@@ -345,10 +321,7 @@ async def discover_top_traders(
     rejected_count = result.get("rejected", 0)
 
     if available:
-        seed_map = {s["username"].lower(): s.get("categories", [])
-                    for s in get_all_seeds()}
         for a in available:
-            a["categories"] = seed_map.get(a["username"].lower(), [])
             a["is_copiable"] = a.get("is_copiable", True)
         logger.info(
             f"Discovery: scanned={scanned}, valid={valid_count}, "

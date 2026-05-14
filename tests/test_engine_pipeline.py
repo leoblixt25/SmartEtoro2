@@ -189,7 +189,7 @@ class TestDiscoverTopTraders:
         with patch("backend.services.etoro_service.EToroAPIClient") as MockClient:
             client = AsyncMock()
             client.enabled = True
-            client.discover_social_top = AsyncMock(return_value=[])
+            client.discover_social_top = AsyncMock(return_value=["trader1", "trader2"])
             client.enrich_candidates = AsyncMock(return_value={
                 "available": [{"username": "trader1"}, {"username": "trader2"}],
                 "unavailable": [],

@@ -583,14 +583,6 @@ class EToroAPIClient:
                     })
                     continue
 
-                if min_copy > 200:
-                    unavailable.append({
-                        "username": username,
-                        "reason": "min_copy_too_high",
-                        "detail": f"minimum_copy={min_copy}",
-                    })
-                    continue
-
                 available.append({
                     "username": username,
                     "risk_score": metrics["risk_score"],
@@ -624,48 +616,92 @@ class EToroAPIClient:
         )
         return result
 
-    async def discover_social_top(self, limit: int = 100) -> List[str]:
-        """Try to discover popular traders from eToro's social/ranking APIs.
+    def _extract_trader_list(self, data) -> List[Dict]:
+        """Extract list of trader objects from flexible API response formats."""
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            for key in ["data", "results", "items", "traders", "users",
+                         "feedItems", "discoverItems", "topTraders",
+                         "PopularCopyTraders", "UserRanking"]:
+                nested = data.get(key)
+                if isinstance(nested, list):
+                    return nested
+                if isinstance(nested, dict):
+                    result = self._extract_trader_list(nested)
+                    if result:
+                        return result
+        return []
 
-        Tries multiple eToro web API endpoints used by the etoro.com UI.
-        Returns a deduplicated list of usernames found.
+    async def discover_social_top(self, limit: int = 200) -> List[str]:
+        """Discover traders from multiple eToro web API endpoints concurrently.
+
+        Tries 15+ different endpoints (rankings, social top, discovery, feed)
+        across both the public API and www subdomain. All requests run in
+        parallel for speed. Returns a deduplicated list of usernames.
+
+        Args:
+            limit: Max results per endpoint (default 200).
+
+        Returns:
+            Deduplicated list of eToro usernames found. Empty if none found.
         """
         discovered: List[str] = []
-        endpoints = [
-            f"{self.BASE_URL}/api/v1/rankings/traders?limit={limit}",
-            f"{self.BASE_URL}/api/v1/social/top/monthly?limit={limit}",
-            f"https://www.etoro.com/api/social/top/month?limit={limit}",
-            f"https://www.etoro.com/api/social/top/week?limit={limit}",
+        base = self.BASE_URL
+
+        endpoint_configs = [
+            (f"{base}/api/v1/rankings/traders?limit={limit}", "rankings default"),
+            (f"{base}/api/v1/rankings/traders?limit={limit}&period=month", "rankings monthly"),
+            (f"{base}/api/v1/rankings/traders?limit={limit}&period=year", "rankings yearly"),
+            (f"{base}/api/v1/rankings/traders?limit={limit}&period=alltime", "rankings alltime"),
+            (f"{base}/api/v1/social/top/monthly?limit={limit}", "social monthly"),
+            (f"{base}/api/v1/social/top/weekly?limit={limit}", "social weekly"),
+            (f"{base}/api/v1/social/top/daily?limit={limit}", "social daily"),
+            (f"https://www.etoro.com/api/social/top/month?limit={limit}", "www social month"),
+            (f"https://www.etoro.com/api/social/top/week?limit={limit}", "www social week"),
+            (f"https://www.etoro.com/api/social/top/day?limit={limit}", "www social day"),
+            (f"{base}/api/v1/discover/popular", "discover popular"),
+            (f"{base}/api/v1/discover/trending", "discover trending"),
+            (f"{base}/api/v1/feed/popular?limit={limit}", "feed popular"),
+            (f"{base}/api/v1/feed/trending?limit={limit}", "feed trending"),
+            (f"{base}/api/v1/rankings/traders?limit={limit}&type=copied", "rankings top copied"),
+            (f"{base}/api/v1/rankings/traders?limit={limit}&type=return", "rankings top return"),
+            (f"{base}/api/v1/rankings/traders?limit={limit}&type=risk", "rankings low risk"),
         ]
 
-        for url in endpoints:
+        import asyncio
+        async def _fetch(url: str):
             try:
                 data = await self._api_get_with_retry(url, timeout=10.0)
                 if data is None:
-                    continue
+                    return None
+                raw = self._extract_trader_list(data)
+                return raw if isinstance(raw, list) else None
+            except Exception:
+                return None
 
-                raw_list = []
-                if isinstance(data, list):
-                    raw_list = data
-                elif isinstance(data, dict):
-                    raw_list = data.get("data", data.get("results", data.get("PopularCopyTraders", [])))
+        tasks = [_fetch(url) for url, _ in endpoint_configs]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
 
-                for entry in raw_list:
-                    if not isinstance(entry, dict):
-                        continue
-                    username = entry.get("Username") or entry.get("username")
-                    if username and isinstance(username, str) and username.strip():
-                        discovered.append(username.strip())
-
-            except Exception as e:
-                logger.debug(f"Social discovery endpoint {url} failed: {e}")
+        for (url, desc), raw_list in zip(endpoint_configs, results):
+            if not raw_list or not isinstance(raw_list, list):
                 continue
+            count_before = len(discovered)
+            for entry in raw_list:
+                if not isinstance(entry, dict):
+                    continue
+                username = (entry.get("Username") or entry.get("username") or
+                            entry.get("User") or entry.get("user"))
+                if username and isinstance(username, str) and username.strip():
+                    discovered.append(username.strip())
+            if len(discovered) > count_before:
+                logger.info(f"Discovery: {desc} returned traders")
 
         unique = list(dict.fromkeys(discovered))
-        if unique:
-            logger.info(f"Social discovery: found {len(unique)} unique traders from {len(endpoints)} endpoints")
-        else:
-            logger.info("Social discovery: no traders found from any endpoint")
+        logger.info(
+            f"Discovery: {len(unique)} unique traders "
+            f"from {len(endpoint_configs)} endpoints"
+        )
         return unique
 
     async def discover_candidates(self, usernames: Optional[List[str]] = None) -> Dict:
@@ -686,11 +722,11 @@ class EToroAPIClient:
           valid_count — length of available
           rejected    — length of unavailable
         """
-        from backend.utils.constants import FALLBACK_TRADERS, CANDIDATE_TRADERS_ENV
+        from backend.utils.constants import CANDIDATE_TRADERS_ENV
 
         if usernames is None:
             raw = os.getenv(CANDIDATE_TRADERS_ENV, "")
-            usernames = [u.strip() for u in raw.split(",") if u.strip()] if raw else FALLBACK_TRADERS[:]
+            usernames = [u.strip() for u in raw.split(",") if u.strip()] if raw else []
 
         if not usernames:
             logger.warning("No candidate traders configured — scout will have no discovery targets")
@@ -730,15 +766,6 @@ class EToroAPIClient:
                         "detail": f"is_copyable={is_copyable}",
                     })
                     logger.info(f"Rejected {username}: copyable={is_copyable}")
-                    continue
-
-                if min_copy > 200:
-                    unavailable.append({
-                        "username": username,
-                        "reason": "min_copy_too_high",
-                        "detail": f"minimum_copy={min_copy}",
-                    })
-                    logger.info(f"Rejected {username}: minimum_copy={min_copy}, copyable={is_copyable}")
                     continue
 
                 available.append({

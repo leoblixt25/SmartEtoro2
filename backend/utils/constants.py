@@ -1,26 +1,12 @@
 """Shared constants for the platform backend."""
 
 # ── Trader Discovery ────────────────────────────────────────────────
-# CANDIDATE_TRADERS env var adds usernames to the merged discovery pool.
+# CANDIDATE_TRADERS env var adds usernames to the discovery pool.
 # Set it to a comma-separated list of eToro usernames, e.g.
 #   CANDIDATE_TRADERS="user1,user2,user3"
-# The seed list (trader_seed_data.py) provides the base candidate universe
-# of ~45 traders across 8 categories. Set CANDIDATE_TRADERS to extend it.
+# Discovery is primarily dynamic via eToro API (rankings, social top, etc.)
 CANDIDATE_TRADERS_ENV = "CANDIDATE_TRADERS"
 
-# Legacy fallback — only used when seed data + API enrichment both fail.
-FALLBACK_TRADERS = [
-    "JeppeKirkBonde",
-    "CPHequities",
-    "Jaynemesis",
-    "booker03",
-    "ConsistentCapital",
-    "GrowthEngine",
-    "AlphaPulse",
-    "SmartMoneyFX",
-]
-
-# Discovery categories from trader_seed_data.py
 AVAILABLE_CATEGORIES = [
     "balanced", "aggressive_growth", "etf_focused", "dividend",
     "low_risk", "tech_focused", "crypto_light", "diversified",
