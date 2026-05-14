@@ -364,6 +364,27 @@ class EToroAPIClient:
             "last_error": last_error,
         }
 
+    @staticmethod
+    def _get_browser_headers() -> Dict[str, str]:
+        """Return browser-like headers for public endpoints that block httpx."""
+        return {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/125.0.0.0 Safari/537.36"
+            ),
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Referer": "https://www.etoro.com/",
+            "Origin": "https://www.etoro.com",
+            "DNT": "1",
+            "Connection": "keep-alive",
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-site",
+        }
+
     def _empty_metrics(self, username: str) -> Dict:
         """Return default metrics structure for a trader with no data."""
         return {
@@ -387,8 +408,16 @@ class EToroAPIClient:
         url: str,
         params: Optional[Dict] = None,
         timeout: float = 15.0,
+        browser_headers: bool = False,
     ) -> Optional[Dict]:
         """GET with 3-retry exponential backoff. Does not retry 404.
+
+        Args:
+            url: Target URL.
+            params: Optional query parameters.
+            timeout: Request timeout in seconds.
+            browser_headers: If True, use browser-like headers instead of API auth headers.
+                             Use this for public/unauthenticated endpoints.
 
         Returns parsed JSON on 200, None on 404 or non-retryable errors.
         Retries 429 and 5xx with 2^attempt backoff (2s, 4s).
@@ -397,7 +426,8 @@ class EToroAPIClient:
         for attempt in range(1, 4):
             try:
                 async with httpx.AsyncClient(timeout=timeout) as client:
-                    response = await client.get(url, params=params, headers=self._get_headers())
+                    headers = self._get_browser_headers() if browser_headers else self._get_headers()
+                    response = await client.get(url, params=params, headers=headers)
                     if response.status_code == 200:
                         return response.json()
                     if response.status_code == 404:
@@ -779,7 +809,7 @@ class EToroAPIClient:
         )
         return result
 
-    def _extract_trader_list(self, data) -> List[Dict]:
+    def _extract_discovery_traders(self, data) -> List[Dict]:
         """Extract list of trader objects from flexible API response formats."""
         if isinstance(data, list):
             return data
@@ -791,7 +821,7 @@ class EToroAPIClient:
                 if isinstance(nested, list):
                     return nested
                 if isinstance(nested, dict):
-                    result = self._extract_trader_list(nested)
+                    result = self._extract_discovery_traders(nested)
                     if result:
                         return result
         return []
@@ -899,12 +929,13 @@ class EToroAPIClient:
 
         async def _fetch(url: str, desc: str) -> tuple:
             nonlocal pages_fetched, pages_with_data, api_errors, rate_limits
+            use_browser = url.startswith("https://www.etoro.com") or url.startswith("https://api.etoro.com")
             try:
-                data = await self._api_get_with_retry(url, timeout=10.0)
+                data = await self._api_get_with_retry(url, timeout=10.0, browser_headers=use_browser)
                 pages_fetched += 1
                 if data is None:
                     return None, desc
-                raw = self._extract_trader_list(data)
+                raw = self._extract_discovery_traders(data)
                 if isinstance(raw, list) and raw:
                     pages_with_data += 1
                     return raw, desc
