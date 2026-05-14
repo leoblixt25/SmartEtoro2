@@ -67,17 +67,19 @@ def has_substance(trader: Dict) -> Tuple[bool, Optional[str]]:
     if copied_positions is not None and copied_positions == 0:
         reasons.append("no_copied_positions")
 
-    # Reject any source with zero return data — no substance
-    has_any_return = any(
-        (trader.get(k) or 0) != 0
-        for k in ("total_return_pct", "avg_monthly_return", "avg_return", "return_12m", "return_6m")
-    )
-    if not has_any_return:
-        reasons.append("no_valid_data")
-
     # Reject unknown/fallback/default source entirely
     if source in ("fallback", "default", "unknown"):
         reasons.append(f"invalid_source={source}")
+
+    # Tradeinfo source is authoritative — skip zero-return check
+    # Only check for missing substance in fallback sources
+    if source != "tradeinfo":
+        has_any_return = any(
+            (trader.get(k) or 0) != 0
+            for k in ("total_return_pct", "avg_monthly_return", "avg_return", "return_12m", "return_6m")
+        )
+        if not has_any_return:
+            reasons.append("no_valid_data")
 
     if reasons:
         return False, ", ".join(reasons)
@@ -97,6 +99,10 @@ def has_reliable_data(trader: Dict) -> Tuple[bool, Optional[str]]:
     confidence = trader.get("confidence", 0.0)
     total_return = trader.get("total_return_pct", 0.0) or 0.0
 
+    # tradeinfo is always authoritative regardless of return
+    if source == "tradeinfo" or confidence >= 1.0:
+        return True, None
+
     # Reject any source with no real return data
     has_any_return = any(
         (trader.get(k) or 0) != 0
@@ -104,10 +110,6 @@ def has_reliable_data(trader: Dict) -> Tuple[bool, Optional[str]]:
     )
     if not has_any_return and total_return == 0.0:
         return False, "no_valid_return_data"
-
-    # tradeinfo with non-zero return is authoritative
-    if source == "tradeinfo" or confidence >= 1.0:
-        return True, None
 
     if total_return == 0.0 and confidence < 1.0:
         return False, f"no_return_data (source={source}, confidence={confidence})"

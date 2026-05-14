@@ -185,8 +185,8 @@ class TestEligibilityEngine:
         assert len(eligible) == 0
         assert any("copy_not_available" in " ".join(e.get("exclusion_reasons", [])) for e in excluded)
 
-    def test_rejects_tradeinfo_zero_return(self):
-        """SmartMoneyFX scenario: tradeinfo with 0% return must be rejected."""
+    def test_accepts_tradeinfo_zero_return(self):
+        """SmartMoneyFX scenario: tradeinfo with 0% return is valid (real trader, flat year)."""
         from backend.ai.eligibility_engine import filter_candidates
         candidates = [
             {"username": "SmartMoneyFX", "source": "tradeinfo", "confidence": 1.0,
@@ -194,9 +194,8 @@ class TestEligibilityEngine:
              "min_copy_amount": 200, "total_return_pct": 0.0, "risk_score": 5.0},
         ]
         eligible, excluded = filter_candidates(candidates, set(), available_balance=5000)
-        assert len(eligible) == 0
-        reasons = " ".join(excluded[0].get("exclusion_reasons", []))
-        assert "no_valid" in reasons
+        assert len(eligible) == 1
+        assert eligible[0]["username"] == "SmartMoneyFX"
 
 
 class TestIsRealTrader:
