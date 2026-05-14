@@ -293,7 +293,13 @@ async def discover_top_traders(
         except Exception as e:
             logger.warning(f"Discovery: API unavailable ({e})")
 
-    # Step 2: CANDIDATE_TRADERS env var (user override)
+    # Step 2: Bootstrap fallback when API returns nothing
+    if not usernames:
+        from backend.utils.bootstrap_traders import BOOTSTRAP_TRADERS
+        usernames = list(BOOTSTRAP_TRADERS)
+        logger.info(f"Discovery: API returned 0 traders, using {len(usernames)} bootstrap traders")
+
+    # Step 3: CANDIDATE_TRADERS env var (user override)
     raw_env = os.getenv("CANDIDATE_TRADERS", "")
     if raw_env:
         env_list = [u.strip() for u in raw_env.split(",") if u.strip()]
