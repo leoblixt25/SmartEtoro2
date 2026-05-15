@@ -414,7 +414,7 @@ class EToroAPIClient:
         timeout: float = 15.0,
         browser_headers: bool = False,
     ) -> Optional[Dict]:
-        """GET with 3-retry exponential backoff, jitter, and global rate limiting.
+        """GET with 3-retry exponential backoff, jitter, and adaptive rate limiting.
 
         Args:
             url: Target URL.
@@ -425,13 +425,19 @@ class EToroAPIClient:
 
         Returns parsed JSON on 200, None on non-retryable errors.
         Retries 429 and 5xx with jittered exponential backoff.
-        Stops retrying after 10 total rate limit hits (marks session degraded).
-        All outbound requests go through a semaphore (max 8 concurrent).
+        Rate limit degradation auto-recovers after 10 seconds.
+        All outbound requests go through a semaphore (max 5 concurrent).
         """
         import asyncio
         import random
+        import time
         if not hasattr(self, "_api_sem"):
-            self._api_sem = asyncio.Semaphore(8)
+            self._api_sem = asyncio.Semaphore(5)
+            self._rate_limit_hits = 0
+            self._rate_limit_reset_time = 0.0
+        # Auto-recover rate limit state after 10 seconds
+        if self._rate_limit_hits >= 10 and time.time() - self._rate_limit_reset_time > 10:
+            logger.info("Rate limit state reset after 10s cooldown")
             self._rate_limit_hits = 0
         for attempt in range(1, 4):
             try:
@@ -471,13 +477,14 @@ class EToroAPIClient:
                 if response.status_code == 429:
                     self._rate_limit_hits += 1
                     if self._rate_limit_hits >= 10:
-                        logger.error("GET %s → 10+ rate limits hit — stopping retries, marking degraded", url)
+                        logger.error("GET %s → 10+ rate limits hit — cooling down for 10s", url)
                         return None
+                    # Longer backoff for 429s to actually give the API time to recover
+                    backoff = 5.0 + random.uniform(0, 2)
+                    logger.warning("GET %s → 429 Rate Limited, retry %d/3 after %.1fs (hit #%d)",
+                                   url, attempt, backoff, self._rate_limit_hits)
+                    await asyncio.sleep(backoff)
                     if attempt < 3:
-                        backoff = (2 ** attempt) + random.uniform(0, 1)
-                        logger.warning("GET %s → 429 Rate Limited, retry %d/3 after %.1fs (hit #%d)",
-                                       url, attempt, backoff, self._rate_limit_hits)
-                        await asyncio.sleep(backoff)
                         continue
                     logger.error("GET %s → 429 Rate Limited, exhausted all 3 retries (%d total hits)",
                                   url, self._rate_limit_hits)
