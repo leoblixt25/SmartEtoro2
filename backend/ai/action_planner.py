@@ -231,11 +231,16 @@ def format_display(action_plan: Dict) -> str:
     lines.append(f"**New Eligible Traders ({len(discovery)}):**")
     if discovery:
         for i, s in enumerate(discovery[:5], 1):
-            expl = s.get("explanation", [])
-            expl_str = f" \u2014 {'; '.join(str(e) for e in expl[:3])}" if expl else ""
+            d = s.get("details", {})
+            ret = d.get("return_12m")
+            risk = d.get("risk_score")
+            ret_str = f"+{ret:.1f}%" if ret else ""
+            risk_str = f"risk {int(risk)}" if risk else ""
+            metrics = ", ".join(p for p in [ret_str, risk_str] if p)
+            conf_note = "" if s["confidence"] >= 0.95 else " \U0001f7e1 limited data"
             lines.append(
                 f"  {i}. {s['username']} \u2014 {s['score']}/100"
-                f" (src={s['source']}, conf={s['confidence']}){expl_str}"
+                f"  ({metrics}){conf_note}"
             )
         if len(discovery) > 5:
             lines.append(f"  ... and {len(discovery) - 5} more")
@@ -248,9 +253,7 @@ def format_display(action_plan: Dict) -> str:
     if excluded:
         lines.append(f"**Excluded ({sum(g['count'] for g in excluded)}):**")
         for g in excluded[:4]:
-            lines.append(f"  \u274c {g['reason']} ({g['count']}): {', '.join(g['traders'][:3])}")
-            if len(g['traders']) > 3:
-                lines.append(f"    ... and {len(g['traders']) - 3} more")
+            lines.append(f"  \u274c {g['reason']} ({g['count']})")
         if len(excluded) > 4:
             lines.append(f"  ... and {len(excluded) - 4} other exclusion reasons")
         lines.append("")
@@ -267,11 +270,8 @@ def format_display(action_plan: Dict) -> str:
         lines.append("")
 
     if eq_plan:
-        lines.append("**Equal-Weight Plan (target 33.3% each):**")
-        for t in eq_plan:
-            src_tag = "\U0001fa84" if t.get("source") == "discovery" else "\U0001f4cc"
-            lines.append(f"  {src_tag} {t['username']} \u2014 {t['allocation_pct']}%")
-        lines.append("")
+        names = ", ".join(t['username'] for t in eq_plan)
+        lines.append(f"**Equal-Weight Plan:** {names}")
 
     # Summary
     debug = action_plan.get("debug", {})
