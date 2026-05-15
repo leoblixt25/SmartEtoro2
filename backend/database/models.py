@@ -104,7 +104,7 @@ class CopiedTrader(Base):
     current_value = Column(Float, default=0.0)
     unrealized_pnl = Column(Float, default=0.0)
     total_return_pct = Column(Float, default=0.0)
-    risk_score = Column(Float, default=5.0)       # 1–10
+    risk_score = Column(Float, nullable=True)       # 1–10, None = unset
     risk_classification = Column(
         Enum(RiskClassification),
         default=RiskClassification.BALANCED
@@ -135,7 +135,7 @@ class TraderAnalyticsSnapshot(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     trader_id = Column(Integer, ForeignKey("copied_traders.id"))
-    risk_score = Column(Float, default=5.0)
+    risk_score = Column(Float, nullable=True)
     max_drawdown = Column(Float, default=0.0)
     monthly_return = Column(Float, default=0.0)
     sharpe_score = Column(Float, default=0.0)

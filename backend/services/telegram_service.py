@@ -404,10 +404,10 @@ class TelegramBot:
                         "username": t.trader_username,
                         "source": "tradeinfo" if t.trader_id else "unknown",
                         "confidence": 1.0,
-                        "return_12m": t.total_return_pct or 0,
-                        "risk_score": t.risk_score or 5,
-                        "max_drawdown": t.max_drawdown or 0,
-                        "consistency_score": t.consistency_score or 50,
+                        "return_12m": t.total_return_pct,
+                        "risk_score": t.risk_score,
+                        "max_drawdown": t.max_drawdown,
+                        "consistency_score": t.consistency_score,
                     }
 
                     holdings, holdings_source = await get_trader_holdings(

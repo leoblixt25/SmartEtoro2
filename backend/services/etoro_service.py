@@ -1602,7 +1602,7 @@ class EToroSyncService:
                     avg_monthly_return=info.get("avg_return") or 0.0,
                     max_drawdown=info.get("max_drawdown") or 0.0,
                     volatility=info.get("volatility") or 0.0,
-                    risk_score=info.get("risk_score") or 0.0,
+                    risk_score=info.get("risk_score"),
                     total_return_pct=info.get("total_return_pct") or 0.0,
                     is_active=True,
                     is_paused=False,

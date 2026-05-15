@@ -43,7 +43,7 @@ async def build_dashboard_data(db: Session, portfolio_id: int) -> Dict:
                     "username": s.get("username", "?"),
                     "score": s.get("score", 0),
                     "total_return_pct": s.get("total_return_pct", 0),
-                    "risk_score": s.get("risk_score", 5),
+                    "risk_score": s.get("risk_score"),
                     "max_drawdown": s.get("max_drawdown", 0),
                     "min_copy_amount": s.get("min_copy_amount", 200),
                     "confidence": s.get("confidence_score", 0),

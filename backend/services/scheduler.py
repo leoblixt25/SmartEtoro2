@@ -196,13 +196,15 @@ class SchedulerService:
                     for i, t in enumerate(eligible[:5], 1):
                         score = t.get("score", 0)
                         ret = t.get("total_return_pct", 0)
-                        risk = t.get("risk_score", 5)
-                        mincpy = t.get("min_copy_amount", 200)
+                        risk_raw = t.get("risk_score")
+                        risk_str = f"{risk_raw:.1f}" if risk_raw is not None else "unavailable"
+                        mincpy = t.get("min_copy_amount")
+                        mincpy_str = f"${mincpy:.0f}" if mincpy else "unavailable"
                         copiers = t.get("copiers", "?")
                         lines.append(
                             f"{i}. {t['username']} \u2014 {score}/100\n"
-                            f"   Return: {ret:+.1f}%  Risk: {risk:.1f}  "
-                            f"Copiers: {copiers}  Min copy: ${mincpy:.0f}"
+                            f"   Return: {ret:+.1f}%  Risk: {risk_str}  "
+                            f"Copiers: {copiers}  Min copy: {mincpy_str}"
                         )
                     if len(eligible) > 5:
                         lines.append(f"\n... and {len(eligible) - 5} more")

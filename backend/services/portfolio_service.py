@@ -95,7 +95,7 @@ def get_active_traders(db: Session, portfolio_id: int) -> List[Dict]:
             "allocated_amount": t.allocated_amount or 0,
             "current_value": t.current_value or 0,
             "total_return_pct": t.total_return_pct or 0,
-            "risk_score": t.risk_score or 5,
+            "risk_score": t.risk_score,
             "risk_classification": str(t.risk_classification.value) if t.risk_classification else "unknown",
             "max_drawdown": t.max_drawdown or 0,
             "is_paused": t.is_paused,

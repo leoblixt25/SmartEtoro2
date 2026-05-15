@@ -29,11 +29,13 @@ from typing import Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 # ── Weights ────────────────────────────────────────────────────────
-W_12M = 0.35
-W_6M = 0.25
-W_RISK = 0.15
-W_MAX_DRAWDOWN = 0.15
-W_CONSISTENCY = 0.10
+# Balanced: returns do not dominate; stability, risk, and consistency
+# each have meaningful influence.
+W_12M = 0.25
+W_6M = 0.15
+W_RISK = 0.20
+W_MAX_DRAWDOWN = 0.20
+W_CONSISTENCY = 0.20
 
 # ── Penalties ──────────────────────────────────────────────────────
 PENALTY_RISK_HIGH = 30
@@ -230,16 +232,18 @@ def _build_explanation(trader: dict, score: float, confidence: float, source: st
 
 
 def _confidence_penalty(trader: dict) -> float:
-    """Compute confidence modifier (0.5-1.0) based on missing fields.
+    """Compute confidence modifier (0.3-1.0) based on missing fields.
 
     Each missing key metric reduces confidence by:
-      - risk_score missing: -0.15
-      - copiers missing: -0.10
+      - risk_score missing/zero: -0.15
+      - copiers missing:         -0.10
       - avg_monthly_return missing/zero: -0.20
       - max_drawdown missing/zero: -0.15
       - volatility missing/zero: -0.10
 
-    Minimum modifier is 0.5 (score halved when data is very sparse).
+    Lower floor (0.3) ensures traders with different data quality levels
+    receive MEANINGFULLY DIFFERENT modifiers, unlike the old 0.5 floor
+    that flattened all sparse-data traders to the same value.
     """
     modifier = 1.0
     risk = trader.get("risk_score")
@@ -257,7 +261,7 @@ def _confidence_penalty(trader: dict) -> float:
     vol = trader.get("volatility")
     if vol is None or float(vol) == 0:
         modifier -= 0.10
-    return max(modifier, 0.5)
+    return max(modifier, 0.3)
 
 
 def calculate_growth_score(trader: dict) -> dict:

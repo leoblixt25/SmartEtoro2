@@ -71,7 +71,7 @@ def build_action_plan(
             "explanation": s.get("explanation", []),
             "details": {
                 "return_12m": s.get("details", {}).get("return_12m", 0),
-                "risk_score": s.get("details", {}).get("risk_score", 0),
+                "risk_score": s.get("details", {}).get("risk_score"),
                 "max_drawdown": s.get("details", {}).get("max_drawdown", 0),
             },
         })
@@ -291,14 +291,14 @@ def format_display(action_plan: Dict) -> str:
 def summarize_constraints(trader: Dict) -> List[str]:
     """Return a list of constraint warnings for a trader (non-blocking, for display)."""
     warnings = []
-    dd = trader.get("max_drawdown", 0.0) or 0.0
-    if dd > 15:
+    dd = trader.get("max_drawdown")
+    if dd is not None and dd > 15:
         warnings.append(f"High drawdown ({dd:.1f}%)")
-    risk = trader.get("risk_score", 5.0) or 5.0
-    if risk > 7:
-        warnings.append(f"High risk score ({risk:.1f})")
-    vol = trader.get("volatility", 0.0) or 0.0
-    if vol > 10:
+    risk = trader.get("risk_score")
+    if risk is not None and risk > 7:
+        warnings.append(f"High risk score ({float(risk):.1f})")
+    vol = trader.get("volatility")
+    if vol is not None and vol > 10:
         warnings.append(f"High volatility ({vol:.1f}%)")
     return warnings
 
@@ -308,34 +308,35 @@ def explain_recommendation(trader: Dict) -> List[str]:
     reasons = []
     perf = trader.get("performance_score", 0)
     risk_cat = trader.get("risk_score_category", 0)
-    rtrn = trader.get("total_return_pct", 0.0) or 0.0
-    risk = trader.get("risk_score", 5.0) or 5.0
-    dd = trader.get("max_drawdown", 0.0) or 0.0
-    vol = trader.get("volatility", 0.0) or 0.0
-    monthly = (trader.get("avg_monthly_return") or trader.get("avg_return") or 0.0)
-    min_copy = trader.get("min_copy_amount", 200.0) or 200.0
-    sharpe = trader.get("sharpe_score", 0.0) or 0.0
-    copiers = trader.get("copiers", 0) or 0
+    rtrn = trader.get("total_return_pct")
+    risk = trader.get("risk_score")
+    dd = trader.get("max_drawdown")
+    vol = trader.get("volatility")
+    monthly = trader.get("avg_monthly_return") or trader.get("avg_return")
+    min_copy = trader.get("min_copy_amount")
+    sharpe = trader.get("sharpe_score")
+    copiers = trader.get("copiers")
 
-    if rtrn > 15:
+    if rtrn is not None and rtrn > 15:
         reasons.append(f"Strong {rtrn:.1f}% return")
-    elif rtrn > 5:
+    elif rtrn is not None and rtrn > 5:
         reasons.append(f"Positive {rtrn:.1f}% return")
-    if dd < 10:
+    if dd is not None and dd < 10:
         reasons.append(f"Low drawdown ({dd:.1f}%)")
-    if risk <= 5:
+    if risk is not None and risk <= 5:
         reasons.append(f"Risk score within range ({risk:.1f})")
-    if min_copy <= 500:
+    if min_copy is not None and min_copy <= 500:
         reasons.append(f"Affordable to copy (${min_copy:.0f} minimum)")
-    elif min_copy <= 2000:
+    elif min_copy is not None and min_copy <= 2000:
         reasons.append(f"Copiable with ${min_copy:.0f} minimum")
-    if monthly > 0.5:
+    if monthly is not None and monthly > 0.5:
         reasons.append(f"Consistent monthly returns ({monthly:.2f}%)")
-    if sharpe > 1.0:
+    if sharpe is not None and sharpe > 1.0:
         reasons.append(f"Strong risk-adjusted returns (Sharpe {sharpe:.2f})")
-    if copiers > 1000:
+    if copiers is not None and copiers > 1000:
         reasons.append(f"Popular with {copiers}+ copiers")
-    if 1 <= trader.get("trade_frequency", 0) <= 5:
+    trade_freq = trader.get("trade_frequency")
+    if trade_freq is not None and 1 <= trade_freq <= 5:
         reasons.append("Stable trade frequency")
     if perf >= 60:
         reasons.append("High performance score")

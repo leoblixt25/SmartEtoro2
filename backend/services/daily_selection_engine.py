@@ -772,8 +772,8 @@ def _build_selected_list(top_3: List[Dict]) -> List[SelectedTrader]:
             news_sentiment=trader.get("news", {}),
             final_score=trader.get("final_score", 0.0),
             selection_reason=trader.get("selection_reason", ""),
-            risk_score=float(trader.get("risk_score") or 0.0),
-            max_drawdown=float(trader.get("max_drawdown") or 0.0),
+            risk_score=trader.get("risk_score"),
+            max_drawdown=trader.get("max_drawdown"),
         ))
     return selected
 

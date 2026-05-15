@@ -61,7 +61,8 @@ def _score_risk(trader: Dict) -> Tuple[float, str]:
 
     Returns (risk_value, label).
     """
-    risk = float(trader.get("risk_score", 5.0) or 5.0)
+    risk_raw = trader.get("risk_score")
+    risk = float(risk_raw) if risk_raw is not None else 0.0
     dd = float(trader.get("max_drawdown", 0.0) or 0.0)
 
     if risk > RISK_HIGH or dd > 25:

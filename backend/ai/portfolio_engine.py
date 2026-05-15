@@ -52,7 +52,7 @@ def analyze_portfolio(
             "allocation_pct": round(ap, 2),
             "allocated_amount": h.get("allocated_amount", 0) or 0,
             "total_return_pct": h.get("total_return_pct", 0.0) or 0.0,
-            "risk_score": h.get("risk_score", 5.0) or 5.0,
+            "risk_score": h.get("risk_score"),
             "final_score": score,
             "max_drawdown": h.get("max_drawdown", 0.0) or 0.0,
             "volatility": h.get("volatility", 0.0) or 0.0,
