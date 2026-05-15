@@ -321,6 +321,7 @@ class TelegramBot:
             return
 
         async with self._discovery_lock:
+            status_msg = None
             try:
                 status_msg = await update.message.reply_text(
                     "\U0001f50d Scanning traders... please wait",
@@ -329,15 +330,22 @@ class TelegramBot:
                 with db_session() as db:
                     p = db.query(Portfolio).first()
                     if not p:
-                        await status_msg.edit_text("No portfolio found.")
+                        text = "No portfolio found."
+                        if status_msg:
+                            try:
+                                await status_msg.edit_text(text)
+                            except Exception:
+                                await self._reply(update, text)
+                        else:
+                            await self._reply(update, text)
                         return
+
                     eligible, excluded, stats = await discover_eligible_traders(db, p.id)
 
                 scanned = stats.get("total_scanned", 0)
                 eligible_count = stats.get("eligible", 0)
                 now = datetime.now().strftime("%b %d, %H:%M UTC")
 
-                # Premium analyst format
                 lines = [
                     "\U0001f3c6 TOP COPY TRADERS SCAN",
                     "",
@@ -361,11 +369,9 @@ class TelegramBot:
                         risk_str = f"{int(risk)}/10" if risk is not None else "N/A"
                         dd_str = f"{abs(dd):.1f}%" if dd is not None else "N/A"
 
-                        # Confidence level based on available fields
                         present = sum(1 for f in [ret, risk, dd, t.get("positions_count"), t.get("profitable_months_pct"), t.get("weeks_since_registration")] if f is not None)
                         conf = "HIGH" if present >= 5 else "MEDIUM" if present >= 3 else "LOW"
 
-                        # Reason
                         reasons = []
                         if ret is not None and ret > 50:
                             reasons.append(f"strong return ({ret_str})")
@@ -395,19 +401,16 @@ class TelegramBot:
                         lines.append(f"+ {len(eligible) - 3} more traders available")
                         lines.append("")
 
-                    # Best pick
                     top = eligible[0]
                     top_user = top.get("username", "?")
-                    top_score = top.get("final_score", top.get("score", 0))
                     top_ret = top.get("total_return_pct")
                     top_risk = top.get("risk_score")
-                    lines.append(f"\U0001f3af BEST PICK:")
+                    lines.append("\U0001f3af BEST PICK:")
                     lines.append(f"@{top_user}")
                     ret_desc = f"+{top_ret:.1f}%" if top_ret is not None else "moderate"
                     risk_desc = f"risk {int(top_risk)}" if top_risk is not None else "unknown"
                     lines.append(f"Reason: Best balance between return, safety, and consistency ({ret_desc}, {risk_desc}).")
 
-                    # Warning if high-risk traders in top 10
                     high_risk = sum(1 for t in eligible if t.get("risk_score") is not None and t["risk_score"] >= 7)
                     no_dd = sum(1 for t in eligible if t.get("peak_to_valley") is None and t.get("max_drawdown") is None)
                     warnings = []
@@ -426,14 +429,23 @@ class TelegramBot:
                 lines.append("")
                 lines.append(f"{scanned} scanned | {eligible_count} eligible")
 
-                await status_msg.edit_text("\n".join(lines))
+                text = "\n".join(lines)
+                if status_msg:
+                    try:
+                        await status_msg.edit_text(text)
+                    except Exception:
+                        await self._reply(update, text)
+                else:
+                    await self._reply(update, text)
 
             except Exception as e:
                 logger.error(f"/discovery error: {e}")
-                try:
-                    await status_msg.edit_text(f"Error: {e}")
-                except Exception:
-                    await self._reply(update, f"Error: {e}")
+                if status_msg:
+                    try:
+                        await status_msg.edit_text(f"Error: {e}")
+                    except Exception:
+                        pass
+                await self._reply(update, f"Error: {e}")
 
     async def _cmd_health(self, update: Update, args: list[str]) -> None:
         from backend.database.connection import db_session
