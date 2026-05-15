@@ -203,19 +203,12 @@ def build_action_plan(
     return result
 
 
-def _confidence_label(c: float) -> str:
-    if c >= 0.95: return "HIGH"
-    if c >= 0.8: return "MEDIUM"
-    return "LOW"
-
-
 def format_display(action_plan: Dict) -> str:
     """Format the action plan into a clean, readable display string."""
     lines = []
 
     # Title
-    lines.append("**Discovery Results**")
-    lines.append("")
+    lines.append("\U0001f4c8 Discovery Results")
 
     # Discovery — ranked list of eligible traders
     discovery = action_plan.get("discovery", [])
@@ -224,42 +217,21 @@ def format_display(action_plan: Dict) -> str:
             d = s.get("details", {})
             ret = d.get("return_12m")
             risk = d.get("risk_score")
-            conf = _confidence_label(s["confidence"])
-            ret_str = f"Return +{ret:.1f}%" if ret else ""
+            ret_str = f"+{ret:.1f}%" if ret else ""
             risk_str = f"Risk {int(risk)}" if risk else ""
-            metrics = ", ".join(p for p in [ret_str, risk_str, f"Confidence {conf}"] if p)
-            lines.append(f"{i}. {s['username']} \u2014 {s['score']}/100")
-            lines.append(f"   {metrics}")
+            second = f"   {ret_str} \u2022 {risk_str}" if ret_str and risk_str else f"   {ret_str or risk_str}"
+            lines.append(f"{i}. {s['username']:<20} {s['score']}")
+            lines.append(second)
         if len(discovery) > 5:
-            lines.append(f"   ... and {len(discovery) - 5} more")
-        lines.append("")
+            lines.append(f"\n+ {len(discovery) - 5} more")
     else:
-        lines.append("  No eligible traders found.")
-        lines.append("")
-
-    # Excluded — grouped by reason (count only, no names)
-    excluded = action_plan.get("excluded", [])
-    if excluded:
-        lines.append(f"**Excluded ({sum(g['count'] for g in excluded)}):**")
-        for g in excluded[:4]:
-            lines.append(f"  \u274c {g['reason']} ({g['count']})")
-        lines.append("")
+        lines.append("No eligible traders found.")
 
     # Summary line
     debug = action_plan.get("debug", {})
-    parts = []
-    ac = debug.get("active_count", 0)
-    parts.append(f"{ac} active")
-    parts.append(f"{debug.get('eligible_count', 0)} eligible")
-    ec = debug.get("excluded_count", 0)
-    parts.append(f"{ec} excluded")
     scanned = debug.get("total_scanned", 0)
-    parts.append(f"{scanned} scanned")
-    lines.append(f"{' | '.join(parts)}")
-    if debug.get("under_diversified"):
-        lines.append("\u26a0\ufe0f Under-diversified (less than 3 traders)")
-    if debug.get("concentration_risk"):
-        lines.append("\u26a0\ufe0f Concentration risk (>40% in one trader)")
+    eligible = debug.get("eligible_count", 0)
+    lines.append(f"\n{scanned} scanned | {eligible} eligible")
 
     return "\n".join(lines)
 

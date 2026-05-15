@@ -321,31 +321,26 @@ class TelegramBot:
                     return
                 eligible, excluded, stats = await discover_eligible_traders(db, p.id)
 
-                lines = ["**Discovery Results**\n"]
+                lines = ["\U0001f4c8 Discovery Results"]
 
                 if eligible:
                     for i, t in enumerate(eligible[:5], 1):
                         score = t.get("final_score", t.get("score", 0))
                         ret_raw = t.get("total_return_pct")
-                        ret_str = f"Return +{ret_raw:.1f}%" if ret_raw is not None else ""
+                        ret_str = f"+{ret_raw:.1f}%" if ret_raw is not None else ""
                         risk_raw = t.get("risk_score")
                         risk_str = f"Risk {int(risk_raw)}" if risk_raw is not None else ""
-                        conf_raw = t.get("confidence_mod", t.get("confidence_score", 1.0))
-                        if conf_raw >= 0.95: conf_label = "HIGH"
-                        elif conf_raw >= 0.8: conf_label = "MEDIUM"
-                        else: conf_label = "LOW"
-                        metrics = ", ".join(p for p in [ret_str, risk_str, f"Confidence {conf_label}"] if p)
-                        lines.append(f"{i}. {t['username']} \u2014 {score}/100")
-                        lines.append(f"   {metrics}")
+                        second = f"   {ret_str} \u2022 {risk_str}" if ret_str and risk_str else f"   {ret_str or risk_str}"
+                        lines.append(f"{i}. {t['username']:<20} {score}")
+                        lines.append(second)
                     if len(eligible) > 5:
-                        lines.append(f"   ... and {len(eligible) - 5} more")
+                        lines.append(f"\n+ {len(eligible) - 5} more")
                 else:
                     lines.append("No eligible traders found at this time.")
-                lines.append("")
+
                 scanned = stats.get("total_scanned", 0)
                 eligible_count = stats.get("eligible", 0)
-                excluded_count = stats.get("excluded", 0)
-                lines.append(f"{eligible_count} eligible | {excluded_count} excluded | {scanned} scanned")
+                lines.append(f"\n{scanned} scanned | {eligible_count} eligible")
 
                 await self._reply(update, "\n".join(lines))
         except Exception as e:
