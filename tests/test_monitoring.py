@@ -319,7 +319,7 @@ class TestTraderHealthEngine:
         }
         trader["_holdings_source"] = "unknown"
         result = analyze_trader_health(trader, [], {})
-        assert result["signal"] == "reduce"
+        assert result["signal"] == "avoid"
         assert result["holdings_count"] == 0
 
     def test_analyze_trader_critical_risk(self):
@@ -342,6 +342,7 @@ class TestTraderHealthEngine:
                   "total_return_pct": 200.0,
                   "risk_score": 3.0,
                   "copiers": 500,
+                  "positions_count": 50,
                   "max_drawdown": 5.0}
         score, label = _score_performance(trader)
         assert label == "strong"

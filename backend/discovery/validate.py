@@ -112,6 +112,22 @@ def build_trader_profile(raw: dict) -> TraderProfile:
     raw_positions = raw.get("positions_count")
     fs["positions_count"] = classify_int(raw_positions)
 
+    # ── Professional analysis fields ──────────────────────────────
+    raw_peak = raw.get("peak_to_valley")
+    fs["peak_to_valley"] = VERIFIED if raw_peak is not None else MISSING
+
+    raw_prof_months = raw.get("profitable_months_pct")
+    fs["profitable_months_pct"] = classify_return(raw_prof_months)
+
+    raw_win = raw.get("win_ratio")
+    fs["win_ratio"] = classify_return(raw_win)
+
+    raw_trades = raw.get("trades_count")
+    fs["trades_count"] = classify_int(raw_trades)
+
+    raw_weeks = raw.get("weeks_since_registration")
+    fs["weeks_since_registration"] = classify_int(raw_weeks)
+
     # ── Copy info ─────────────────────────────────────────────────
     min_copy = raw.get("min_copy_amount")
     fs["min_copy_amount"] = VERIFIED if min_copy is not None else MISSING
@@ -138,6 +154,11 @@ def build_trader_profile(raw: dict) -> TraderProfile:
         raw_total_return_pct=float(raw_tr) if raw_tr is not None else None,
         raw_avg_monthly_return=float(raw_avg) if raw_avg is not None and raw_avg != 0 else None,
         raw_is_copyable=bool(is_copyable),
+        raw_peak_to_valley=float(raw_peak) if raw_peak is not None else None,
+        raw_profitable_months_pct=float(raw_prof_months) if raw_prof_months is not None else None,
+        raw_win_ratio=float(raw_win) if raw_win is not None else None,
+        raw_trades_count=int(raw_trades) if raw_trades is not None else None,
+        raw_weeks_since_registration=int(raw_weeks) if raw_weeks is not None else None,
         source=source,
         confidence=confidence,
         field_status=fs,

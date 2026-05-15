@@ -38,6 +38,12 @@ class TraderProfile:
     raw_avg_monthly_return: Optional[float] = None
     raw_is_copyable: bool = True
 
+    raw_peak_to_valley: Optional[float] = None
+    raw_profitable_months_pct: Optional[float] = None
+    raw_win_ratio: Optional[float] = None
+    raw_trades_count: Optional[int] = None
+    raw_weeks_since_registration: Optional[int] = None
+
     # ── Source / confidence ───────────────────────────────────────
     source: str = "unknown"
     confidence: float = 0.0

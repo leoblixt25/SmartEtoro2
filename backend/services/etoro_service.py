@@ -404,6 +404,11 @@ class EToroAPIClient:
             "min_copy_amount": None,
             "copiers": None,
             "positions_count": None,
+            "peak_to_valley": None,
+            "profitable_months_pct": None,
+            "win_ratio": None,
+            "trades_count": None,
+            "weeks_since_registration": None,
             "missing_fields": [],
         }
 
@@ -572,12 +577,21 @@ class EToroAPIClient:
             vol_raw = tradeinfo.get("volatility")
             avg_raw = tradeinfo.get("avgReturn")
 
+            # Advanced metrics for professional analysis
+            peak_raw = tradeinfo.get("peakToValley")
+            prof_months_raw = tradeinfo.get("profitableMonthsPct")
+            win_raw = tradeinfo.get("winRatio")
+            trades_raw = tradeinfo.get("trades")
+            weeks_raw = tradeinfo.get("weeksSinceRegistration")
+
             logger.debug(
                 "Tradeinfo extracted for %s: gainPerc=%s riskScore=%s "
                 "maxMonthlyDrawdown=%s volatility=%s avgReturn=%s "
-                "Copiers=%s NumberOfOpenPositions=%s MinInvestment=%s",
+                "Copiers=%s NumberOfOpenPositions=%s MinInvestment=%s "
+                "peakToValley=%s profitableMonthsPct=%s winRatio=%s",
                 username, gain_raw, risk_raw, dd_raw, vol_raw,
                 avg_raw, copiers_raw, positions_raw, min_copy,
+                peak_raw, prof_months_raw, win_raw,
             )
 
             missing_fields = []
@@ -595,6 +609,12 @@ class EToroAPIClient:
                 missing_fields.append("minCopyAmount")
             if copiers_raw is None:
                 missing_fields.append("copiers")
+            if peak_raw is None:
+                missing_fields.append("peakToValley")
+            if prof_months_raw is None:
+                missing_fields.append("profitableMonthsPct")
+            if win_raw is None:
+                missing_fields.append("winRatio")
 
             result.update({
                 "avg_return": float(avg_raw) if avg_raw is not None else None,
@@ -609,6 +629,11 @@ class EToroAPIClient:
                 "confidence": 1.0,
                 "copiers": int(copiers_raw) if copiers_raw is not None else None,
                 "positions_count": int(positions_raw) if positions_raw is not None else None,
+                "peak_to_valley": float(peak_raw) if peak_raw is not None else None,
+                "profitable_months_pct": float(prof_months_raw) if prof_months_raw is not None else None,
+                "win_ratio": float(win_raw) if win_raw is not None else None,
+                "trades_count": int(trades_raw) if trades_raw is not None else None,
+                "weeks_since_registration": int(weeks_raw) if weeks_raw is not None else None,
                 "missing_fields": missing_fields,
             })
             logger.info(
@@ -944,6 +969,11 @@ class EToroAPIClient:
                     "confidence": metrics.get("confidence", 0.0),
                     "source": metrics.get("source", "unknown"),
                     "missing_fields": metrics.get("missing_fields", []),
+                    "peak_to_valley": metrics.get("peak_to_valley"),
+                    "profitable_months_pct": metrics.get("profitable_months_pct"),
+                    "win_ratio": metrics.get("win_ratio"),
+                    "trades_count": metrics.get("trades_count"),
+                    "weeks_since_registration": metrics.get("weeks_since_registration"),
                 })
             else:
                 unavailable.append({"username": username, "reason": "all_endpoints_failed"})
