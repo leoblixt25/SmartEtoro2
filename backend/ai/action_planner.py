@@ -203,89 +203,63 @@ def build_action_plan(
     return result
 
 
+def _confidence_label(c: float) -> str:
+    if c >= 0.95: return "HIGH"
+    if c >= 0.8: return "MEDIUM"
+    return "LOW"
+
+
 def format_display(action_plan: Dict) -> str:
-    """Format the action plan into a Telegram/console-ready display string."""
+    """Format the action plan into a clean, readable display string."""
     lines = []
 
-    # Header
-    lines.append("\U0001f4ca **Decision Dashboard**")
+    # Title
+    lines.append("**Discovery Results**")
     lines.append("")
 
-    # Active Portfolio
-    active = action_plan.get("active_portfolio", [])
-    lines.append(f"**Active Portfolio ({len(active)}):**")
-    if active:
-        for t in active:
-            score = t.get("final_score", 0)
-            icon = "\U0001f7e2" if score >= 60 else ("\U0001f7e1" if score >= 30 else "\U0001f534")
-            lines.append(
-                f"  {icon} {t['username']} \u2014 {score}/100"
-                f" (alloc {t['allocation_pct']:.1f}%, risk {safe_fmt(t.get('risk_score'))})"
-            )
-    else:
-        lines.append("  No active traders.")
-    lines.append("")
-
-    # Discovery
+    # Discovery — ranked list of eligible traders
     discovery = action_plan.get("discovery", [])
-    lines.append(f"**New Eligible Traders ({len(discovery)}):**")
     if discovery:
         for i, s in enumerate(discovery[:5], 1):
             d = s.get("details", {})
             ret = d.get("return_12m")
             risk = d.get("risk_score")
-            ret_str = f"+{ret:.1f}%" if ret else ""
-            risk_str = f"risk {int(risk)}" if risk else ""
-            metrics = ", ".join(p for p in [ret_str, risk_str] if p)
-            conf_note = "" if s["confidence"] >= 0.95 else " \U0001f7e1 limited data"
-            lines.append(
-                f"  {i}. {s['username']} \u2014 {s['score']}/100"
-                f"  ({metrics}){conf_note}"
-            )
+            conf = _confidence_label(s["confidence"])
+            ret_str = f"Return +{ret:.1f}%" if ret else ""
+            risk_str = f"Risk {int(risk)}" if risk else ""
+            metrics = ", ".join(p for p in [ret_str, risk_str, f"Confidence {conf}"] if p)
+            lines.append(f"{i}. {s['username']} \u2014 {s['score']}/100")
+            lines.append(f"   {metrics}")
         if len(discovery) > 5:
-            lines.append(f"  ... and {len(discovery) - 5} more")
+            lines.append(f"   ... and {len(discovery) - 5} more")
+        lines.append("")
     else:
         lines.append("  No eligible traders found.")
-    lines.append("")
+        lines.append("")
 
-    # Excluded
+    # Excluded — grouped by reason (count only, no names)
     excluded = action_plan.get("excluded", [])
     if excluded:
         lines.append(f"**Excluded ({sum(g['count'] for g in excluded)}):**")
         for g in excluded[:4]:
             lines.append(f"  \u274c {g['reason']} ({g['count']})")
-        if len(excluded) > 4:
-            lines.append(f"  ... and {len(excluded) - 4} other exclusion reasons")
         lines.append("")
 
-    # Recommendations
-    recs = action_plan.get("recommendations", {})
-    swap = recs.get("recommended_swap")
-    eq_plan = recs.get("equal_weight_plan", [])
-
-    if swap:
-        lines.append("\U0001f3c6 **Recommended Swap:**")
-        lines.append(f"  \U0001f519 {swap['replace']} \u2192 {swap['with']}")
-        lines.append(f"  {swap['reason']}")
-        lines.append("")
-
-    if eq_plan:
-        names = ", ".join(t['username'] for t in eq_plan)
-        lines.append(f"**Equal-Weight Plan:** {names}")
-
-    # Summary
+    # Summary line
     debug = action_plan.get("debug", {})
-    qgm = action_plan.get("quality_gate_message")
-    if qgm:
-        lines.append("\u26a0\ufe0f **Quality Gate:**")
-        lines.append(f"  {qgm}")
-        lines.append("")
-    lines.append(f"**Summary:** {action_plan.get('summary', '')}")
-    lines.append(f"  Avg score: {debug.get('avg_score', 0)}/100")
+    parts = []
+    ac = debug.get("active_count", 0)
+    parts.append(f"{ac} active")
+    parts.append(f"{debug.get('eligible_count', 0)} eligible")
+    ec = debug.get("excluded_count", 0)
+    parts.append(f"{ec} excluded")
+    scanned = debug.get("total_scanned", 0)
+    parts.append(f"{scanned} scanned")
+    lines.append(f"{' | '.join(parts)}")
     if debug.get("under_diversified"):
-        lines.append("  \u26a0\ufe0f Under-diversified (less than 3 traders)")
+        lines.append("\u26a0\ufe0f Under-diversified (less than 3 traders)")
     if debug.get("concentration_risk"):
-        lines.append("  \u26a0\ufe0f Concentration risk (>40% in one trader)")
+        lines.append("\u26a0\ufe0f Concentration risk (>40% in one trader)")
 
     return "\n".join(lines)
 
