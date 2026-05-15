@@ -328,16 +328,33 @@ class TelegramBot:
 
                 if eligible:
                     for i, t in enumerate(eligible[:5], 1):
-                        score = t.get("score", 0)
-                        ret = t.get("total_return_pct", 0)
-                        risk = t.get("risk_score", 5)
-                        mincpy = t.get("min_copy_amount", 200)
-                        copiers = t.get("copiers", "?")
+                        score = t.get("final_score", t.get("score", 0))
+                        ret_raw = t.get("total_return_pct")
+                        ret_str = f"{ret_raw:+.1f}%" if ret_raw is not None else "unavailable"
+                        risk_raw = t.get("risk_score")
+                        risk_str = f"{risk_raw:.1f}" if risk_raw is not None else "unavailable"
+                        mincpy_raw = t.get("min_copy_amount")
+                        mincpy_str = f"${mincpy_raw:.0f}" if mincpy_raw is not None else "unavailable"
+                        copiers_raw = t.get("copiers")
+                        copiers_str = f"{copiers_raw}" if copiers_raw is not None else "unavailable"
+                        missing = t.get("missing_fields", [])
+                        conf_raw = t.get("confidence_mod", t.get("confidence_score", 1.0))
+                        if conf_raw >= 1.0:
+                            conf_label = "HIGH"
+                        elif conf_raw >= 0.8:
+                            conf_label = "HIGH"
+                        elif conf_raw >= 0.6:
+                            conf_label = "MEDIUM"
+                        else:
+                            conf_label = "LOW"
                         lines.append(
                             f"{i}. {t['username']} \u2014 {score}/100\n"
-                            f"   Return: {ret:+.1f}%  Risk: {risk:.1f}  "
-                            f"Copiers: {copiers}  Min copy: ${mincpy:.0f}"
+                            f"   Return: {ret_str}  Risk: {risk_str}  "
+                            f"Copiers: {copiers_str}  Min copy: {mincpy_str}\n"
+                            f"   Confidence: {conf_label}"
                         )
+                        if missing:
+                            lines[-1] += f"  Missing: {', '.join(missing)}"
                     if len(eligible) > 5:
                         lines.append(f"\n... and {len(eligible) - 5} more")
                 else:

@@ -51,15 +51,15 @@ def validate_data_source(trader: dict) -> Optional[str]:
     """
     source = trader.get("source", "unknown")
     confidence = float(trader.get("confidence", 0.0) or 0.0)
-    total_return = float(trader.get("total_return_pct", 0.0) or 0.0)
+    total_return = trader.get("total_return_pct")
 
     # tradeinfo is always authoritative
     if source == "tradeinfo" or confidence >= 1.0:
         return None
 
-    # Zero return from non-authoritative source = no real data
-    if total_return == 0.0 and confidence < 1.0:
-        return f"zero return from {source} (confidence={confidence})"
+    # None return from non-authoritative source = no real data
+    if total_return is None and confidence < 1.0:
+        return f"no return data from {source} (confidence={confidence})"
 
     # Low confidence = unreliable
     if confidence < MIN_CONFIDENCE_TO_SCORE:
@@ -75,14 +75,14 @@ def apply_constraints(candidates: list[dict]) -> list[dict]:
     """
     qualified = []
     for c in candidates:
-        dd = float(c.get("max_drawdown", 0) or 0)
-        tr_days = int(c.get("track_record_days", 0) or 0)
+        dd = c.get("max_drawdown")
+        tr_days = c.get("track_record_days")
 
         reasons = []
-        if dd > 15:
-            reasons.append(f"max_drawdown {dd:.1f}% > 15%")
-        if tr_days > 0 and tr_days < 365:
-            reasons.append(f"track_record {tr_days}d < 365d")
+        if dd is not None and float(dd) > 15:
+            reasons.append(f"max_drawdown {float(dd):.1f}% > 15%")
+        if tr_days is not None and int(tr_days) > 0 and int(tr_days) < 365:
+            reasons.append(f"track_record {int(tr_days)}d < 365d")
 
         if reasons:
             logger.info(f"Disqualified {c.get('username', '?')}: {'; '.join(reasons)}")
@@ -98,26 +98,30 @@ def apply_constraints(candidates: list[dict]) -> list[dict]:
 
 def calculate_growth_efficiency_score(trader: dict) -> float:
     """Compute Growth Efficiency = avg_monthly_return / max_drawdown, scaled 0-100."""
-    avg_monthly = float(trader.get("avg_monthly_return", 0) or 0)
-    max_dd = float(trader.get("max_drawdown", 1) or 1)
+    avg_monthly = trader.get("avg_monthly_return")
+    max_dd = trader.get("max_drawdown")
 
-    if max_dd <= 0:
-        return 50.0
+    if avg_monthly is None or max_dd is None or max_dd <= 0:
+        return 0.0
 
-    ratio = avg_monthly / max_dd
+    ratio = float(avg_monthly) / float(max_dd)
     score = min(100.0, max(0.0, ratio * 200))
     return round(score, 1)
 
 
 def _compute_confidence(trader: dict) -> float:
-    """Compute data confidence score 0-1 based on available fields."""
+    """Compute data confidence score 0-1 based on available fields.
+
+    Only counts a field as 'present' if it is both not None AND non-zero
+    (zero means the API didn't return real data for that field).
+    """
     checks = {
         "return_12m":          lambda v: v is not None and float(v) != 0,
         "total_return_pct":    lambda v: v is not None and float(v) != 0,
-        "risk_score":          lambda v: v is not None and float(v) != 5.0,
-        "max_drawdown":        lambda v: v is not None and float(v) != 0,
-        "volatility":          lambda v: v is not None and float(v) != 0,
-        "avg_monthly_return":  lambda v: v is not None and float(v) != 0,
+        "risk_score":          lambda v: v is not None and float(v) > 0,
+        "max_drawdown":        lambda v: v is not None and float(v) > 0,
+        "volatility":          lambda v: v is not None and float(v) > 0,
+        "avg_monthly_return":  lambda v: v is not None and float(v) > 0,
         "sharpe_score":        lambda v: v is not None and float(v) != 0,
     }
     present = sum(1 for field, check in checks.items() if check(trader.get(field)))
@@ -129,57 +133,63 @@ def _has_return_data(trader: dict) -> bool:
     """Check if trader has actual return data (not defaults)."""
     for key in ["return_12m", "return_6m", "total_return_pct", "avg_monthly_return"]:
         val = trader.get(key)
-        if val is not None and float(val) != 0:
+        if val is not None and float(val) > 0:
             return True
     return False
 
 
-def _get_return_12m(trader: dict) -> float:
+def _get_return_12m(trader: dict) -> Optional[float]:
     v = trader.get("return_12m")
-    if v is not None:
+    if v is not None and float(v) > 0:
         return float(v)
     v = trader.get("total_return_pct")
-    if v is not None:
+    if v is not None and float(v) > 0:
         return float(v)
     v = trader.get("avg_monthly_return")
-    if v is not None:
+    if v is not None and float(v) > 0:
         return float(v) * 12
-    return 0.0
+    return None
 
 
-def _get_return_6m(trader: dict) -> float:
+def _get_return_6m(trader: dict) -> Optional[float]:
     v = trader.get("return_6m")
-    if v is not None:
+    if v is not None and float(v) > 0:
         return float(v)
-    v = trader.get("avg_monthly_return")
-    if v is not None:
-        return float(v) * 6
+    # Prefer total_return_pct over avg_monthly_return when both exist,
+    # because avg_monthly_return is often default 0.0 from missing API data
     v = trader.get("total_return_pct")
-    if v is not None:
+    if v is not None and float(v) > 0:
         return float(v) * 0.5
-    return 0.0
+    v = trader.get("avg_monthly_return")
+    if v is not None and float(v) > 0:
+        return float(v) * 6
+    return None
 
 
-def _get_risk(trader: dict) -> float:
-    return float(trader.get("risk_score", 5.0) or 5.0)
+def _get_risk(trader: dict) -> Optional[float]:
+    v = trader.get("risk_score")
+    if v is None:
+        return None
+    return float(v)
 
 
-def _get_drawdown(trader: dict) -> float:
-    return float(trader.get("max_drawdown", 0.0) or 0.0)
+def _get_drawdown(trader: dict) -> Optional[float]:
+    v = trader.get("max_drawdown")
+    if v is None:
+        return None
+    return float(v)
 
 
 def _get_consistency(trader: dict) -> float:
     v = trader.get("consistency_score")
-    if v is not None:
+    if v is not None and float(v) > 0:
         return min(100.0, max(0.0, float(v)))
     sharpe = trader.get("sharpe_score")
-    if sharpe is not None:
+    if sharpe is not None and float(sharpe) > 0:
         return min(100.0, max(0.0, float(sharpe) * 20))
     vol = trader.get("volatility")
-    if vol is not None:
+    if vol is not None and float(vol) > 0:
         v = float(vol)
-        if v <= 0:
-            return 50.0
         return min(100.0, max(0.0, 100.0 - (v - 10.0) * 2.5))
     return 50.0
 
@@ -197,12 +207,14 @@ def _build_explanation(trader: dict, score: float, confidence: float, source: st
     risk = _get_risk(trader)
     dd = _get_drawdown(trader)
 
-    if r12 > 0:
+    if r12 is not None:
         parts.append(f"12M={r12:.1f}%")
-    if r6 > 0:
+    if r6 is not None:
         parts.append(f"6M={r6:.1f}%")
-    parts.append(f"risk={risk:.1f}")
-    parts.append(f"dd={dd:.1f}%")
+    if risk is not None:
+        parts.append(f"risk={risk:.1f}")
+    if dd is not None:
+        parts.append(f"dd={dd:.1f}%")
 
     for p in penalties:
         parts.append(p)
@@ -217,6 +229,37 @@ def _build_explanation(trader: dict, score: float, confidence: float, source: st
     return parts
 
 
+def _confidence_penalty(trader: dict) -> float:
+    """Compute confidence modifier (0.5-1.0) based on missing fields.
+
+    Each missing key metric reduces confidence by:
+      - risk_score missing: -0.15
+      - copiers missing: -0.10
+      - avg_monthly_return missing/zero: -0.20
+      - max_drawdown missing/zero: -0.15
+      - volatility missing/zero: -0.10
+
+    Minimum modifier is 0.5 (score halved when data is very sparse).
+    """
+    modifier = 1.0
+    risk = trader.get("risk_score")
+    if risk is None:
+        modifier -= 0.15
+    copiers = trader.get("copiers")
+    if copiers is None:
+        modifier -= 0.10
+    avg_monthly = trader.get("avg_monthly_return")
+    if avg_monthly is None or float(avg_monthly) == 0:
+        modifier -= 0.20
+    dd = trader.get("max_drawdown")
+    if dd is None or float(dd) == 0:
+        modifier -= 0.15
+    vol = trader.get("volatility")
+    if vol is None or float(vol) == 0:
+        modifier -= 0.10
+    return max(modifier, 0.5)
+
+
 def calculate_growth_score(trader: dict) -> dict:
     """Compute deterministic growth score (0-100) for a single trader.
 
@@ -224,13 +267,16 @@ def calculate_growth_score(trader: dict) -> dict:
 
     Returns:
       score            — final score (0-100), 0.0 if rejected
+      final_score      — score adjusted for data confidence (0-100)
       confidence_score — data completeness (0-1)
+      confidence_mod   — multiplier applied (0.5-1.0)
       source           — data source used
       source_valid     — True if source passed validation
       explanation      — human-readable scoring reasons
       details          — component breakdown
       penalties        — applied penalties
       growth_filter    — True if zeroed by growth filter
+      missing_fields   — list of fields missing from API
     """
     # ── Step 1: Validate data source ──
     source = trader.get("source", "unknown")
@@ -248,6 +294,7 @@ def calculate_growth_score(trader: dict) -> dict:
             "score": 0.0,
             "final_score": 0.0,
             "confidence_score": _compute_confidence(trader),
+            "confidence_mod": 0.0,
             "source": source,
             "source_valid": False,
             "source_reason": source_reason or "unknown",
@@ -255,24 +302,35 @@ def calculate_growth_score(trader: dict) -> dict:
             "details": {},
             "penalties": [],
             "growth_filter": False,
+            "missing_fields": trader.get("missing_fields", []),
         }
 
     # ── Step 2: Compute score ──
+    username = trader.get("username", "?")
     confidence = _compute_confidence(trader)
+    confidence_mod = _confidence_penalty(trader)
+    missing = trader.get("missing_fields", [])
     r12 = _get_return_12m(trader)
     r6 = _get_return_6m(trader)
     risk = _get_risk(trader)
     dd = _get_drawdown(trader)
     consistency = _get_consistency(trader)
+    raw_risk = trader.get("risk_score")
+    raw_return = trader.get("total_return_pct")
+    raw_dd = trader.get("max_drawdown")
+    raw_copiers = trader.get("copiers")
+    raw_min_copy = trader.get("min_copy_amount")
 
     penalties = []
     growth_filter = False
 
-    if _has_return_data(trader) and r12 < GROWTH_FILTER_MIN_12M:
-        result = {
+    if _has_return_data(trader) and (r12 is not None and r12 < GROWTH_FILTER_MIN_12M):
+        logger.info("Growth filter: %s 12M=%.1f%% — score=0", username, r12)
+        return {
             "score": 0.0,
             "final_score": 0.0,
             "confidence_score": confidence,
+            "confidence_mod": confidence_mod,
             "source": source,
             "source_valid": True,
             "source_reason": None,
@@ -290,14 +348,14 @@ def calculate_growth_score(trader: dict) -> dict:
             },
             "penalties": [f"12M return {r12:.1f}% below 10% threshold"],
             "growth_filter": True,
+            "missing_fields": missing,
         }
-        logger.info("Growth filter: %s 12M=%.1f%% — score=0", trader.get("username", "?"), r12)
-        return result
 
-    r12_norm = min(100.0, max(0.0, r12 * 5))
-    r6_norm = min(100.0, max(0.0, r6 * 8))
-    risk_norm = min(100.0, max(0.0, (10.0 - risk) * 12.5))
-    dd_norm = min(100.0, max(0.0, 100.0 - dd * 4))
+    # Normalize each component, using None-safe defaults
+    r12_norm = min(100.0, max(0.0, r12 * 5)) if r12 is not None else 0.0
+    r6_norm = min(100.0, max(0.0, r6 * 8)) if r6 is not None else 0.0
+    risk_norm = min(100.0, max(0.0, (10.0 - risk) * 12.5)) if risk is not None else 50.0
+    dd_norm = min(100.0, max(0.0, 100.0 - dd * 4)) if dd is not None else 50.0
     cons_norm = min(100.0, max(0.0, consistency))
 
     base_score = (
@@ -309,26 +367,28 @@ def calculate_growth_score(trader: dict) -> dict:
     )
 
     score = base_score
-    if risk > 7:
+    if risk is not None and risk > 7:
         score -= PENALTY_RISK_HIGH
         penalties.append(f"risk={risk:.1f} > 7: -{PENALTY_RISK_HIGH}pts")
-    if dd > 25:
+    if dd is not None and dd > 25:
         score -= PENALTY_DRAWDOWN_HIGH
         penalties.append(f"dd={dd:.1f}% > 25%: -{PENALTY_DRAWDOWN_HIGH}pts")
 
     score = max(0.0, round(score, 1))
+    final_score = round(score * confidence_mod, 1)
 
     result = {
         "score": score,
-        "final_score": score,
+        "final_score": final_score,
         "confidence_score": confidence,
+        "confidence_mod": confidence_mod,
         "source": source,
         "source_valid": True,
         "source_reason": None,
-        "explanation": _build_explanation(trader, score, confidence, source, penalties),
+        "explanation": _build_explanation(trader, final_score, confidence, source, penalties),
         "details": {
-            "return_12m": round(r12, 1),
-            "return_6m": round(r6, 1),
+            "return_12m": round(r12, 1) if r12 is not None else None,
+            "return_6m": round(r6, 1) if r6 is not None else None,
             "risk_score": risk,
             "max_drawdown": dd,
             "consistency": round(consistency, 1),
@@ -343,11 +403,40 @@ def calculate_growth_score(trader: dict) -> dict:
         },
         "penalties": penalties,
         "growth_filter": False,
+        "missing_fields": missing,
     }
 
+    # ── Per-trader debug logging (STEP 4 requirement) ──
     logger.info(
-        "Scored %s: %.1f (source=%s, conf=%.2f, r12=%.1f%%, risk=%.1f, dd=%.1f%%)",
-        trader.get("username", "?"), score, source, confidence, r12, risk, dd,
+        f"""
+    ===== TRADER DEBUG =====
+    Username: {username}
+
+    RAW API:
+    risk={raw_risk}
+    copiers={raw_copiers}
+    return={raw_return}
+    drawdown={raw_dd}
+    min_copy={raw_min_copy}
+
+    NORMALIZED:
+    risk={risk}
+    copiers={raw_copiers}
+    return_12m={r12}
+    consistency={consistency}
+
+    MISSING:
+    {missing}
+
+    SCORE BREAKDOWN:
+    return_12m_score={round(r12_norm, 1) if r12_norm else 0}
+    risk_score={round(risk_norm, 1) if risk_norm else 0}
+    consistency_score={round(cons_norm, 1) if cons_norm else 0}
+    confidence_modifier={confidence_mod}
+    base_score={round(score, 1)}
+    final_score={final_score}
+    ========================
+    """
     )
     return result
 
@@ -361,8 +450,7 @@ def scout_holdings(holdings: list[dict]) -> dict:
     for h in holdings:
         result = calculate_growth_score(h)
         scored.append({
-            "username": h.get("username", "?"),
-            "allocation_pct": h.get("allocation_pct", 0),
+            **h,
             **result,
         })
 
@@ -384,9 +472,7 @@ def rank_candidates(holdings: list[dict], candidates: list[dict], top_n: int = 1
     for c in candidates:
         result = calculate_growth_score(c)
         scored.append({
-            "username": c.get("username", "?"),
-            "risk_score": c.get("risk_score", "?"),
-            "total_return_pct": c.get("total_return_pct", "?"),
+            **c,
             **result,
             "delta": round(result["score"] - weakest_score, 1),
         })
@@ -445,10 +531,9 @@ def rank_combined(holdings: list[dict], candidates: list[dict], top_n: int = 3) 
     for c in candidates:
         result = calculate_growth_score(c)
         discovery_scored.append({
-            "username": c.get("username", "?"),
-            "allocation_pct": 0,
-            "source": "discovery",
+            **c,
             **result,
+            "allocation_pct": c.get("allocation_pct", 0),
         })
     discovery_scored.sort(key=lambda x: x["score"], reverse=True)
 
@@ -459,9 +544,7 @@ def rank_combined(holdings: list[dict], candidates: list[dict], top_n: int = 3) 
     for h in holdings:
         result = calculate_growth_score(h)
         holdings_scored.append({
-            "username": h.get("username", "?"),
-            "allocation_pct": h.get("allocation_pct", 0),
-            "source": "current",
+            **h,
             **result,
         })
     holdings_scored.sort(key=lambda x: x["score"], reverse=True)

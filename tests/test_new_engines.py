@@ -479,6 +479,8 @@ class TestScoringEnginePipeline:
         result = calculate_growth_score({
             "username": "t", "source": "tradeinfo", "confidence": 1.0,
             "return_12m": 15.0, "risk_score": 4.0,
+            "max_drawdown": 8.0, "volatility": 12.0,
+            "avg_monthly_return": 2.0, "copiers": 100,
         })
         assert "final_score" in result
         assert result["final_score"] == result["score"]

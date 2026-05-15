@@ -44,7 +44,7 @@ class TestComputeConfidence:
     def test_default_risk_score_does_not_count(self):
         from backend.ai.scoring_engine import _compute_confidence
         trader = {
-            "risk_score": 5.0,  # default — should not count
+            "risk_score": None,  # None = missing from API — should not count
         }
         assert _compute_confidence(trader) == 0.3
 
@@ -53,7 +53,7 @@ class TestComputeConfidence:
         trader = {
             "return_12m": 0.0,
             "total_return_pct": 0.0,
-            "risk_score": 5.0,
+            "risk_score": None,
         }
         assert _compute_confidence(trader) == 0.3
 
@@ -84,8 +84,8 @@ class TestCalculateGrowthScore:
             "username": "test_trader",
             "source": "tradeinfo",
             "confidence": 1.0,
-            "risk_score": 5.0,
-            "max_drawdown": 0.0,
+            "risk_score": None,  # No risk data from API
+            "max_drawdown": None,  # No drawdown data from API
         }
         result = calculate_growth_score(trader)
         assert result["growth_filter"] is False

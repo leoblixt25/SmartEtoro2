@@ -75,7 +75,7 @@ def has_substance(trader: Dict) -> Tuple[bool, Optional[str]]:
     # Only check for missing substance in fallback sources
     if source != "tradeinfo":
         has_any_return = any(
-            (trader.get(k) or 0) != 0
+            (trader.get(k) or 0) > 0
             for k in ("total_return_pct", "avg_monthly_return", "avg_return", "return_12m", "return_6m")
         )
         if not has_any_return:
@@ -93,14 +93,14 @@ def has_reliable_data(trader: Dict) -> Tuple[bool, Optional[str]]:
       - tradeinfo source (confidence 1.0) is always authoritative
       - Fallback/default/unknown sources without return data → no_valid_data
       - Other sources require confidence >= 0.8
-      - Zero return from a low-confidence source is rejected
+      - Zero/None return from a low-confidence source is rejected
     """
     source = trader.get("source", "unknown")
     confidence = trader.get("confidence", 0.0)
-    total_return = trader.get("total_return_pct", 0.0) or 0.0
+    total_return = trader.get("total_return_pct")
 
-    # Reject zero-return when trader also lacks copiers/positions (no real substance)
-    if total_return == 0.0:
+    # Reject None-return when trader also lacks copiers/positions (no real substance)
+    if total_return is None or total_return == 0.0:
         copiers = trader.get("copiers")
         positions = trader.get("positions_count")
         if (copiers is None or copiers == 0) and (positions is None or positions == 0):
@@ -108,23 +108,25 @@ def has_reliable_data(trader: Dict) -> Tuple[bool, Optional[str]]:
 
     # tradeinfo is authoritative when it has return data
     if source == "tradeinfo" or confidence >= 1.0:
-        return True, None
+        if total_return is not None or trader.get("copiers") is not None or trader.get("positions_count") is not None:
+            return True, None
+        return False, "no_data_from_authoritative_source"
 
     # Reject any source with no real return data
     has_any_return = any(
-        (trader.get(k) or 0) != 0
+        (trader.get(k) or 0) > 0
         for k in ("total_return_pct", "avg_monthly_return", "avg_return", "return_12m", "return_6m")
     )
-    if not has_any_return and total_return == 0.0:
+    if not has_any_return and (total_return is None or total_return == 0.0):
         return False, "no_valid_return_data"
 
-    if total_return == 0.0 and confidence < 1.0:
+    if (total_return is None or total_return == 0.0) and confidence < 1.0:
         return False, f"no_return_data (source={source}, confidence={confidence})"
 
     if confidence < 0.8:
         return False, f"low_confidence (source={source}, confidence={confidence})"
 
-    # Must have at least one non-zero return metric
+    # Must have at least one positive return metric
     if not has_any_return:
         return False, f"no_return_metrics (source={source})"
 
@@ -133,9 +135,11 @@ def has_reliable_data(trader: Dict) -> Tuple[bool, Optional[str]]:
 
 def passes_risk(trader: Dict, max_risk: float = 9.0) -> Tuple[bool, Optional[str]]:
     """Check risk score is within acceptable range."""
-    risk = trader.get("risk_score", 5.0) or 5.0
-    if risk > max_risk:
-        return False, f"risk_score {risk:.1f} exceeds {max_risk:.0f}"
+    risk = trader.get("risk_score")
+    if risk is None:
+        return False, "missing_risk_score"
+    if float(risk) > max_risk:
+        return False, f"risk_score {float(risk):.1f} exceeds {max_risk:.0f}"
     return True, None
 
 
@@ -170,7 +174,7 @@ def is_real_trader(trader: Dict) -> Tuple[bool, Optional[str]]:
     Auto-reject if:
       - No tradeinfo response (available=False)
       - Empty username
-      - Risk score is 0 or default (no data)
+      - Risk score is None or 0 (no data)
       - total_return_pct is None (no performance data)
       - Source is not authoritative tradeinfo (confidence 1.0)
       - Copiers < 50 (only when API provides copiers data)
@@ -183,7 +187,7 @@ def is_real_trader(trader: Dict) -> Tuple[bool, Optional[str]]:
     username = trader.get("username", "")
     copiers = trader.get("copiers")
     positions = trader.get("positions_count")
-    risk = float(trader.get("risk_score", 0) or 0)
+    risk = trader.get("risk_score")
     total_return = trader.get("total_return_pct")
     source = trader.get("source", "unknown")
 
@@ -191,7 +195,7 @@ def is_real_trader(trader: Dict) -> Tuple[bool, Optional[str]]:
         return False, "trader_not_found"
     if not username:
         return False, "missing_username"
-    if risk <= 0:
+    if risk is None or float(risk) <= 0:
         return False, "missing_risk_score"
     if total_return is None:
         return False, "missing_return_data"

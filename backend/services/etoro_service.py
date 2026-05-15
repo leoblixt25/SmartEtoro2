@@ -6,6 +6,7 @@ at https://public-api.etoro.com.
 """
 
 from __future__ import annotations
+import json
 import os
 import uuid
 import logging
@@ -389,18 +390,19 @@ class EToroAPIClient:
         """Return default metrics structure for a trader with no data."""
         return {
             "username": username,
-            "avg_return": 0.0,
-            "risk_score": 5.0,
-            "max_drawdown": 0.0,
-            "volatility": 0.0,
-            "total_return_pct": 0.0,
+            "avg_return": None,
+            "risk_score": None,
+            "max_drawdown": None,
+            "volatility": None,
+            "total_return_pct": None,
             "available": False,
             "source": "none",
             "confidence": 0.0,
             "is_copyable": True,
-            "min_copy_amount": 200.0,
+            "min_copy_amount": None,
             "copiers": None,
             "positions_count": None,
+            "missing_fields": [],
         }
 
     async def _api_get_with_retry(
@@ -410,7 +412,7 @@ class EToroAPIClient:
         timeout: float = 15.0,
         browser_headers: bool = False,
     ) -> Optional[Dict]:
-        """GET with 3-retry exponential backoff. Does not retry 404.
+        """GET with 3-retry exponential backoff and full status/body logging.
 
         Args:
             url: Target URL.
@@ -419,8 +421,9 @@ class EToroAPIClient:
             browser_headers: If True, use browser-like headers instead of API auth headers.
                              Use this for public/unauthenticated endpoints.
 
-        Returns parsed JSON on 200, None on 404 or non-retryable errors.
-        Retries 429 and 5xx with 2^attempt backoff (2s, 4s).
+        Returns parsed JSON on 200, None on non-retryable errors.
+        Retries 429 and 5xx with 2^attempt backoff (2s, 4s, 8s).
+        Logs every status code, response body snippet, and JSON errors.
         """
         import asyncio
         for attempt in range(1, 4):
@@ -428,30 +431,78 @@ class EToroAPIClient:
                 async with httpx.AsyncClient(timeout=timeout) as client:
                     headers = self._get_browser_headers() if browser_headers else self._get_headers()
                     response = await client.get(url, params=params, headers=headers)
+                    body_snippet = response.text[:500] if response.text else "(empty body)"
+
                     if response.status_code == 200:
-                        return response.json()
-                    if response.status_code == 404:
+                        try:
+                            data = response.json()
+                            logger.debug("GET %s → 200 OK (%d bytes, %d keys)",
+                                         url, len(response.text), len(data) if isinstance(data, dict) else 0)
+                            return data
+                        except (ValueError, json.JSONDecodeError) as e:
+                            logger.error("GET %s → 200 OK BUT INVALID JSON: %s | body=%s",
+                                          url, e, body_snippet)
+                            return None
+
+                    if response.status_code == 204:
+                        logger.info("GET %s → 204 No Content (user has no trade data for this period)", url)
                         return None
-                    if response.status_code in (429,) or response.status_code >= 500:
+
+                    if response.status_code == 401:
+                        logger.error("GET %s → 401 Unauthorized — check ETORO_API_KEY / ETORO_API_SECRET credentials", url)
+                        return None
+
+                    if response.status_code == 403:
+                        logger.error("GET %s → 403 Forbidden — API key lacks access to this endpoint", url)
+                        return None
+
+                    if response.status_code == 404:
+                        logger.info("GET %s → 404 Not Found (user or endpoint does not exist)", url)
+                        return None
+
+                    if response.status_code == 429:
                         if attempt < 3:
                             backoff = 2 ** attempt
-                            logger.debug(f"Retry {attempt}/3 for {url} after {backoff}s (status {response.status_code})")
+                            logger.warning("GET %s → 429 Rate Limited, retry %d/3 after %ds",
+                                           url, attempt, backoff)
                             await asyncio.sleep(backoff)
                             continue
+                        logger.error("GET %s → 429 Rate Limited, exhausted all 3 retries", url)
+                        return None
+
+                    if 500 <= response.status_code < 600:
+                        if attempt < 3:
+                            backoff = 2 ** attempt
+                            logger.warning("GET %s → %d Server Error, retry %d/3 after %ds | body=%s",
+                                           url, response.status_code, attempt, backoff, body_snippet)
+                            await asyncio.sleep(backoff)
+                            continue
+                        logger.error("GET %s → %d Server Error, exhausted all 3 retries | body=%s",
+                                      url, response.status_code, body_snippet)
+                        return None
+
+                    # Any other status (300, 400 without 401/403/404, etc.)
+                    logger.warning("GET %s → %d (unhandled status) | body=%s",
+                                   url, response.status_code, body_snippet)
                     return None
+
             except httpx.TimeoutException:
                 if attempt < 3:
+                    logger.warning("GET %s → Timeout (attempt %d/3), retrying after %ds",
+                                   url, attempt, 2 ** attempt)
                     await asyncio.sleep(2 ** attempt)
                     continue
+                logger.error("GET %s → Timeout after 3 retries", url)
                 return None
             except httpx.RequestError as e:
                 if attempt < 3:
+                    logger.warning("GET %s → RequestError (attempt %d/3): %s", url, attempt, e)
                     await asyncio.sleep(2 ** attempt)
                     continue
-                logger.warning(f"Request failed for {url} after 3 retries: {e}")
+                logger.error("GET %s → RequestError after 3 retries: %s", url, e)
                 return None
             except Exception as e:
-                logger.warning(f"Unexpected error for {url}: {e}")
+                logger.error("GET %s → Unexpected error: %s", url, e)
                 return None
         return None
 
@@ -476,20 +527,59 @@ class EToroAPIClient:
             params={"period": "LastTwoYears"},
         )
         if tradeinfo:
+            # Log raw response keys for debugging
+            resp_keys = list(tradeinfo.keys()) if isinstance(tradeinfo, dict) else []
+            logger.debug("Tradeinfo raw keys for %s: %s", username, resp_keys)
+
             # Extract copyability info if available in the response
             is_copyable = tradeinfo.get("IsCopyable", tradeinfo.get("isCopyable"))
             if is_copyable is None:
                 logger.debug(f"No copyability info in tradeinfo for {username} — assuming copyable")
                 is_copyable = True
-            min_copy = float(tradeinfo.get("MinimumInvestment", tradeinfo.get("minCopyAmount", 200.0)) or 200.0)
+            else:
+                logger.debug("Tradeinfo %s: isCopyable=%s", username, is_copyable)
+
+            min_copy_raw = tradeinfo.get("MinimumInvestment", tradeinfo.get("minCopyAmount"))
+            min_copy = float(min_copy_raw) if min_copy_raw is not None else None
             copiers_raw = tradeinfo.get("Copiers", tradeinfo.get("numOfCopiers"))
             positions_raw = tradeinfo.get("NumberOfOpenPositions", tradeinfo.get("numOfOpenPositions"))
+
+            gain_raw = tradeinfo.get("gainPerc") or tradeinfo.get("gain")
+            risk_raw = tradeinfo.get("riskScore")
+            dd_raw = tradeinfo.get("maxMonthlyDrawdown")
+            vol_raw = tradeinfo.get("volatility")
+            avg_raw = tradeinfo.get("avgReturn")
+
+            logger.debug(
+                "Tradeinfo extracted for %s: gainPerc=%s riskScore=%s "
+                "maxMonthlyDrawdown=%s volatility=%s avgReturn=%s "
+                "Copiers=%s NumberOfOpenPositions=%s MinInvestment=%s",
+                username, gain_raw, risk_raw, dd_raw, vol_raw,
+                avg_raw, copiers_raw, positions_raw, min_copy,
+            )
+
+            missing_fields = []
+            if risk_raw is None:
+                missing_fields.append("riskScore")
+            if dd_raw is None:
+                missing_fields.append("maxMonthlyDrawdown")
+            if vol_raw is None:
+                missing_fields.append("volatility")
+            if avg_raw is None:
+                missing_fields.append("avgReturn")
+            if gain_raw is None:
+                missing_fields.append("gainPerc")
+            if min_copy_raw is None:
+                missing_fields.append("minCopyAmount")
+            if copiers_raw is None:
+                missing_fields.append("copiers")
+
             result.update({
-                "avg_return": float(tradeinfo.get("avgReturn", 0.0) or 0.0),
-                "risk_score": float(tradeinfo.get("riskScore", 5.0) or 5.0),
-                "max_drawdown": float(tradeinfo.get("maxMonthlyDrawdown", 0.0) or 0.0),
-                "volatility": float(tradeinfo.get("volatility", 0.0) or 0.0),
-                "total_return_pct": float(tradeinfo.get("gainPerc", 0.0) or tradeinfo.get("gain", 0.0) or 0.0),
+                "avg_return": float(avg_raw) if avg_raw is not None else None,
+                "risk_score": float(risk_raw) if risk_raw is not None else None,
+                "max_drawdown": float(dd_raw) if dd_raw is not None else None,
+                "volatility": float(vol_raw) if vol_raw is not None else None,
+                "total_return_pct": float(gain_raw) if gain_raw is not None else None,
                 "is_copyable": bool(is_copyable),
                 "min_copy_amount": min_copy,
                 "available": True,
@@ -497,8 +587,13 @@ class EToroAPIClient:
                 "confidence": 1.0,
                 "copiers": int(copiers_raw) if copiers_raw is not None else None,
                 "positions_count": int(positions_raw) if positions_raw is not None else None,
+                "missing_fields": missing_fields,
             })
-            logger.info(f"Tradeinfo for {username} loaded successfully")
+            logger.info(
+                "Tradeinfo for %s: return=%.1f%% risk=%.1f copiers=%s positions=%s",
+                username, result["total_return_pct"], result["risk_score"],
+                result["copiers"], result["positions_count"],
+            )
             return result
 
         logger.info(f"Tradeinfo unavailable for {username}, trying fallback endpoints")
@@ -508,17 +603,32 @@ class EToroAPIClient:
             f"{base}/api/v1/user-info/people/{username}/portfolio/live",
         )
         if live:
+            missing_fields = []
+            ret_raw = live.get("totalReturn") or live.get("return")
+            risk_raw = live.get("riskScore")
+            dd_raw = live.get("maxDrawdown")
+            vol_raw = live.get("volatility")
+            avg_raw = live.get("avgReturn") or live.get("averageReturn")
+            if ret_raw is None: missing_fields.append("totalReturn")
+            if risk_raw is None: missing_fields.append("riskScore")
+            if dd_raw is None: missing_fields.append("maxDrawdown")
+            if vol_raw is None: missing_fields.append("volatility")
+            if avg_raw is None: missing_fields.append("avgReturn")
             result.update({
-                "total_return_pct": float(live.get("totalReturn", 0.0) or live.get("return", 0.0) or 0.0),
-                "risk_score": float(live.get("riskScore", 5.0) or 5.0),
-                "max_drawdown": float(live.get("maxDrawdown", 0.0) or 0.0),
-                "volatility": float(live.get("volatility", 0.0) or 0.0),
-                "avg_return": float(live.get("avgReturn", 0.0) or live.get("averageReturn", 0.0) or 0.0),
+                "total_return_pct": float(ret_raw) if ret_raw is not None else None,
+                "risk_score": float(risk_raw) if risk_raw is not None else None,
+                "max_drawdown": float(dd_raw) if dd_raw is not None else None,
+                "volatility": float(vol_raw) if vol_raw is not None else None,
+                "avg_return": float(avg_raw) if avg_raw is not None else None,
                 "available": True,
                 "source": "portfolio_live",
                 "confidence": 0.7,
+                "missing_fields": missing_fields,
             })
-            logger.info(f"Tradeinfo unavailable for {username}, using portfolio/live endpoint")
+            logger.info(
+                "Fallback portfolio/live for %s: return=%.1f%% risk=%.1f",
+                username, result["total_return_pct"], result["risk_score"],
+            )
             return result
 
         # Step 3: Fallback B — gain
@@ -527,11 +637,15 @@ class EToroAPIClient:
             params={"period": "LastTwoYears"},
         )
         if gain:
+            missing_fields = []
+            ret_raw = gain.get("gain") or gain.get("gainPerc")
+            if ret_raw is None: missing_fields.append("gain")
             result.update({
-                "total_return_pct": float(gain.get("gain", 0.0) or gain.get("gainPerc", 0.0) or 0.0),
+                "total_return_pct": float(ret_raw) if ret_raw is not None else None,
                 "available": True,
                 "source": "gain",
                 "confidence": 0.5,
+                "missing_fields": missing_fields,
             })
             logger.info(f"Tradeinfo unavailable for {username}, using gain endpoint")
             return result
@@ -541,17 +655,27 @@ class EToroAPIClient:
             f"{base}/api/v1/user-info/people/{username}/daily-gain",
         )
         if daily:
+            missing_fields = []
+            ret_raw = daily.get("gain") or daily.get("dailyGain")
+            if ret_raw is None: missing_fields.append("gain")
             result.update({
-                "total_return_pct": float(daily.get("gain", 0.0) or daily.get("dailyGain", 0.0) or 0.0),
+                "total_return_pct": float(ret_raw) if ret_raw is not None else None,
                 "available": True,
                 "source": "daily_gain",
                 "confidence": 0.3,
+                "missing_fields": missing_fields,
             })
-            logger.info(f"Tradeinfo unavailable for {username}, using daily-gain endpoint")
+            logger.info(
+                "Fallback daily-gain for %s: return=%.1f%%",
+                username, result["total_return_pct"],
+            )
             return result
 
         # All endpoints failed
-        logger.warning(f"{username} unavailable across all endpoints")
+        logger.warning(
+            "%s unavailable across all 4 endpoints (tradeinfo, portfolio/live, gain, daily-gain)",
+            username,
+        )
         return result
 
     async def get_trader_extended_metrics(self, username: str) -> Dict:
@@ -640,12 +764,12 @@ class EToroAPIClient:
         if copiers is not None and positions_count is not None:
             extended["track_record_days"] = max(365, min(365 * 5, copiers * 2))
 
+        r3_str = f"{extended['return_3yr']:.1f}%" if extended['return_3yr'] is not None else "N/A"
+        ytd_str = f"{extended['return_ytd']:.1f}%" if extended['return_ytd'] is not None else "N/A"
         logger.info(
-            "Extended metrics for %s: 3yr=%.1f%%, YTD=%.1f%%, "
+            "Extended metrics for %s: 3yr=%s, YTD=%s, "
             "holdings=%d, auc=%s",
-            username,
-            extended["return_3yr"] or 0.0,
-            extended["return_ytd"] or 0.0,
+            username, r3_str, ytd_str,
             len(extended["holdings"]),
             extended["assets_under_copy"] or "N/A",
         )
@@ -755,14 +879,14 @@ class EToroAPIClient:
 
             if metrics["available"]:
                 is_copyable = metrics.get("is_copyable", True)
-                min_copy = metrics.get("min_copy_amount", 200.0)
+                min_copy = metrics.get("min_copy_amount")
 
-                if metrics["total_return_pct"] == 0.0 and metrics.get("confidence", 0.0) < 1.0:
+                if metrics.get("total_return_pct") is None and metrics.get("confidence", 0.0) < 1.0:
                     unavailable.append({
                         "username": username,
                         "reason": "no_return_data",
                         "detail": (
-                            f"source={metrics['source']} returned 0.0% return "
+                            f"source={metrics['source']} returned None return "
                             f"(confidence={metrics.get('confidence', 0.0)})"
                         ),
                     })
@@ -778,19 +902,20 @@ class EToroAPIClient:
 
                 available.append({
                     "username": username,
-                    "risk_score": metrics["risk_score"],
-                    "total_return_pct": metrics["total_return_pct"],
-                    "max_drawdown": metrics["max_drawdown"],
-                    "volatility": metrics["volatility"],
-                    "avg_return": metrics["avg_return"],
-                    "avg_monthly_return": metrics["avg_return"],
-                    "copiers": metrics.get("copiers", 0),
-                    "positions_count": metrics.get("positions_count", 0),
+                    "risk_score": metrics.get("risk_score"),
+                    "total_return_pct": metrics.get("total_return_pct"),
+                    "max_drawdown": metrics.get("max_drawdown"),
+                    "volatility": metrics.get("volatility"),
+                    "avg_return": metrics.get("avg_return"),
+                    "avg_monthly_return": metrics.get("avg_return"),
+                    "copiers": metrics.get("copiers"),
+                    "positions_count": metrics.get("positions_count"),
                     "is_copiable": is_copyable,
                     "min_copy_amount": min_copy,
                     "available": metrics.get("available", True),
                     "confidence": metrics.get("confidence", 0.0),
-                    "source": metrics["source"],
+                    "source": metrics.get("source", "unknown"),
+                    "missing_fields": metrics.get("missing_fields", []),
                 })
             else:
                 unavailable.append({"username": username, "reason": "all_endpoints_failed"})
@@ -1022,19 +1147,19 @@ class EToroAPIClient:
 
             if metrics["available"]:
                 is_copyable = metrics.get("is_copyable", True)
-                min_copy = metrics.get("min_copy_amount", 200.0)
+                min_copy = metrics.get("min_copy_amount")
 
-                if metrics["total_return_pct"] == 0.0 and metrics.get("confidence", 0.0) < 1.0:
+                if metrics.get("total_return_pct") is None and metrics.get("confidence", 0.0) < 1.0:
                     unavailable.append({
                         "username": username,
                         "reason": "no_return_data",
                         "detail": (
-                            f"source={metrics['source']} returned 0.0% return "
+                            f"source={metrics['source']} returned None return "
                             f"(confidence={metrics.get('confidence', 0.0)})"
                         ),
                     })
                     logger.info(
-                        f"Rejected {username}: return=0.0% from "
+                        f"Rejected {username}: return=None from "
                         f"{metrics['source']} (confidence={metrics.get('confidence', 0.0)})"
                     )
                     continue
@@ -1050,23 +1175,26 @@ class EToroAPIClient:
 
                 available.append({
                     "username": username,
-                    "risk_score": metrics["risk_score"],
-                    "total_return_pct": metrics["total_return_pct"],
-                    "max_drawdown": metrics["max_drawdown"],
-                    "volatility": metrics["volatility"],
-                    "avg_return": metrics["avg_return"],
-                    "avg_monthly_return": metrics["avg_return"],
-                    "copiers": metrics.get("copiers", 0),
-                    "positions_count": metrics.get("positions_count", 0),
+                    "risk_score": metrics.get("risk_score"),
+                    "total_return_pct": metrics.get("total_return_pct"),
+                    "max_drawdown": metrics.get("max_drawdown"),
+                    "volatility": metrics.get("volatility"),
+                    "avg_return": metrics.get("avg_return"),
+                    "avg_monthly_return": metrics.get("avg_return"),
+                    "copiers": metrics.get("copiers"),
+                    "positions_count": metrics.get("positions_count"),
                     "is_copiable": is_copyable,
                     "min_copy_amount": min_copy,
                     "available": metrics.get("available", True),
                     "confidence": metrics.get("confidence", 0.0),
-                    "source": metrics["source"],
+                    "source": metrics.get("source", "unknown"),
+                    "missing_fields": metrics.get("missing_fields", []),
                 })
+                ret_str = f"{metrics['total_return_pct']:.1f}%" if metrics.get("total_return_pct") is not None else "None"
+                risk_str = f"{metrics.get('risk_score')}" if metrics.get("risk_score") is not None else "None"
                 logger.info(
-                    f"Candidate {username}: riskScore={metrics['risk_score']}, "
-                    f"return={metrics['total_return_pct']:.1f}%, source={metrics['source']}"
+                    f"Candidate {username}: riskScore={risk_str}, "
+                    f"return={ret_str}, source={metrics['source']}"
                 )
             else:
                 unavailable.append({"username": username, "reason": "all_endpoints_failed"})
@@ -1399,10 +1527,10 @@ class EToroSyncService:
                 "username": username,
                 "allocation_pct": (mirror_equity / max(total_value, 1.0)) * 100,
                 "allocated_amount": round(allocated_amount, 2),
-                "avg_return": 0.0,
-                "max_drawdown": 0.0,
-                "volatility": 0.0,
-                "risk_score": 5.0,
+                "avg_return": None,
+                "max_drawdown": None,
+                "volatility": None,
+                "risk_score": None,
                 "total_return_pct": (total_pnl / max(initial_investment, 1.0)) * 100,
             })
         logger.info(f"Extracted {len(result)} valid traders from {len(mirrors)} mirrors")
@@ -1446,11 +1574,22 @@ class EToroSyncService:
                 trader.trader_username = info.get("username", trader.trader_username)
                 trader.allocation_pct = info.get("allocation_pct", trader.allocation_pct)
                 trader.allocated_amount = info.get("allocated_amount", trader.allocated_amount)
-                trader.avg_monthly_return = info.get("avg_return", trader.avg_monthly_return)
-                trader.max_drawdown = info.get("max_drawdown", trader.max_drawdown)
-                trader.volatility = info.get("volatility", trader.volatility)
-                trader.risk_score = info.get("risk_score", trader.risk_score)
-                trader.total_return_pct = info.get("total_return_pct", trader.total_return_pct)
+                # Only update DB fields that are not None (preserve existing values for missing API data)
+                avg_r = info.get("avg_return")
+                if avg_r is not None:
+                    trader.avg_monthly_return = avg_r
+                dd = info.get("max_drawdown")
+                if dd is not None:
+                    trader.max_drawdown = dd
+                vol = info.get("volatility")
+                if vol is not None:
+                    trader.volatility = vol
+                risk = info.get("risk_score")
+                if risk is not None:
+                    trader.risk_score = risk
+                ret = info.get("total_return_pct")
+                if ret is not None:
+                    trader.total_return_pct = ret
                 trader.is_active = True
                 trader.is_paused = False
                 trader.last_updated = datetime.utcnow()
@@ -1460,11 +1599,11 @@ class EToroSyncService:
                     trader_id=info.get("trader_id"),
                     trader_username=info.get("username", "Unknown"),
                     allocation_pct=info.get("allocation_pct", 0.0),
-                    avg_monthly_return=info.get("avg_return", 0.0),
-                    max_drawdown=info.get("max_drawdown", 0.0),
-                    volatility=info.get("volatility", 0.0),
-                    risk_score=info.get("risk_score", 0.0),
-                    total_return_pct=info.get("total_return_pct", 0.0),
+                    avg_monthly_return=info.get("avg_return") or 0.0,
+                    max_drawdown=info.get("max_drawdown") or 0.0,
+                    volatility=info.get("volatility") or 0.0,
+                    risk_score=info.get("risk_score") or 0.0,
+                    total_return_pct=info.get("total_return_pct") or 0.0,
                     is_active=True,
                     is_paused=False,
                 )

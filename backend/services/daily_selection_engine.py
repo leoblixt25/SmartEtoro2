@@ -294,7 +294,7 @@ def _passes_3yr_history(trader: Dict) -> Tuple[bool, str]:
 def _passes_3yr_return(trader: Dict) -> Tuple[bool, str]:
     """Check positive 3-year return."""
     r3 = trader.get("return_3yr")
-    if r3 is not None and r3 > MIN_3YR_RETURN:
+    if r3 is not None and float(r3) > MIN_3YR_RETURN:
         return True, ""
     return False, (
         f"3yr_return_not_positive "
@@ -305,7 +305,7 @@ def _passes_3yr_return(trader: Dict) -> Tuple[bool, str]:
 def _passes_ytd_return(trader: Dict) -> Tuple[bool, str]:
     """Check positive year-to-date return."""
     ytd = trader.get("return_ytd")
-    if ytd is not None and ytd > MIN_YTD_RETURN:
+    if ytd is not None and float(ytd) > MIN_YTD_RETURN:
         return True, ""
     return False, (
         f"ytd_return_not_positive "
@@ -315,7 +315,10 @@ def _passes_ytd_return(trader: Dict) -> Tuple[bool, str]:
 
 def _passes_risk(trader: Dict) -> Tuple[bool, str]:
     """Check acceptable risk level."""
-    risk = float(trader.get("risk_score", 5.0) or 5.0)
+    risk = trader.get("risk_score")
+    if risk is None:
+        return False, "risk_score_missing"
+    risk = float(risk)
     if risk <= MAX_RISK_SCORE:
         return True, ""
     return False, f"risk_too_high (risk={risk:.1f}, max={MAX_RISK_SCORE})"
@@ -420,22 +423,25 @@ def _apply_hard_filters(
 # ── Scoring ──────────────────────────────────────────────────────────
 
 
-def _normalize(value: Optional[float], max_val: float, scale: float = 100.0) -> float:
+def _normalize(value, max_val: float, scale: float = 100.0) -> float:
     """Normalize a value to 0-scale, capped at scale."""
     if value is None:
         return 0.0
-    return min(scale, max(0.0, value / max_val * scale))
+    return min(scale, max(0.0, float(value) / max_val * scale))
 
 
 def _compute_consistency_score(trader: Dict) -> float:
     """Compute consistency score 0-100 from drawdown and volatility."""
-    dd = float(trader.get("max_drawdown", 0.0) or 0.0)
-    vol = float(trader.get("volatility", 0.0) or 0.0)
+    dd_raw = trader.get("max_drawdown")
+    vol_raw = trader.get("volatility")
     sharpe = trader.get("sharpe_score")
 
     # Prefer sharpe ratio if available
     if sharpe is not None and float(sharpe) > 0:
         return min(100.0, max(0.0, float(sharpe) * 25))
+
+    dd = float(dd_raw) if dd_raw is not None else 0.0
+    vol = float(vol_raw) if vol_raw is not None else 0.0
 
     # Penalize high drawdown
     dd_penalty = min(100.0, dd * 5)
@@ -459,9 +465,9 @@ def _score_trader_first_pass(trader: Dict) -> Dict:
 
     Returns dict with component scores and total.
     """
-    return_3yr = trader.get("return_3yr") or 0.0
-    return_ytd = trader.get("return_ytd") or 0.0
-    copiers = trader.get("copiers") or 0
+    return_3yr = trader.get("return_3yr") if trader.get("return_3yr") is not None else 0.0
+    return_ytd = trader.get("return_ytd") if trader.get("return_ytd") is not None else 0.0
+    copiers = trader.get("copiers") if trader.get("copiers") is not None else 0
 
     # Component scores (each 0-100)
     score_3yr = _normalize(return_3yr, 50.0)
@@ -606,8 +612,10 @@ def _news_to_score(news: Dict) -> float:
 
 def _risk_to_score(trader: Dict) -> float:
     """Convert risk score to a 0-100 score (lower risk = higher score)."""
-    risk = float(trader.get("risk_score", 5.0) or 5.0)
-    return max(0.0, 100.0 - risk * 12.5)  # risk=0 → 100, risk=8 → 0
+    risk = trader.get("risk_score")
+    if risk is None:
+        return 50.0
+    return max(0.0, 100.0 - float(risk) * 12.5)  # risk=0 → 100, risk=8 → 0
 
 
 def _re_score_top10(top_10: List[Dict]) -> List[Dict]:
@@ -672,15 +680,15 @@ def _apply_safeguards(top_3: List[Dict]) -> List[Dict]:
 
     for trader in top_3:
         username = trader.get("username", "?")
-        risk = float(trader.get("risk_score", 5.0) or 5.0)
+        risk = trader.get("risk_score")
         news = trader.get("news", {})
         sentiment = news.get("dominant_sentiment", "neutral")
         net_score = news.get("net_score", 0.0)
 
         reasons = []
 
-        if risk > MAX_RISK_SCORE:
-            reasons.append(f"risk={risk:.1f} exceeds {MAX_RISK_SCORE}")
+        if risk is not None and float(risk) > MAX_RISK_SCORE:
+            reasons.append(f"risk={float(risk):.1f} exceeds {MAX_RISK_SCORE}")
 
         if sentiment == "negative" and net_score < -0.5:
             reasons.append(
@@ -704,12 +712,12 @@ def _apply_safeguards(top_3: List[Dict]) -> List[Dict]:
 def _build_selection_reason(trader: Dict) -> str:
     """Build a human-readable reason for selecting this trader."""
     parts = []
-    r3 = trader.get("return_3yr", 0.0) or 0.0
-    ytd = trader.get("return_ytd", 0.0) or 0.0
-    copiers = trader.get("copiers", 0) or 0
-    auc = trader.get("assets_under_copy", 0) or 0
-    risk = float(trader.get("risk_score", 5.0) or 5.0)
-    dd = float(trader.get("max_drawdown", 0.0) or 0.0)
+    r3 = trader.get("return_3yr") if trader.get("return_3yr") is not None else 0.0
+    ytd = trader.get("return_ytd") if trader.get("return_ytd") is not None else 0.0
+    copiers = trader.get("copiers") if trader.get("copiers") is not None else 0
+    auc = trader.get("assets_under_copy") if trader.get("assets_under_copy") is not None else 0
+    risk = trader.get("risk_score")
+    dd = trader.get("max_drawdown")
 
     if r3 > 30:
         parts.append(f"Strong 3yr return ({r3:.1f}%)")
@@ -721,13 +729,14 @@ def _build_selection_reason(trader: Dict) -> str:
     elif ytd > 0:
         parts.append(f"Positive YTD ({ytd:.1f}%)")
 
-    if risk <= 4:
-        parts.append(f"Low risk ({risk:.1f})")
-    elif risk <= 6:
-        parts.append(f"Moderate risk ({risk:.1f})")
+    if risk is not None:
+        if float(risk) <= 4:
+            parts.append(f"Low risk ({float(risk):.1f})")
+        elif float(risk) <= 6:
+            parts.append(f"Moderate risk ({float(risk):.1f})")
 
-    if dd < 10:
-        parts.append(f"Controlled drawdown ({dd:.1f}%)")
+    if dd is not None and float(dd) < 10:
+        parts.append(f"Controlled drawdown ({float(dd):.1f}%)")
 
     if copiers > 500:
         parts.append(f"High copiers ({copiers})")
@@ -763,8 +772,8 @@ def _build_selected_list(top_3: List[Dict]) -> List[SelectedTrader]:
             news_sentiment=trader.get("news", {}),
             final_score=trader.get("final_score", 0.0),
             selection_reason=trader.get("selection_reason", ""),
-            risk_score=float(trader.get("risk_score", 0.0) or 0.0),
-            max_drawdown=float(trader.get("max_drawdown", 0.0) or 0.0),
+            risk_score=float(trader.get("risk_score") or 0.0),
+            max_drawdown=float(trader.get("max_drawdown") or 0.0),
         ))
     return selected
 
@@ -791,9 +800,12 @@ def format_selection_output(result: DailySelectionResult) -> str:
             lines.append(f"  Final Score:     {t.final_score:.1f}/100")
             lines.append(f"  3-Year Return:   {t.performance_3yr:.1f}%")
             lines.append(f"  YTD Return:      {t.performance_ytd:.1f}%")
-            lines.append(f"  Risk Score:      {t.risk_score:.1f}")
-            lines.append(f"  Max Drawdown:    {t.max_drawdown:.1f}%")
-            lines.append(f"  Copiers:         {t.copiers:,}")
+            r_str = f"{t.risk_score:.1f}" if t.risk_score else "unavailable"
+            lines.append(f"  Risk Score:      {r_str}")
+            dd_str = f"{t.max_drawdown:.1f}%" if t.max_drawdown else "unavailable"
+            lines.append(f"  Max Drawdown:    {dd_str}")
+            c_str = f"{t.copiers:,}" if t.copiers else "unavailable"
+            lines.append(f"  Copiers:         {c_str}")
             if t.assets_under_copy:
                 lines.append(f"  AUM:             ${t.assets_under_copy:,.0f}")
             if t.main_holdings:
