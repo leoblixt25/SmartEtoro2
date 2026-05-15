@@ -992,26 +992,26 @@ class EToroAPIClient:
         # Each family has a base URL, description, and max pages to try.
         endpoints = []
 
-        # Rankings - authenticated endpoints
+        # Rankings - authenticated endpoints (10 pages deep)
         for period in ["", "month", "year", "alltime"]:
             suffix = f"period={period}" if period else "limit"
-            for p in range(1, 4):
+            for p in range(1, 11):
                 endpoints.append((
                     f"{base}/api/v1/rankings/traders?{suffix}={limit}&page={p}",
                     f"rankings {period or 'default'} page {p}",
                 ))
 
-        # Rankings by type
+        # Rankings by type (10 pages deep)
         for rtype in ["copied", "return", "risk"]:
-            for p in range(1, 4):
+            for p in range(1, 11):
                 endpoints.append((
                     f"{base}/api/v1/rankings/traders?limit={limit}&type={rtype}&page={p}",
                     f"rankings {rtype} page {p}",
                 ))
 
-        # Social top - authenticated
+        # Social top - authenticated (10 pages deep)
         for period in ["daily", "weekly", "monthly"]:
-            for p in range(1, 4):
+            for p in range(1, 11):
                 endpoints.append((
                     f"{base}/api/v1/social/top/{period}?limit={limit}&page={p}",
                     f"social {period} page {p}",
@@ -1021,8 +1021,8 @@ class EToroAPIClient:
         endpoints.append((f"{base}/api/v1/discover/popular?limit={limit}", "discover popular"))
         endpoints.append((f"{base}/api/v1/discover/trending?limit={limit}", "discover trending"))
 
-        # Feed - authenticated
-        for p in range(1, 4):
+        # Feed - authenticated (10 pages deep)
+        for p in range(1, 11):
             endpoints.append((
                 f"{base}/api/v1/feed/popular?limit={limit}&page={p}",
                 f"feed popular page {p}",
@@ -1032,9 +1032,9 @@ class EToroAPIClient:
                 f"feed trending page {p}",
             ))
 
-        # www.etoro.com - public endpoints (no auth needed)
+        # www.etoro.com - public endpoints (10 pages deep)
         for period in ["day", "week", "month"]:
-            for p in range(1, 4):
+            for p in range(1, 11):
                 endpoints.append((
                     f"{www}/api/social/top/{period}?limit={limit}&page={p}",
                     f"www social {period} page {p}",
@@ -1043,16 +1043,17 @@ class EToroAPIClient:
         endpoints.append((f"{www}/api/discover/popular?limit={limit}", "www discover popular"))
         endpoints.append((f"{www}/api/discover/trending?limit={limit}", "www discover trending"))
 
-        # www rankings
+        # www rankings (10 pages deep)
         for period in ["", "month", "year", "alltime"]:
             suffix = f"period={period}" if period else "limit"
-            endpoints.append((
-                f"{www}/api/rankings/traders?{suffix}={limit}",
-                f"www rankings {period or 'default'}",
-            ))
+            for p in range(1, 11):
+                endpoints.append((
+                    f"{www}/api/rankings/traders?{suffix}={limit}&page={p}",
+                    f"www rankings {period or 'default'} page {p}",
+                ))
 
-        # api.etoro.com - alternative API host
-        for p in range(1, 4):
+        # api.etoro.com - alternative API host (10 pages deep)
+        for p in range(1, 11):
             endpoints.append((
                 f"{api3}/api/v1/social/top/monthly?limit={limit}&page={p}",
                 f"api3 social monthly page {p}",

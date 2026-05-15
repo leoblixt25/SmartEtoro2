@@ -339,7 +339,7 @@ class TestTraderHealthEngine:
     def test_score_performance_strong(self):
         from backend.monitoring.trader_health_engine import _score_performance
         trader = {"source": "tradeinfo", "confidence": 1.0,
-                  "total_return_pct": 135.0,
+                  "total_return_pct": 200.0,
                   "risk_score": 3.0,
                   "copiers": 500,
                   "max_drawdown": 5.0}

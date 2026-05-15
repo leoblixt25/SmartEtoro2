@@ -1,8 +1,10 @@
 """Pure scoring functions — no I/O, no side effects.
 
-Simple 4-metric system: return (50pt), risk (25pt), copiers (15pt),
-multiplied by confidence (0.65/0.85/1.0). No growth filter, no penalty
-trees, no fake defaults.
+Simple 3-component additive system:
+  - Return (50pt): linear up to 200% return
+  - Risk (30pt): inverse linear 1→30, 10→3
+  - Positions (20pt): linear up to 50 positions
+No confidence modifier, no data quality gate, no penalty trees.
 """
 
 from __future__ import annotations
@@ -10,7 +12,6 @@ import logging
 from typing import Optional
 from backend.discovery.types import TraderProfile
 from backend.discovery.validate import validate_data_source, check_constraints
-from backend.discovery.config import MIN_VERIFIED_FIELDS
 from backend.discovery.validate import build_trader_profile
 
 logger = logging.getLogger(__name__)
@@ -61,66 +62,31 @@ def _best_return_pct(profile: TraderProfile) -> Optional[float]:
 
 
 def _return_score(best_return: Optional[float]) -> float:
-    """Max 50 points, capped at 150% return."""
+    """Max 50 points, capped at 200% return."""
     if best_return is None:
         return 0.0
-    return round(min(best_return, 150.0) / 150.0 * 50.0, 1)
+    return round(min(best_return, 200.0) / 200.0 * 50.0, 1)
 
 
-def _risk_score_bucket(risk: Optional[float]) -> float:
-    """Max 25 points. 3-6 ideal, 2/7 acceptable, 1/8 marginal, else 0."""
-    if risk is None or risk <= 0:
+def _risk_score_inverse(risk: Optional[float]) -> float:
+    """Max 30 points, inverse linear.  risk 1→30pt, 10→3pt, else 0."""
+    if risk is None or risk < 1 or risk > 10:
         return 0.0
-    if 3 <= risk <= 6:
-        return 25.0
-    if risk in (2, 7):
-        return 18.0
-    if risk in (1, 8):
-        return 10.0
-    return 0.0
+    return round(max(0.0, 30.0 - ((float(risk) - 1.0) * 3.0)), 1)
 
 
-def _copier_score(copiers: Optional[int]) -> float:
-    """Max 15 points: >=500->15, >=100->10, >=20->5, else 0."""
-    if copiers is None or copiers <= 0:
+def _positions_score(positions: Optional[int]) -> float:
+    """Max 20 points, linear up to 50 positions."""
+    if positions is None or positions <= 0:
         return 0.0
-    if copiers >= 500:
-        return 15.0
-    if copiers >= 100:
-        return 10.0
-    if copiers >= 20:
-        return 5.0
-    return 0.0
-
-
-def _confidence_multiplier(verified_fields: int) -> float:
-    """>=4 fields = 1.0, >=2 = 0.85, else = 0.65."""
-    if verified_fields >= 4:
-        return 1.0
-    if verified_fields >= 2:
-        return 0.85
-    return 0.65
-
-
-def _build_explanation(profile: TraderProfile, ret: Optional[float],
-                       risk: Optional[float], copiers: Optional[int],
-                       confidence: float) -> list:
-    parts = [f"source={profile.source}"]
-    if ret:
-        parts.append(f"return={ret:.1f}%")
-    if risk and risk > 0:
-        parts.append(f"risk={risk:.1f}")
-    if copiers and copiers > 0:
-        parts.append(f"copiers={copiers}")
-    parts.append(f"confidence={confidence}")
-    return parts
+    return round(min(float(positions), 50.0) / 50.0 * 20.0, 1)
 
 
 # ── Core scoring ─────────────────────────────────────────────────────
 
 
 def calculate_score_from_profile(profile: TraderProfile) -> TraderProfile:
-    """Score a trader using 4 metrics: return, risk, copiers, confidence."""
+    """Score a trader using 3 additive components: return (50), risk (30), positions (20)."""
     username = profile.username
 
     # ── Source validation ─────────────────────────────────────────
@@ -134,44 +100,32 @@ def calculate_score_from_profile(profile: TraderProfile) -> TraderProfile:
         profile.explanation = [f"rejected: {source_reason}"]
         return profile
 
-    # ── Data quality gate ─────────────────────────────────────────
-    if profile.verified_fields < MIN_VERIFIED_FIELDS:
-        logger.info("Rejected %s: insufficient data (%d verified, need %d)",
-                    username, profile.verified_fields, MIN_VERIFIED_FIELDS)
-        profile.score = 0.0
-        profile.final_score = 0.0
-        profile.confidence_modifier = 0.0
-        profile.confidence_score = _compute_confidence_score(profile)
-        profile.explanation = [
-            f"insufficient data: {profile.verified_fields}/{MIN_VERIFIED_FIELDS} fields verified",
-        ]
-        return profile
-
     # ── 1. Return score (max 50) ──
     best_return = _best_return_pct(profile)
     ret_score = _return_score(best_return)
 
-    # ── 2. Risk score (max 25) ──
+    # ── 2. Risk score (max 30) ──
     risk = profile.raw_risk_score
-    risk_score = _risk_score_bucket(risk)
+    risk_score = _risk_score_inverse(risk)
 
-    # ── 3. Copier score (max 15) ──
-    copiers = profile.raw_copiers
-    copier_score = _copier_score(copiers)
+    # ── 3. Positions score (max 20) ──
+    positions = profile.raw_positions_count
+    pos_score = _positions_score(positions)
 
-    # ── 4. Confidence multiplier ──
-    confidence = _confidence_multiplier(profile.verified_fields)
+    total_score = ret_score + risk_score + pos_score
 
-    raw_score = ret_score + risk_score + copier_score
-    final_score = raw_score * confidence
-
-    profile.score = round(raw_score, 1)
-    profile.final_score = round(final_score, 1)
-    profile.confidence_modifier = confidence
-    profile.confidence_score = confidence
+    profile.score = round(total_score, 1)
+    profile.final_score = round(total_score, 1)
+    profile.confidence_modifier = 1.0
+    profile.confidence_score = 1.0
     profile.growth_filter = False
     profile.penalties = []
-    profile.explanation = _build_explanation(profile, best_return, risk, copiers, confidence)
+    profile.explanation = [
+        f"source={profile.source}",
+        f"return={best_return:.1f}%" if best_return else "return=none",
+        f"risk={risk:.1f}" if risk and risk > 0 else "risk=none",
+        f"positions={positions}" if positions and positions > 0 else "positions=none",
+    ]
 
     return profile
 

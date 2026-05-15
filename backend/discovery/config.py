@@ -35,9 +35,14 @@ CONSTRAINT_MIN_TRACK_RECORD_DAYS = 365
 # ── Data Quality Gates ───────────────────────────────────────────────
 # Minimum verified fields (%s) required for a trader to be scored at all.
 # If a trader has fewer verified fields than this, score = 0 ("insufficient data").
-MIN_VERIFIED_FIELDS = 2
+MIN_VERIFIED_FIELDS = 0
 # Minimum final_score for a trader to appear in recommendations.
 MIN_FINAL_SCORE_FOR_RECOMMENDATION = 10.0
+
+# ── Discovery Scan Targets ──────────────────────────────────────────
+DISCOVERY_SCAN_TARGET = 300
+DISCOVERY_MIN = 200
+DISCOVERY_MAX = 500
 
 # ── Fetch Layer ──────────────────────────────────────────────────────
 API_SEMAPHORE_MAX = 8

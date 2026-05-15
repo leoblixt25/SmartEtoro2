@@ -272,52 +272,44 @@ async def _fetch_news_fallback() -> List[Dict]:
 async def discover_top_traders(
     categories: Optional[List[str]] = None,
     min_traders: int = 100,
+    max_traders: int = 500,
 ) -> List[Dict]:
     """Discover eligible trader candidates dynamically from eToro API data.
 
     Pipeline:
-    1. Discover usernames via 15+ eToro API endpoints concurrently
-    2. Supplement with bootstrap traders if pool is below min_traders
-    3. Enrich all usernames via tradeinfo API (batch, concurrency=20)
-    4. Return enriched candidates for eligibility filtering
-    5. Empty list if no real traders found (no fake/mock data)
+    1. Discover usernames via eToro API pagination (no static lists)
+    2. Enrich all usernames via tradeinfo API (batch, concurrency=50)
+    3. Return enriched candidates for eligibility filtering
 
     Args:
         categories: Ignored (discovery is dynamic, not category-filtered).
-        min_traders: Minimum traders required before enrichment (default 100).
+        min_traders: Minimum traders desired before enrichment.
+        max_traders: Maximum traders to collect before enrichment.
 
     Returns:
         List of enriched trader dicts with metrics from tradeinfo API.
+        Empty list if no real traders found (no fake/mock data).
     """
+    from backend.discovery.config import DISCOVERY_MIN, DISCOVERY_MAX
     from backend.services.etoro_service import EToroAPIClient
-    from backend.utils.bootstrap_traders import BOOTSTRAP_TRADERS
 
     client = EToroAPIClient()
     usernames: List[str] = []
 
-    # Step 1: Dynamic discovery via eToro APIs (primary)
+    # Step 1: Dynamic discovery via eToro API pagination (primary source)
     if client.enabled:
         try:
-            usernames = await client.discover_social_top(limit=200)
+            usernames = await client.discover_social_top(limit=max_traders)
+            logger.info(
+                "Discovery: API returned %d raw trader usernames",
+                len(usernames),
+            )
         except Exception as e:
             logger.warning(f"Discovery: API unavailable ({e})")
+    else:
+        logger.warning("Discovery: eToro API client not enabled — skipping API scan")
 
-    # Step 2: Supplement with bootstrap traders if pool is below minimum
-    if len(usernames) < min_traders:
-        existing = {u.lower() for u in usernames}
-        added = 0
-        for name in BOOTSTRAP_TRADERS:
-            if name.lower() not in existing:
-                usernames.append(name)
-                existing.add(name.lower())
-                added += 1
-        if added:
-            logger.info(
-                f"Discovery: added {added} bootstrap traders "
-                f"(pool now {len(usernames)}, target {min_traders})"
-            )
-
-    # Step 3: CANDIDATE_TRADERS env var (user override)
+    # Step 2: CANDIDATE_TRADERS env var (user override — supplements API results)
     raw_env = os.getenv("CANDIDATE_TRADERS", "")
     if raw_env:
         env_list = [u.strip() for u in raw_env.split(",") if u.strip()]
@@ -326,15 +318,22 @@ async def discover_top_traders(
             if u.lower() not in existing:
                 usernames.append(u)
                 existing.add(u.lower())
+        logger.info("Discovery: added %d traders from CANDIDATE_TRADERS env", len(env_list))
 
-    if not usernames:
+    unique = list(dict.fromkeys(usernames))
+    logger.info(
+        "Discovery: total raw=%d, unique=%d (target min=%d, max=%d)",
+        len(usernames), len(unique), DISCOVERY_MIN, DISCOVERY_MAX,
+    )
+
+    if not unique:
         logger.warning("Discovery: no traders found from any source")
         return []
 
-    # Step 4: Enrich via tradeinfo API
-    logger.info(f"Discovery: enriching {len(usernames)} candidates")
+    # Step 3: Enrich via tradeinfo API
+    logger.info(f"Discovery: enriching {len(unique)} unique candidates")
     try:
-        result = await client.enrich_candidates(usernames, max_concurrent=50)
+        result = await client.enrich_candidates(unique, max_concurrent=50)
     except Exception as e:
         logger.warning(f"Discovery: enrichment failed ({e})")
         return []
@@ -350,21 +349,24 @@ async def discover_top_traders(
     available._enrich_valid = result.get("valid_count", 0)
     available._enrich_rejected = result.get("rejected", 0)
 
-    if scanned < min_traders:
+    if scanned < DISCOVERY_MIN:
         logger.warning(
             "Discovery: scanned %d traders (below target %d). "
             "Returning what we have — results may be limited.",
-            scanned, min_traders,
+            scanned, DISCOVERY_MIN,
         )
 
     if available:
         logger.info(
-            f"Discovery: scanned={scanned}, valid={result.get('valid_count', 0)}, "
-            f"eligible_before_filter={len(available)}, "
-            f"rejected={result.get('rejected', 0)}"
+            "Discovery: scanned=%d, valid=%d, "
+            "eligible_before_filter=%d, rejected=%d",
+            scanned, result.get("valid_count", 0),
+            len(available), result.get("rejected", 0),
         )
     else:
         logger.warning(
-            f"Discovery: all {scanned} candidates unavailable after enrichment"
+            "Discovery: all %d candidates unavailable after enrichment",
+            scanned,
         )
+
     return available

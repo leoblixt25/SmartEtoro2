@@ -89,7 +89,7 @@ class TestCalculateGrowthScore:
         }
         result = calculate_growth_score(trader)
         assert result["growth_filter"] is False
-        assert result["confidence_score"] == 0.3
+        assert result["confidence_score"] == 1.0
         assert result["score"] == 0  # No data to score — correctly zero
 
     def test_low_return_with_good_risk_scores_moderately(self):
