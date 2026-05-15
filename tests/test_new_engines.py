@@ -409,7 +409,8 @@ class TestScoringEnginePipeline:
     def test_scout_holdings_returns_scored(self):
         from backend.ai.scoring_engine import scout_holdings
         h = [{"username": "a", "source": "tradeinfo", "confidence": 1.0,
-              "total_return_pct": 15.0, "risk_score": 4.0}]
+              "total_return_pct": 15.0, "risk_score": 4.0,
+              "return_12m": 15.0, "max_drawdown": 5.0}]
         result = scout_holdings(h)
         assert len(result["scored"]) == 1
         assert result["weakest"]["username"] == "a"
@@ -473,9 +474,11 @@ class TestScoringEnginePipeline:
         from backend.ai.scoring_engine import generate_scout_report
         holdings = [
             {"username": "strong", "source": "tradeinfo", "confidence": 1.0,
-             "return_12m": 25.0, "risk_score": 3.0},
+             "return_12m": 25.0, "risk_score": 3.0,
+             "max_drawdown": 5.0, "volatility": 10.0},
             {"username": "weak", "source": "tradeinfo", "confidence": 1.0,
-             "return_12m": 3.0, "risk_score": 8.0},
+             "return_12m": 3.0, "risk_score": 8.0,
+             "max_drawdown": 10.0, "volatility": 15.0},
         ]
         candidates = [
             {"username": "new", "source": "tradeinfo", "confidence": 1.0,

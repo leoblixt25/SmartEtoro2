@@ -101,6 +101,8 @@ class TestCalculateGrowthScore:
             "confidence": 1.0,
             "return_12m": 3.0,
             "risk_score": 4.0,
+            "max_drawdown": 5.0,
+            "volatility": 10.0,
         }
         result = calculate_growth_score(trader)
         assert result["growth_filter"] is True
@@ -157,7 +159,8 @@ class TestScoutHoldings:
 
     def test_single_holding(self):
         from backend.ai.scoring_engine import scout_holdings
-        h = [{"username": "a", "total_return_pct": 15.0, "risk_score": 4.0}]
+        h = [{"username": "a", "total_return_pct": 15.0, "risk_score": 4.0,
+              "return_12m": 15.0, "max_drawdown": 5.0}]
         result = scout_holdings(h)
         assert len(result["scored"]) == 1
         assert result["weakest"]["username"] == "a"

@@ -280,6 +280,13 @@ class TestCalculateScoreFromProfile:
             raw_consistency_score=70.0,
             raw_avg_monthly_return=3.0,
         )
+        p.field_status = {
+            "return_12m": "verified", "return_6m": "verified",
+            "total_return_pct": "verified", "risk_score": "verified",
+            "max_drawdown": "verified", "volatility": "verified",
+            "copiers": "verified", "positions_count": "verified",
+            "consistency_score": "verified", "avg_monthly_return": "verified",
+        }
         result = calculate_score_from_profile(p)
         assert result.score > 30.0, f"Expected score > 30, got {result.score}"
         assert result.final_score > 0
@@ -306,6 +313,12 @@ class TestCalculateScoreFromProfile:
             raw_risk_score=3.0,
             raw_drawdown=5.0,
         )
+        p.field_status = {
+            "return_12m": "verified",
+            "total_return_pct": "verified",
+            "risk_score": "verified",
+            "max_drawdown": "verified",
+        }
         result = calculate_score_from_profile(p)
         assert result.growth_filter is True
         assert result.score == 0.0
@@ -323,6 +336,13 @@ class TestCalculateScoreFromProfile:
             raw_drawdown=10.0,
             raw_volatility=15.0,
         )
+        base.field_status = {
+            "return_12m": "verified",
+            "total_return_pct": "verified",
+            "risk_score": "verified",
+            "max_drawdown": "verified",
+            "volatility": "verified",
+        }
         # Score without copiers
         no_copiers = calculate_score_from_profile(TraderProfile(**{**base.__dict__}))
         # Score with copiers
@@ -340,8 +360,16 @@ class TestCalculateScoreFromProfile:
             confidence=1.0,
             raw_return_12m=50.0,
             raw_total_return_pct=50.0,
+            raw_copiers=100,
+            raw_positions_count=5,
             # No risk, dd, vol, consistency
         )
+        p.field_status = {
+            "return_12m": "verified",
+            "total_return_pct": "verified",
+            "copiers": "verified",
+            "positions_count": "verified",
+        }
         result = calculate_score_from_profile(p)
         # missing risk/dd/vol should each reduce modifier
         assert result.confidence_modifier < 1.0
@@ -607,6 +635,8 @@ class TestScoreNoFakeDefaults:
             "confidence": 1.0,
             "return_12m": 50.0,
             "total_return_pct": 50.0,
+            "return_3yr": 10.0,
+            "return_ytd": 10.0,
         }
         profile = build_trader_profile(raw)
         result = calculate_score_from_profile(profile)

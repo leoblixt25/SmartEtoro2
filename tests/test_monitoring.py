@@ -319,6 +319,7 @@ class TestTraderHealthEngine:
             "return_12m": 10.0,
             "risk_score": 5.0,
             "max_drawdown": 10.0,  # Provide drawdown so performance score stays "stable"
+            "copiers": 1,  # 4th verified field to pass data quality gate (no bonus at 1)
         }
         trader["_holdings_source"] = "unknown"
         result = analyze_trader_health(trader, [], {})

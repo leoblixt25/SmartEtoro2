@@ -32,6 +32,13 @@ MISSING_VOL_PENALTY = 0.10
 CONSTRAINT_MAX_DRAWDOWN = 15.0
 CONSTRAINT_MIN_TRACK_RECORD_DAYS = 365
 
+# ── Data Quality Gates ───────────────────────────────────────────────
+# Minimum verified fields (%s) required for a trader to be scored at all.
+# If a trader has fewer verified fields than this, score = 0 ("insufficient data").
+MIN_VERIFIED_FIELDS = 4
+# Minimum final_score for a trader to appear in recommendations.
+MIN_FINAL_SCORE_FOR_RECOMMENDATION = 10.0
+
 # ── Fetch Layer ──────────────────────────────────────────────────────
 API_SEMAPHORE_MAX = 8
 RATE_LIMIT_HIT_STOP = 10

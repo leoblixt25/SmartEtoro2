@@ -237,8 +237,20 @@ def _score_discovery_candidates(
         scored.append({
             **c,
             **result,
-            "delta": round(result["score"] - weakest_score, 1),
+            "delta": round(result["final_score"] - weakest_score, 1),
         })
 
-    scored.sort(key=lambda x: x["delta"], reverse=True)
-    return scored[:top_n]
+    # Filter to only traders above minimum final_score threshold
+    from backend.discovery.config import MIN_FINAL_SCORE_FOR_RECOMMENDATION
+    qualified_for_recommendation = [s for s in scored if s.get("final_score", 0) >= MIN_FINAL_SCORE_FOR_RECOMMENDATION]
+
+    filtered_out = len(scored) - len(qualified_for_recommendation)
+    if filtered_out:
+        logger.info(
+            "Discovery: %d candidates below final_score=%.0f threshold — excluded from top list",
+            filtered_out, MIN_FINAL_SCORE_FOR_RECOMMENDATION,
+        )
+
+    # Sort by final_score descending (data quality + raw score combined)
+    qualified_for_recommendation.sort(key=lambda x: x["final_score"], reverse=True)
+    return qualified_for_recommendation[:top_n]

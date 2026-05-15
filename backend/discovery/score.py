@@ -19,6 +19,7 @@ from backend.discovery.config import (
     CONFIDENCE_FLOOR,
     MISSING_RISK_PENALTY, MISSING_COPIERS_PENALTY,
     MISSING_RETURN_PENALTY, MISSING_DD_PENALTY, MISSING_VOL_PENALTY,
+    MIN_VERIFIED_FIELDS,
 )
 from backend.discovery.validate import build_trader_profile
 
@@ -127,6 +128,28 @@ def calculate_score_from_profile(profile: TraderProfile) -> TraderProfile:
         profile.confidence_modifier = 0.0
         profile.confidence_score = _compute_confidence_score(profile)
         profile.explanation = [f"rejected: {source_reason}"]
+        return profile
+
+    # ── Data quality gate ─────────────────────────────────────────
+    # Reject traders whose data is too sparse to score meaningfully.
+    # With < MIN_VERIFIED_FIELDS verified fields, we cannot assess risk,
+    # stability, or credibility.  Without a mininum set of verified metrics,
+    # any score is misleading.
+    if profile.verified_fields < MIN_VERIFIED_FIELDS:
+        logger.info(
+            "Rejected %s: insufficient data (%d verified, need %d) — missing=[%s]",
+            username, profile.verified_fields, MIN_VERIFIED_FIELDS,
+            ", ".join(profile.missing_fields) if profile.missing_fields else "all",
+        )
+        profile.score = 0.0
+        profile.final_score = 0.0
+        profile.confidence_modifier = 0.0
+        profile.confidence_score = _compute_confidence_score(profile)
+        profile.explanation = [
+            f"insufficient data: {profile.verified_fields}/{MIN_VERIFIED_FIELDS} fields verified",
+            f"missing: {', '.join(profile.missing_fields[:8])}..." if len(profile.missing_fields) > 8
+            else f"missing: {', '.join(profile.missing_fields)}",
+        ]
         return profile
 
     # ── Growth filter ─────────────────────────────────────────────
@@ -249,11 +272,35 @@ def calculate_growth_score(trader: dict) -> dict:
     Accepts raw trader dict, returns result dict matching old format.
     """
     profile = build_trader_profile(trader)
+
+    # Check hard constraints before scoring
     constraint_reason = check_constraints(profile)
-    if constraint_reason and False:
-        pass  # constraints are applied in rank_candidates, not here
+    if constraint_reason:
+        logger.info("Disqualified %s: %s", profile.username, constraint_reason)
+        profile.score = 0.0
+        profile.final_score = 0.0
+        profile.confidence_modifier = 0.0
+        profile.confidence_score = 0.0
+        profile.explanation = [f"disqualified: {constraint_reason}"]
+        profile.growth_filter = True
+        source_valid = validate_data_source(profile) is None
+        return {
+            "score": 0.0,
+            "final_score": 0.0,
+            "confidence_score": 0.0,
+            "confidence_mod": 0.0,
+            "source": profile.source,
+            "source_valid": source_valid,
+            "source_reason": constraint_reason,
+            "explanation": [f"disqualified: {constraint_reason}"],
+            "details": {},
+            "penalties": [constraint_reason],
+            "growth_filter": True,
+            "missing_fields": profile.missing_fields,
+        }
 
     profile = calculate_score_from_profile(profile)
+    source_valid = validate_data_source(profile) is None
 
     return {
         "score": profile.score,
@@ -261,8 +308,8 @@ def calculate_growth_score(trader: dict) -> dict:
         "confidence_score": profile.confidence_score,
         "confidence_mod": profile.confidence_modifier,
         "source": profile.source,
-        "source_valid": validate_data_source(profile) is None,
-        "source_reason": validate_data_source(profile),
+        "source_valid": source_valid,
+        "source_reason": None if source_valid else "unreliable source",
         "explanation": profile.explanation,
         "details": {
             "return_12m": round(profile.raw_return_12m, 1) if profile.raw_return_12m is not None else None,
@@ -313,17 +360,17 @@ def rank_candidates(holdings: list[dict], candidates: list[dict], top_n: int = 1
     holdings_scored.sort(key=lambda x: x["score"])
     weakest_score = holdings_scored[0]["score"] if holdings_scored else 0.0
 
-    # Score candidates
+    # Score candidates — use final_score for ranking (includes data quality penalty)
     scored = []
     for c in qualified:
         result = calculate_growth_score(c)
         scored.append({
             **c,
             **result,
-            "delta": round(result["score"] - weakest_score, 1),
+            "delta": round(result["final_score"] - weakest_score, 1),
         })
 
-    scored.sort(key=lambda x: x["delta"], reverse=True)
+    scored.sort(key=lambda x: x["final_score"], reverse=True)
     return scored[:top_n]
 
 
@@ -352,13 +399,13 @@ def rank_combined(holdings: list[dict], candidates: list[dict], top_n: int = 3) 
         qualified.append(c)
 
     discovery_scored = [{**c, **calculate_growth_score(c), "allocation_pct": c.get("allocation_pct", 0)} for c in qualified]
-    discovery_scored.sort(key=lambda x: x["score"], reverse=True)
+    discovery_scored.sort(key=lambda x: x["final_score"], reverse=True)
 
     if len(discovery_scored) >= top_n:
         return discovery_scored[:top_n]
 
     holdings_scored = [{**h, **calculate_growth_score(h)} for h in holdings]
-    holdings_scored.sort(key=lambda x: x["score"], reverse=True)
+    holdings_scored.sort(key=lambda x: x["final_score"], reverse=True)
     result = discovery_scored[:]
     result.extend(holdings_scored[:top_n - len(result)])
     return result
