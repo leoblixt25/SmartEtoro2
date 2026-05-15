@@ -15,12 +15,8 @@ from backend.discovery.score import (
     scout_holdings as _scout_holdings,
     rank_combined as _rank_combined,
     generate_scout_report as _gen_scout_report,
-    calculate_score_from_profile,
     _compute_confidence_score,
     _has_return_data as _has_ret_data,
-    _get_return_12m as _get_r12,
-    _get_return_6m as _get_r6,
-    _get_consistency as _get_cons,
 )
 from backend.discovery.validate import (
     validate_data_source,

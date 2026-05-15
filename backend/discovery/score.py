@@ -1,33 +1,26 @@
 """Pure scoring functions — no I/O, no side effects.
 
-Takes a TraderProfile (or raw dict for backward compat) and returns
-a ScoreResult.  Never uses fake defaults as if they were real values.
+Simple 4-metric system: return (50pt), risk (25pt), copiers (15pt),
+multiplied by confidence (0.65/0.85/1.0). No growth filter, no penalty
+trees, no fake defaults.
 """
 
 from __future__ import annotations
-import math
 import logging
-from typing import Dict, List, Optional
+from typing import Optional
 from backend.discovery.types import TraderProfile
 from backend.discovery.validate import validate_data_source, check_constraints
-from backend.discovery.config import (
-    W_12M, W_6M, W_RISK, W_MAX_DRAWDOWN, W_CONSISTENCY,
-    PENALTY_RISK_HIGH, PENALTY_DRAWDOWN_HIGH,
-    GROWTH_FILTER_MIN_12M,
-    COPIER_BONUS_MAX, COPIER_BONUS_LOG_BASE, COPIER_BONUS_SCALE,
-    MATURITY_BONUS, MATURITY_MIN_POSITIONS,
-    CONFIDENCE_FLOOR,
-    MISSING_RISK_PENALTY, MISSING_COPIERS_PENALTY,
-    MISSING_RETURN_PENALTY, MISSING_DD_PENALTY, MISSING_VOL_PENALTY,
-    MIN_VERIFIED_FIELDS,
-)
+from backend.discovery.config import MIN_VERIFIED_FIELDS
 from backend.discovery.validate import build_trader_profile
 
 logger = logging.getLogger(__name__)
 
 
+# ── Backward-compat helpers (kept for scoring_engine imports) ─────
+
+
 def _compute_confidence_score(profile: TraderProfile) -> float:
-    """Compute data completeness score 0-1 based on available fields."""
+    """Backward-compat: data completeness 0-1 (7 checks)."""
     checks = [
         ("return_12m", lambda p: p.raw_return_12m is not None and p.raw_return_12m != 0),
         ("total_return_pct", lambda p: p.raw_total_return_pct is not None and p.raw_total_return_pct != 0),
@@ -40,32 +33,11 @@ def _compute_confidence_score(profile: TraderProfile) -> float:
     present = sum(1 for _, check in checks if check(profile))
     if not checks:
         return 0.0
-    ratio = present / len(checks)
-    return round(0.3 + ratio * 0.7, 2)
-
-
-def _confidence_penalty(profile: TraderProfile) -> float:
-    """Compute confidence modifier (0.3-1.0) based on missing fields.
-
-    Each missing key metric reduces confidence below 1.0.
-    Lower floor (0.3) ensures different data quality levels produce
-    meaningfully different modifiers.
-    """
-    modifier = 1.0
-    if profile.raw_risk_score is None:
-        modifier -= MISSING_RISK_PENALTY
-    if profile.raw_copiers is None:
-        modifier -= MISSING_COPIERS_PENALTY
-    if profile.raw_avg_monthly_return is None:
-        modifier -= MISSING_RETURN_PENALTY
-    if profile.raw_drawdown is None:
-        modifier -= MISSING_DD_PENALTY
-    if profile.raw_volatility is None:
-        modifier -= MISSING_VOL_PENALTY
-    return max(modifier, CONFIDENCE_FLOOR)
+    return round(0.3 + (present / len(checks)) * 0.7, 2)
 
 
 def _has_return_data(profile: TraderProfile) -> bool:
+    """Backward-compat: check if trader has any return data."""
     return any(v is not None and v > 0 for v in [
         profile.raw_return_12m,
         profile.raw_return_6m,
@@ -74,49 +46,81 @@ def _has_return_data(profile: TraderProfile) -> bool:
     ])
 
 
-def _get_return_12m(profile: TraderProfile) -> Optional[float]:
-    if profile.raw_return_12m is not None and profile.raw_return_12m > 0:
-        return profile.raw_return_12m
+# ── Simple scoring helpers ─────────────────────────────────────────
+
+
+def _best_return_pct(profile: TraderProfile) -> Optional[float]:
+    """Longest available return: total_return_pct > return_12m > avg_monthly*12."""
     if profile.raw_total_return_pct is not None and profile.raw_total_return_pct > 0:
         return profile.raw_total_return_pct
+    if profile.raw_return_12m is not None and profile.raw_return_12m > 0:
+        return profile.raw_return_12m
     if profile.raw_avg_monthly_return is not None and profile.raw_avg_monthly_return > 0:
         return profile.raw_avg_monthly_return * 12
     return None
 
 
-def _get_return_6m(profile: TraderProfile) -> Optional[float]:
-    if profile.raw_return_6m is not None and profile.raw_return_6m > 0:
-        return profile.raw_return_6m
-    if profile.raw_total_return_pct is not None and profile.raw_total_return_pct > 0:
-        return profile.raw_total_return_pct * 0.5
-    if profile.raw_avg_monthly_return is not None and profile.raw_avg_monthly_return > 0:
-        return profile.raw_avg_monthly_return * 6
-    return None
+def _return_score(best_return: Optional[float]) -> float:
+    """Max 50 points, capped at 150% return."""
+    if best_return is None:
+        return 0.0
+    return round(min(best_return, 150.0) / 150.0 * 50.0, 1)
 
 
-def _get_consistency(profile: TraderProfile) -> float:
-    """Score consistency 0-100. Returns 0 if no data."""
-    if profile.raw_consistency_score is not None and profile.raw_consistency_score > 0:
-        return min(100.0, max(0.0, profile.raw_consistency_score))
-    if profile.raw_sharpe is not None and profile.raw_sharpe > 0:
-        return min(100.0, max(0.0, profile.raw_sharpe * 20))
-    if profile.raw_volatility is not None and profile.raw_volatility > 0:
-        return min(100.0, max(0.0, 100.0 - (profile.raw_volatility - 10.0) * 2.5))
+def _risk_score_bucket(risk: Optional[float]) -> float:
+    """Max 25 points. 3-6 ideal, 2/7 acceptable, 1/8 marginal, else 0."""
+    if risk is None or risk <= 0:
+        return 0.0
+    if 3 <= risk <= 6:
+        return 25.0
+    if risk in (2, 7):
+        return 18.0
+    if risk in (1, 8):
+        return 10.0
     return 0.0
 
 
-def _growth_efficiency(profile: TraderProfile) -> float:
-    """Growth Efficiency = avg_monthly_return / max_drawdown, scaled 0-100."""
-    if profile.raw_avg_monthly_return is None or profile.raw_drawdown is None:
+def _copier_score(copiers: Optional[int]) -> float:
+    """Max 15 points: >=500->15, >=100->10, >=20->5, else 0."""
+    if copiers is None or copiers <= 0:
         return 0.0
-    if profile.raw_drawdown <= 0:
-        return 0.0
-    ratio = profile.raw_avg_monthly_return / profile.raw_drawdown
-    return round(min(100.0, max(0.0, ratio * 200)), 1)
+    if copiers >= 500:
+        return 15.0
+    if copiers >= 100:
+        return 10.0
+    if copiers >= 20:
+        return 5.0
+    return 0.0
+
+
+def _confidence_multiplier(verified_fields: int) -> float:
+    """>=4 fields = 1.0, >=2 = 0.85, else = 0.65."""
+    if verified_fields >= 4:
+        return 1.0
+    if verified_fields >= 2:
+        return 0.85
+    return 0.65
+
+
+def _build_explanation(profile: TraderProfile, ret: Optional[float],
+                       risk: Optional[float], copiers: Optional[int],
+                       confidence: float) -> list:
+    parts = [f"source={profile.source}"]
+    if ret:
+        parts.append(f"return={ret:.1f}%")
+    if risk and risk > 0:
+        parts.append(f"risk={risk:.1f}")
+    if copiers and copiers > 0:
+        parts.append(f"copiers={copiers}")
+    parts.append(f"confidence={confidence}")
+    return parts
+
+
+# ── Core scoring ─────────────────────────────────────────────────────
 
 
 def calculate_score_from_profile(profile: TraderProfile) -> TraderProfile:
-    """Score a trader from a validated TraderProfile. Mutates and returns it."""
+    """Score a trader using 4 metrics: return, risk, copiers, confidence."""
     username = profile.username
 
     # ── Source validation ─────────────────────────────────────────
@@ -131,176 +135,71 @@ def calculate_score_from_profile(profile: TraderProfile) -> TraderProfile:
         return profile
 
     # ── Data quality gate ─────────────────────────────────────────
-    # Reject traders whose data is too sparse to score meaningfully.
-    # With < MIN_VERIFIED_FIELDS verified fields, we cannot assess risk,
-    # stability, or credibility.  Without a mininum set of verified metrics,
-    # any score is misleading.
     if profile.verified_fields < MIN_VERIFIED_FIELDS:
-        logger.info(
-            "Rejected %s: insufficient data (%d verified, need %d) — missing=[%s]",
-            username, profile.verified_fields, MIN_VERIFIED_FIELDS,
-            ", ".join(profile.missing_fields) if profile.missing_fields else "all",
-        )
+        logger.info("Rejected %s: insufficient data (%d verified, need %d)",
+                    username, profile.verified_fields, MIN_VERIFIED_FIELDS)
         profile.score = 0.0
         profile.final_score = 0.0
         profile.confidence_modifier = 0.0
         profile.confidence_score = _compute_confidence_score(profile)
         profile.explanation = [
             f"insufficient data: {profile.verified_fields}/{MIN_VERIFIED_FIELDS} fields verified",
-            f"missing: {', '.join(profile.missing_fields[:8])}..." if len(profile.missing_fields) > 8
-            else f"missing: {', '.join(profile.missing_fields)}",
         ]
         return profile
 
-    # ── Growth filter ─────────────────────────────────────────────
-    r12 = _get_return_12m(profile)
-    r6 = _get_return_6m(profile)
+    # ── 1. Return score (max 50) ──
+    best_return = _best_return_pct(profile)
+    ret_score = _return_score(best_return)
+
+    # ── 2. Risk score (max 25) ──
     risk = profile.raw_risk_score
-    dd = profile.raw_drawdown
-    consistency = _get_consistency(profile)
+    risk_score = _risk_score_bucket(risk)
 
-    if _has_return_data(profile) and (r12 is not None and r12 < GROWTH_FILTER_MIN_12M):
-        logger.info("Growth filter: %s 12M=%.1f%% — score=0", username, r12)
-        profile.score = 0.0
-        profile.final_score = 0.0
-        profile.confidence_score = _compute_confidence_score(profile)
-        profile.confidence_modifier = _confidence_penalty(profile)
-        profile.growth_filter = True
-        profile.penalties = [f"12M return {r12:.1f}% below {GROWTH_FILTER_MIN_12M}% threshold"]
-        profile.explanation = _build_explanation(profile, 0.0, profile.confidence, source="...", penalties=profile.penalties)
-        return profile
+    # ── 3. Copier score (max 15) ──
+    copiers = profile.raw_copiers
+    copier_score = _copier_score(copiers)
 
-    # ── Normalize ─────────────────────────────────────────────────
-    r12_norm = min(100.0, max(0.0, r12 * 0.8)) if r12 is not None else 0.0
-    r6_norm = min(100.0, max(0.0, r6 * 1.5)) if r6 is not None else 0.0
-    risk_norm = min(100.0, max(0.0, (10.0 - risk) * 12.5)) if risk is not None else 0.0
-    dd_norm = min(100.0, max(0.0, 100.0 - dd * 4)) if dd is not None else 0.0
-    cons_norm = min(100.0, max(0.0, consistency))
+    # ── 4. Confidence multiplier ──
+    confidence = _confidence_multiplier(profile.verified_fields)
 
-    profile.norm_return_12m = r12_norm
-    profile.norm_return_6m = r6_norm
-    profile.norm_risk = risk_norm
-    profile.norm_drawdown = dd_norm
-    profile.norm_consistency = cons_norm
+    raw_score = ret_score + risk_score + copier_score
+    final_score = raw_score * confidence
 
-    # ── Base score ────────────────────────────────────────────────
-    base_score = (
-        r12_norm * W_12M +
-        r6_norm * W_6M +
-        risk_norm * W_RISK +
-        dd_norm * W_MAX_DRAWDOWN +
-        cons_norm * W_CONSISTENCY
-    )
+    profile.score = round(raw_score, 1)
+    profile.final_score = round(final_score, 1)
+    profile.confidence_modifier = confidence
+    profile.confidence_score = confidence
+    profile.growth_filter = False
+    profile.penalties = []
+    profile.explanation = _build_explanation(profile, best_return, risk, copiers, confidence)
 
-    score = base_score
-    penalties = []
-
-    # ── Penalties ─────────────────────────────────────────────────
-    if risk is not None and risk > 7:
-        score -= PENALTY_RISK_HIGH
-        penalties.append(f"risk={risk:.1f} > 7: -{PENALTY_RISK_HIGH}pts")
-    if dd is not None and dd > 25:
-        score -= PENALTY_DRAWDOWN_HIGH
-        penalties.append(f"dd={dd:.1f}% > 25%: -{PENALTY_DRAWDOWN_HIGH}pts")
-
-    # ── Verified-data bonuses ─────────────────────────────────────
-    copier_bonus = 0.0
-    if profile.raw_copiers is not None and profile.raw_copiers > 0:
-        copier_bonus = min(COPIER_BONUS_MAX, max(0.0, math.log10(profile.raw_copiers) * COPIER_BONUS_SCALE))
-        score += copier_bonus
-        penalties.append(f"copiers={profile.raw_copiers}: +{copier_bonus:.0f}pts")
-
-    maturity_bonus = 0.0
-    if profile.raw_positions_count is not None and profile.raw_positions_count >= MATURITY_MIN_POSITIONS:
-        maturity_bonus = MATURITY_BONUS
-        score += maturity_bonus
-        penalties.append(f"positions={profile.raw_positions_count}: +{maturity_bonus:.0f}pts")
-
-    profile.copier_bonus = copier_bonus
-    profile.maturity_bonus = maturity_bonus
-
-    score = max(0.0, round(score, 1))
-    confidence_mod = _confidence_penalty(profile)
-    confidence_score = _compute_confidence_score(profile)
-    final_score = round(score * confidence_mod, 1)
-
-    profile.score = score
-    profile.final_score = final_score
-    profile.confidence_modifier = confidence_mod
-    profile.confidence_score = confidence_score
-    profile.penalties = penalties
-    profile.explanation = _build_explanation(profile, final_score, profile.confidence, profile.source, penalties)
-
-    logger.info(
-        "Score %s: base=%.1f bonus(cop=%.1f mat=%.1f) penalty=%s "
-        "mod=%.2f score=%.1f final=%.1f missing=[%s]",
-        username, base_score, copier_bonus, maturity_bonus,
-        penalties or "none",
-        confidence_mod, score, final_score,
-        ", ".join(profile.missing_fields) if profile.missing_fields else "none",
-    )
     return profile
-
-
-def _build_explanation(profile: TraderProfile, score: float, confidence: float, source: str, penalties: list) -> list:
-    parts = [f"source={source}", f"confidence={confidence}"]
-    if profile.raw_return_12m is not None:
-        parts.append(f"12M={profile.raw_return_12m:.1f}%")
-    if profile.raw_return_6m is not None:
-        parts.append(f"6M={profile.raw_return_6m:.1f}%")
-    if profile.raw_risk_score is not None:
-        parts.append(f"risk={profile.raw_risk_score:.1f}")
-    if profile.raw_drawdown is not None:
-        parts.append(f"dd={profile.raw_drawdown:.1f}%")
-    for p in penalties:
-        parts.append(p)
-    if score >= 70:
-        parts.append("strong candidate")
-    elif score >= 40:
-        parts.append("moderate candidate")
-    else:
-        parts.append("weak candidate")
-    return parts
 
 
 # ── Backward-compatible wrappers ─────────────────────────────────────
 
 
 def calculate_growth_score(trader: dict) -> dict:
-    """Backward-compatible wrapper for calculate_growth_score.
-
-    Accepts raw trader dict, returns result dict matching old format.
-    """
+    """Backward-compatible. Returns result dict matching old format."""
     profile = build_trader_profile(trader)
 
-    # Check hard constraints before scoring
     constraint_reason = check_constraints(profile)
     if constraint_reason:
         logger.info("Disqualified %s: %s", profile.username, constraint_reason)
-        profile.score = 0.0
-        profile.final_score = 0.0
-        profile.confidence_modifier = 0.0
-        profile.confidence_score = 0.0
-        profile.explanation = [f"disqualified: {constraint_reason}"]
-        profile.growth_filter = True
         source_valid = validate_data_source(profile) is None
         return {
-            "score": 0.0,
-            "final_score": 0.0,
-            "confidence_score": 0.0,
-            "confidence_mod": 0.0,
-            "source": profile.source,
-            "source_valid": source_valid,
+            "score": 0.0, "final_score": 0.0,
+            "confidence_score": 0.0, "confidence_mod": 0.0,
+            "source": profile.source, "source_valid": source_valid,
             "source_reason": constraint_reason,
             "explanation": [f"disqualified: {constraint_reason}"],
-            "details": {},
-            "penalties": [constraint_reason],
-            "growth_filter": True,
-            "missing_fields": profile.missing_fields,
+            "details": {}, "penalties": [constraint_reason],
+            "growth_filter": True, "missing_fields": profile.missing_fields,
         }
 
     profile = calculate_score_from_profile(profile)
     source_valid = validate_data_source(profile) is None
+    best_return = _best_return_pct(profile)
 
     return {
         "score": profile.score,
@@ -312,22 +211,19 @@ def calculate_growth_score(trader: dict) -> dict:
         "source_reason": None if source_valid else "unreliable source",
         "explanation": profile.explanation,
         "details": {
-            "return_12m": round(profile.raw_return_12m, 1) if profile.raw_return_12m is not None else None,
-            "return_6m": round(profile.raw_return_6m, 1) if profile.raw_return_6m is not None else None,
+            "return_12m": round(best_return, 1) if best_return is not None else None,
+            "return_6m": None,
             "risk_score": profile.raw_risk_score,
             "max_drawdown": profile.raw_drawdown,
-            "consistency": round(_get_consistency(profile), 1),
-            "growth_efficiency": _growth_efficiency(profile),
+            "consistency": 0.0,
+            "growth_efficiency": 0.0,
             "components": {
-                "r12_norm": round(profile.norm_return_12m, 1),
-                "r6_norm": round(profile.norm_return_6m, 1),
-                "risk_norm": round(profile.norm_risk, 1),
-                "dd_norm": round(profile.norm_drawdown, 1),
-                "cons_norm": round(profile.norm_consistency, 1),
+                "r12_norm": 0.0, "r6_norm": 0.0,
+                "risk_norm": 0.0, "dd_norm": 0.0, "cons_norm": 0.0,
             },
         },
-        "penalties": profile.penalties,
-        "growth_filter": profile.growth_filter,
+        "penalties": [],
+        "growth_filter": False,
         "missing_fields": profile.missing_fields,
     }
 
@@ -336,7 +232,6 @@ def rank_candidates(holdings: list[dict], candidates: list[dict], top_n: int = 1
     """Backward-compatible wrapper. Scores discovery candidates and returns best swaps."""
     from backend.discovery.validate import apply_constraints as apply_constraints_raw
 
-    # Apply constraints to raw candidates
     qualified = []
     for c in candidates:
         dd = c.get("max_drawdown")
@@ -355,12 +250,10 @@ def rank_candidates(holdings: list[dict], candidates: list[dict], top_n: int = 1
     if rejected:
         logger.info("Constraints: %d/%d passed (%d disqualified)", len(qualified), len(candidates), rejected)
 
-    # Score holdings to find weakest
     holdings_scored = [{**h, **calculate_growth_score(h)} for h in holdings]
     holdings_scored.sort(key=lambda x: x["score"])
     weakest_score = holdings_scored[0]["score"] if holdings_scored else 0.0
 
-    # Score candidates — use final_score for ranking (includes data quality penalty)
     scored = []
     for c in qualified:
         result = calculate_growth_score(c)

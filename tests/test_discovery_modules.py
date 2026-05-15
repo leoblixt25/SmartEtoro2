@@ -301,14 +301,15 @@ class TestCalculateScoreFromProfile:
         # Should be rejected for unreliable source
         assert result.score == 0.0
 
-    def test_growth_filter_zeroes_score(self):
+    def test_low_return_still_scores_via_risk(self):
+        """Low return gets low return_score but risk adds meaningful points."""
         from backend.discovery.types import TraderProfile
         from backend.discovery.score import calculate_score_from_profile
         p = TraderProfile(
             username="low_ret",
             source="tradeinfo",
             confidence=1.0,
-            raw_return_12m=2.0,  # below 10% threshold
+            raw_return_12m=2.0,
             raw_total_return_pct=2.0,
             raw_risk_score=3.0,
             raw_drawdown=5.0,
@@ -320,8 +321,9 @@ class TestCalculateScoreFromProfile:
             "max_drawdown": "verified",
         }
         result = calculate_score_from_profile(p)
-        assert result.growth_filter is True
-        assert result.score == 0.0
+        # Return score = min(2,150)/150*50 = 0.7, risk = 25, raw = 25.7
+        assert result.score > 20
+        assert result.growth_filter is False
 
     def test_copier_bonus_applied(self):
         from backend.discovery.types import TraderProfile
@@ -371,11 +373,11 @@ class TestCalculateScoreFromProfile:
             "positions_count": "verified",
         }
         result = calculate_score_from_profile(p)
-        # missing risk/dd/vol should each reduce modifier
-        assert result.confidence_modifier < 1.0
-        # None of the norm values should be faked
+        # No fake defaults — norm values stay 0.0
         assert result.norm_risk == 0.0
         assert result.norm_drawdown == 0.0
+        # Score uses only verified return data (no fake risk/copiers)
+        assert result.score > 0
 
 
 # ── discovery.fetch (SafeFetcher) ───────────────────────────────────
@@ -644,8 +646,8 @@ class TestScoreNoFakeDefaults:
         assert result.norm_risk == 0.0, "risk should not default to 50"
         assert result.norm_drawdown == 0.0, "dd should not default to 50"
         assert result.norm_consistency == 0.0, "consistency should not default to 50"
-        # With only return data, score should be based on returns only
-        expected_return_score = 50.0 * 0.8 * 0.25 + 50.0 * 0.5 * 1.5 * 0.15
+        # With only return data, score = return_score (risk/copiers = 0)
+        expected_return_score = min(50, 150) / 150.0 * 50.0
         assert result.score == pytest.approx(expected_return_score, abs=1.0)
 
     def test_no_fake_copiers_entered(self):

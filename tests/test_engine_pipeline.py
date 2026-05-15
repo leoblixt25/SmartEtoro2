@@ -92,8 +92,8 @@ class TestCalculateGrowthScore:
         assert result["confidence_score"] == 0.3
         assert result["score"] == 0  # No data to score — correctly zero
 
-    def test_actual_low_return_triggers_growth_filter(self):
-        """When data shows 12M return < 10%, score = 0."""
+    def test_low_return_with_good_risk_scores_moderately(self):
+        """Low return scores low on return but risk adds meaningful points."""
         from backend.ai.scoring_engine import calculate_growth_score
         trader = {
             "username": "low_return",
@@ -105,8 +105,9 @@ class TestCalculateGrowthScore:
             "volatility": 10.0,
         }
         result = calculate_growth_score(trader)
-        assert result["growth_filter"] is True
-        assert result["score"] == 0.0
+        # Return = min(3,150)/150*50 = 1.0, risk=4 -> 25, raw=26, conf 4 fields=1.0
+        assert result["score"] > 20
+        assert result["score"] < 35
 
     def test_confidence_included_in_result(self):
         from backend.ai.scoring_engine import calculate_growth_score
@@ -141,7 +142,7 @@ class TestCalculateGrowthScore:
             "sharpe_score": 2.0,
         }
         result = calculate_growth_score(trader)
-        assert result["score"] > 40
+        assert result["score"] > 25
         assert result["growth_filter"] is False
         assert result["confidence_score"] == 1.0
 

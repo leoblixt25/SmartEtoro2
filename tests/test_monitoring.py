@@ -241,17 +241,13 @@ class TestTraderHealthEngine:
     def test_analyze_strong_trader_with_positive_news(self):
         from backend.monitoring.trader_health_engine import analyze_trader_health
         trader = {
-            "username": "good_trader",
+            "username": "strong_trader",
             "source": "tradeinfo",
             "confidence": 1.0,
-            "return_12m": 25.0,
-            "return_6m": 15.0,
-            "total_return_pct": 25.0,
+            "total_return_pct": 80.0,
             "risk_score": 3.0,
             "max_drawdown": 5.0,
-            "volatility": 8.0,
-            "avg_monthly_return": 2.0,
-            "sharpe_score": 2.0,
+            "copiers": 500,
         }
         holdings = [
             {"symbol": "AAPL", "name": "AAPL", "weight": 60.0, "type": "stock", "amount": 6000},
@@ -343,8 +339,9 @@ class TestTraderHealthEngine:
     def test_score_performance_strong(self):
         from backend.monitoring.trader_health_engine import _score_performance
         trader = {"source": "tradeinfo", "confidence": 1.0,
-                  "return_12m": 80.0, "return_6m": 40.0,
-                  "risk_score": 3.0, "consistency_score": 90.0,
+                  "total_return_pct": 135.0,
+                  "risk_score": 3.0,
+                  "copiers": 500,
                   "max_drawdown": 5.0}
         score, label = _score_performance(trader)
         assert label == "strong"
