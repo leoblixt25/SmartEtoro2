@@ -243,7 +243,7 @@ def _confidence_penalty(trader: dict) -> float:
     """
     modifier = 1.0
     risk = trader.get("risk_score")
-    if risk is None:
+    if risk is None or float(risk) == 0:
         modifier -= 0.15
     copiers = trader.get("copiers")
     if copiers is None:

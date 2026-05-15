@@ -559,7 +559,7 @@ class EToroAPIClient:
             )
 
             missing_fields = []
-            if risk_raw is None:
+            if risk_raw is None or risk_raw == 0:
                 missing_fields.append("riskScore")
             if dd_raw is None:
                 missing_fields.append("maxMonthlyDrawdown")
@@ -576,7 +576,7 @@ class EToroAPIClient:
 
             result.update({
                 "avg_return": float(avg_raw) if avg_raw is not None else None,
-                "risk_score": float(risk_raw) if risk_raw is not None else None,
+                "risk_score": float(risk_raw) if risk_raw is not None and risk_raw != 0 else None,
                 "max_drawdown": float(dd_raw) if dd_raw is not None else None,
                 "volatility": float(vol_raw) if vol_raw is not None else None,
                 "total_return_pct": float(gain_raw) if gain_raw is not None else None,
@@ -610,13 +610,13 @@ class EToroAPIClient:
             vol_raw = live.get("volatility")
             avg_raw = live.get("avgReturn") or live.get("averageReturn")
             if ret_raw is None: missing_fields.append("totalReturn")
-            if risk_raw is None: missing_fields.append("riskScore")
+            if risk_raw is None or risk_raw == 0: missing_fields.append("riskScore")
             if dd_raw is None: missing_fields.append("maxDrawdown")
             if vol_raw is None: missing_fields.append("volatility")
             if avg_raw is None: missing_fields.append("avgReturn")
             result.update({
                 "total_return_pct": float(ret_raw) if ret_raw is not None else None,
-                "risk_score": float(risk_raw) if risk_raw is not None else None,
+                "risk_score": float(risk_raw) if risk_raw is not None and risk_raw != 0 else None,
                 "max_drawdown": float(dd_raw) if dd_raw is not None else None,
                 "volatility": float(vol_raw) if vol_raw is not None else None,
                 "avg_return": float(avg_raw) if avg_raw is not None else None,
