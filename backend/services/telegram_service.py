@@ -321,44 +321,31 @@ class TelegramBot:
                     return
                 eligible, excluded, stats = await discover_eligible_traders(db, p.id)
 
-                lines = [f"Discovery: New Eligible Traders\n"]
-                lines.append(f"Scanned: {stats.get('total_scanned', 0)}  "
-                             f"Eligible: {stats.get('eligible', 0)}  "
-                             f"Excluded: {stats.get('excluded', 0)}\n")
+                lines = ["**Discovery Results**\n"]
 
                 if eligible:
                     for i, t in enumerate(eligible[:5], 1):
                         score = t.get("final_score", t.get("score", 0))
                         ret_raw = t.get("total_return_pct")
-                        ret_str = f"{ret_raw:+.1f}%" if ret_raw is not None else "unavailable"
+                        ret_str = f"Return +{ret_raw:.1f}%" if ret_raw is not None else ""
                         risk_raw = t.get("risk_score")
-                        risk_str = f"{risk_raw:.1f}" if risk_raw is not None else "unavailable"
-                        mincpy_raw = t.get("min_copy_amount")
-                        mincpy_str = f"${mincpy_raw:.0f}" if mincpy_raw is not None else "unavailable"
-                        copiers_raw = t.get("copiers")
-                        copiers_str = f"{copiers_raw}" if copiers_raw is not None else "unavailable"
-                        missing = t.get("missing_fields", [])
+                        risk_str = f"Risk {int(risk_raw)}" if risk_raw is not None else ""
                         conf_raw = t.get("confidence_mod", t.get("confidence_score", 1.0))
-                        if conf_raw >= 1.0:
-                            conf_label = "HIGH"
-                        elif conf_raw >= 0.8:
-                            conf_label = "HIGH"
-                        elif conf_raw >= 0.6:
-                            conf_label = "MEDIUM"
-                        else:
-                            conf_label = "LOW"
-                        lines.append(
-                            f"{i}. {t['username']} \u2014 {score}/100\n"
-                            f"   Return: {ret_str}  Risk: {risk_str}  "
-                            f"Copiers: {copiers_str}  Min copy: {mincpy_str}\n"
-                            f"   Confidence: {conf_label}"
-                        )
-                        if missing:
-                            lines[-1] += f"  Missing: {', '.join(missing)}"
+                        if conf_raw >= 0.95: conf_label = "HIGH"
+                        elif conf_raw >= 0.8: conf_label = "MEDIUM"
+                        else: conf_label = "LOW"
+                        metrics = ", ".join(p for p in [ret_str, risk_str, f"Confidence {conf_label}"] if p)
+                        lines.append(f"{i}. {t['username']} \u2014 {score}/100")
+                        lines.append(f"   {metrics}")
                     if len(eligible) > 5:
-                        lines.append(f"\n... and {len(eligible) - 5} more")
+                        lines.append(f"   ... and {len(eligible) - 5} more")
                 else:
                     lines.append("No eligible traders found at this time.")
+                lines.append("")
+                scanned = stats.get("total_scanned", 0)
+                eligible_count = stats.get("eligible", 0)
+                excluded_count = stats.get("excluded", 0)
+                lines.append(f"{eligible_count} eligible | {excluded_count} excluded | {scanned} scanned")
 
                 await self._reply(update, "\n".join(lines))
         except Exception as e:
