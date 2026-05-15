@@ -972,166 +972,62 @@ class EToroAPIClient:
                         return result
         return []
 
-    async def discover_social_top(self, limit: int = 200) -> List[str]:
-        """Discover traders from multiple eToro web API endpoints with pagination.
+    async def discover_via_search(self, target: int = 300) -> List[str]:
+        """Discover traders via the working search/people API endpoint.
 
-        Tries 30+ endpoints (rankings, social top, discovery, feed, search)
-        across public-api.etoro.com, www.etoro.com, and api.etoro.com.
-        Each endpoint that returns data is paginated up to 5 pages to
-        maximize unique trader discovery. All endpoints run in parallel.
+        Uses GET /api/v1/user-info/people/search with pagination to fetch
+        real eToro traders dynamically. Returns deduplicated usernames.
+
+        Args:
+            target: Target number of traders to fetch (via pagination).
 
         Returns:
-            Deduplicated list of eToro usernames found. Empty if none found.
+            Deduplicated list of eToro usernames. Empty if API fails.
         """
         discovered: List[str] = []
-        base = self.BASE_URL
-        www = "https://www.etoro.com"
-        api3 = "https://api.etoro.com"
-
-        # ── Endpoint families ────────────────────────────────────────
-        # Each family has a base URL, description, and max pages to try.
-        endpoints = []
-
-        # Rankings - authenticated endpoints (10 pages deep)
-        for period in ["", "month", "year", "alltime"]:
-            suffix = f"period={period}" if period else "limit"
-            for p in range(1, 11):
-                endpoints.append((
-                    f"{base}/api/v1/rankings/traders?{suffix}={limit}&page={p}",
-                    f"rankings {period or 'default'} page {p}",
-                ))
-
-        # Rankings by type (10 pages deep)
-        for rtype in ["copied", "return", "risk"]:
-            for p in range(1, 11):
-                endpoints.append((
-                    f"{base}/api/v1/rankings/traders?limit={limit}&type={rtype}&page={p}",
-                    f"rankings {rtype} page {p}",
-                ))
-
-        # Social top - authenticated (10 pages deep)
-        for period in ["daily", "weekly", "monthly"]:
-            for p in range(1, 11):
-                endpoints.append((
-                    f"{base}/api/v1/social/top/{period}?limit={limit}&page={p}",
-                    f"social {period} page {p}",
-                ))
-
-        # Discover - authenticated
-        endpoints.append((f"{base}/api/v1/discover/popular?limit={limit}", "discover popular"))
-        endpoints.append((f"{base}/api/v1/discover/trending?limit={limit}", "discover trending"))
-
-        # Feed - authenticated (10 pages deep)
-        for p in range(1, 11):
-            endpoints.append((
-                f"{base}/api/v1/feed/popular?limit={limit}&page={p}",
-                f"feed popular page {p}",
-            ))
-            endpoints.append((
-                f"{base}/api/v1/feed/trending?limit={limit}&page={p}",
-                f"feed trending page {p}",
-            ))
-
-        # www.etoro.com - public endpoints (10 pages deep)
-        for period in ["day", "week", "month"]:
-            for p in range(1, 11):
-                endpoints.append((
-                    f"{www}/api/social/top/{period}?limit={limit}&page={p}",
-                    f"www social {period} page {p}",
-                ))
-
-        endpoints.append((f"{www}/api/discover/popular?limit={limit}", "www discover popular"))
-        endpoints.append((f"{www}/api/discover/trending?limit={limit}", "www discover trending"))
-
-        # www rankings (10 pages deep)
-        for period in ["", "month", "year", "alltime"]:
-            suffix = f"period={period}" if period else "limit"
-            for p in range(1, 11):
-                endpoints.append((
-                    f"{www}/api/rankings/traders?{suffix}={limit}&page={p}",
-                    f"www rankings {period or 'default'} page {p}",
-                ))
-
-        # api.etoro.com - alternative API host (10 pages deep)
-        for p in range(1, 11):
-            endpoints.append((
-                f"{api3}/api/v1/social/top/monthly?limit={limit}&page={p}",
-                f"api3 social monthly page {p}",
-            ))
-
-        # Search endpoint variants (public)
-        for q in ["popular", "trending", "top", "viral"]:
-            endpoints.append((
-                f"{www}/api/search/users?query={q}&limit={limit}",
-                f"www search {q}",
-            ))
+        page_size = 50
+        pages_needed = (target // page_size) + 1
 
         import asyncio
 
-        pages_fetched = 0
-        pages_with_data = 0
-        total_traders_from_api = 0
-        api_errors = 0
-        rate_limits = 0
-        discovery_sem = asyncio.Semaphore(5)
-
-        async def _fetch(url: str, desc: str) -> tuple:
-            async with discovery_sem:
-                nonlocal pages_fetched, pages_with_data, api_errors, rate_limits
-                use_browser = url.startswith("https://www.etoro.com") or url.startswith("https://api.etoro.com")
-                try:
-                    data = await self._api_get_with_retry(url, timeout=10.0, browser_headers=use_browser)
-                    pages_fetched += 1
-                    if data is None:
-                        return None, desc
-                    raw = self._extract_discovery_traders(data)
-                    if isinstance(raw, list) and raw:
-                        pages_with_data += 1
-                        return raw, desc
-                    return None, desc
-                except Exception:
-                    api_errors += 1
-                    return None, desc
-
-        tasks = [_fetch(url, desc) for url, desc in endpoints]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        for r in results:
-            if isinstance(r, Exception):
-                continue
-            raw_list, desc = r
-            if not raw_list or not isinstance(raw_list, list):
-                continue
-            count_before = len(discovered)
-            for entry in raw_list:
-                if not isinstance(entry, dict):
-                    continue
-                username = (entry.get("Username") or entry.get("username") or
-                            entry.get("User") or entry.get("user") or
-                            entry.get("nickname") or entry.get("Nickname"))
-                if username and isinstance(username, str) and username.strip():
-                    discovered.append(username.strip())
-            page_count = len(discovered) - count_before
-            if page_count > 0:
-                total_traders_from_api += page_count
+        for page in range(1, pages_needed + 1):
+            url = (
+                f"{self.BASE_URL}/api/v1/user-info/people/search"
+                f"?period=CurrYear&page={page}&pageSize={page_size}"
+            )
+            try:
+                data = await self._api_get_with_retry(url, timeout=15.0, browser_headers=False)
+                if data is None:
+                    logger.info("Discovery search: page %d returned no data — stopping", page)
+                    break
+                items = data.get("items", []) if isinstance(data, dict) else []
+                page_usernames = []
+                for item in items:
+                    if isinstance(item, dict):
+                        uname = item.get("userName")
+                        if uname and isinstance(uname, str) and uname.strip():
+                            page_usernames.append(uname.strip())
+                discovered.extend(page_usernames)
                 logger.info(
-                    "Discovery: %s returned %d traders",
-                    desc, page_count,
+                    "Discovery search: page %d returned %d usernames (total: %d)",
+                    page, len(page_usernames), len(discovered),
                 )
+                if len(page_usernames) < page_size:
+                    logger.info("Discovery search: last page reached at page %d", page)
+                    break
+            except Exception as e:
+                logger.warning("Discovery search: page %d error: %s", page, e)
+                break
 
         unique = list(dict.fromkeys(discovered))
-        fake_in_api = sum(1 for u in unique if self._is_fake_username(u))
+        fake_usernames = [u for u in unique if self._is_fake_username(u)]
 
         logger.info(
-            "DISCOVERY DEBUG: pages_fetched=%d, pages_with_data=%d, "
-            "api_errors=%d, rate_limits=%d, "
-            "raw_traders=%d, unique=%d, fake_removed=%d",
-            pages_fetched, pages_with_data,
-            api_errors, rate_limits,
-            total_traders_from_api, len(unique), fake_in_api,
+            "Discovery search complete: %d raw, %d unique, %d fake filtered",
+            len(discovered), len(unique), len(fake_usernames),
         )
 
-        return unique
+        return [u for u in unique if not self._is_fake_username(u)]
 
     async def discover_candidates(self, usernames: Optional[List[str]] = None) -> Dict:
         """Discover trader candidates with resilient multi-endpoint fallback.

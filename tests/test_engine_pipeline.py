@@ -195,7 +195,7 @@ class TestDiscoverTopTraders:
             client.enabled = True
             traders_100 = [f"trader{i}" for i in range(100)]
             available = [{"username": f"trader{i}"} for i in range(100)]
-            client.discover_social_top = AsyncMock(return_value=traders_100)
+            client.discover_via_search = AsyncMock(return_value=traders_100)
             client.enrich_candidates = AsyncMock(return_value={
                 "available": available,
                 "unavailable": [],
@@ -215,7 +215,7 @@ class TestDiscoverTopTraders:
         with patch("backend.services.etoro_service.EToroAPIClient") as MockClient:
             client = AsyncMock()
             client.enabled = True
-            client.discover_social_top = AsyncMock(return_value=[])
+            client.discover_via_search = AsyncMock(return_value=[])
             client.enrich_candidates = AsyncMock(return_value={
                 "available": [],
                 "unavailable": [
@@ -237,13 +237,13 @@ class TestDiscoverTopTraders:
         with patch("backend.services.etoro_service.EToroAPIClient") as MockClient:
             client = AsyncMock()
             client.enabled = True
-            client.discover_social_top = AsyncMock(side_effect=Exception("API down"))
+            client.discover_via_search = AsyncMock(side_effect=Exception("API down"))
             client.enrich_candidates = AsyncMock(return_value={
                 "available": [],
                 "unavailable": [{"username": "x", "reason": "error"}],
-                "scanned": 45,
+                "scanned": 0,
                 "valid_count": 0,
-                "rejected": 45,
+                "rejected": 0,
             })
             MockClient.return_value = client
 

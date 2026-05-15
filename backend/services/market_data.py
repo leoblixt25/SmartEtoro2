@@ -274,42 +274,48 @@ async def discover_top_traders(
     min_traders: int = 100,
     max_traders: int = 500,
 ) -> List[Dict]:
-    """Discover eligible trader candidates dynamically from eToro API data.
+    """Discover eligible trader candidates from the eToro search API.
 
     Pipeline:
-    1. Discover usernames via eToro API pagination (no static lists)
-    2. Enrich all usernames via tradeinfo API (batch, concurrency=50)
-    3. Return enriched candidates for eligibility filtering
+    1. Fetch usernames via eToro search/people API (paginated, ~500 traders)
+    2. Fallback to rotating seed pool if API returns nothing
+    3. Enrich all usernames via tradeinfo API (batch, concurrency=50)
+    4. Return enriched candidates for eligibility filtering
 
     Args:
         categories: Ignored (discovery is dynamic, not category-filtered).
         min_traders: Minimum traders desired before enrichment.
-        max_traders: Maximum traders to collect before enrichment.
+        max_traders: Maximum traders to enrich.
 
     Returns:
         List of enriched trader dicts with metrics from tradeinfo API.
-        Empty list if no real traders found (no fake/mock data).
+        Empty list if no real traders found.
     """
-    from backend.discovery.config import DISCOVERY_MIN, DISCOVERY_MAX
+    from backend.discovery.config import DISCOVERY_SCAN_TARGET, DISCOVERY_MIN, DISCOVERY_MAX
+    from backend.discovery.pool import select_traders
     from backend.services.etoro_service import EToroAPIClient
 
     client = EToroAPIClient()
+    if not client.enabled:
+        logger.warning("Discovery: eToro API client not enabled")
+        return []
+
+    target = min(max(DISCOVERY_SCAN_TARGET, DISCOVERY_MIN, min_traders), DISCOVERY_MAX, max_traders)
+
+    # Step 1: Primary — dynamic discovery via eToro search API (paginated)
     usernames: List[str] = []
+    try:
+        usernames = await client.discover_via_search(target=target)
+        logger.info("Discovery: search API returned %d trader usernames", len(usernames))
+    except Exception as e:
+        logger.warning("Discovery: search API failed (%s) — falling back to seed pool", e)
 
-    # Step 1: Dynamic discovery via eToro API pagination (primary source)
-    if client.enabled:
-        try:
-            usernames = await client.discover_social_top(limit=max_traders)
-            logger.info(
-                "Discovery: API returned %d raw trader usernames",
-                len(usernames),
-            )
-        except Exception as e:
-            logger.warning(f"Discovery: API unavailable ({e})")
-    else:
-        logger.warning("Discovery: eToro API client not enabled — skipping API scan")
+    # Step 2: Fallback — seed pool if API returned nothing
+    if not usernames:
+        logger.info("Discovery: using rotating seed pool fallback")
+        usernames = select_traders(target=target)
 
-    # Step 2: CANDIDATE_TRADERS env var (user override — supplements API results)
+    # Step 3: CANDIDATE_TRADERS env var (user override)
     raw_env = os.getenv("CANDIDATE_TRADERS", "")
     if raw_env:
         env_list = [u.strip() for u in raw_env.split(",") if u.strip()]
@@ -322,16 +328,16 @@ async def discover_top_traders(
 
     unique = list(dict.fromkeys(usernames))
     logger.info(
-        "Discovery: total raw=%d, unique=%d (target min=%d, max=%d)",
-        len(usernames), len(unique), DISCOVERY_MIN, DISCOVERY_MAX,
+        "Total raw traders fetched: %d | Unique after dedupe: %d (target=%d)",
+        len(usernames), len(unique), target,
     )
 
     if not unique:
         logger.warning("Discovery: no traders found from any source")
         return []
 
-    # Step 3: Enrich via tradeinfo API
-    logger.info(f"Discovery: enriching {len(unique)} unique candidates")
+    # Step 4: Enrich via tradeinfo API
+    logger.info(f"Discovery: enriching %d unique candidates", len(unique))
     try:
         result = await client.enrich_candidates(unique, max_concurrent=50)
     except Exception as e:
@@ -351,22 +357,13 @@ async def discover_top_traders(
 
     if scanned < DISCOVERY_MIN:
         logger.warning(
-            "Discovery: scanned %d traders (below target %d). "
-            "Returning what we have — results may be limited.",
+            "Discovery: scanned %d traders (below min %d).",
             scanned, DISCOVERY_MIN,
         )
 
-    if available:
-        logger.info(
-            "Discovery: scanned=%d, valid=%d, "
-            "eligible_before_filter=%d, rejected=%d",
-            scanned, result.get("valid_count", 0),
-            len(available), result.get("rejected", 0),
-        )
-    else:
-        logger.warning(
-            "Discovery: all %d candidates unavailable after enrichment",
-            scanned,
-        )
+    logger.info(
+        "Eligible traders: %d | Scanned: %d | Rejected: %d",
+        len(available), scanned, result.get("rejected", 0),
+    )
 
     return available
