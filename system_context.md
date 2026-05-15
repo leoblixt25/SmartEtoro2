@@ -177,16 +177,19 @@ Growth Score (0–100) formula:
 
 | Component | Weight | Normalization |
 |-----------|--------|-------------|
-| 12M Return | 35% | `min(100, r12 × 5)` |
-| 6M Return | 25% | `min(100, r6 × 8)` |
-| Risk (inverted) | 15% | `min(100, (10 - risk) × 12.5)` |
-| Max Drawdown (inverted) | 15% | `min(100, 100 - dd × 4)` |
-| Consistency | 10% | from consistency_score, sharpe, or volatility |
+| 12M Return | 25% | `min(100, r12 × 0.8)` — 125% return = cap |
+| 6M Return | 15% | `min(100, r6 × 1.5)` — total_return_pct proxy, 67% = cap |
+| Risk (inverted) | 20% | `min(100, (10 - risk) × 12.5)` |
+| Max Drawdown (inverted) | 20% | `min(100, 100 - dd × 4)` |
+| Consistency | 20% | from consistency_score, sharpe, or volatility; defaults 50 |
+
+Confidence: 40% returns + 60% stability/risk. Lower multipliers keep differentiation across 20–130% return range.
 
 Penalties:
 - Risk > 7 → -30 pts
 - Max Drawdown > 25% → -20 pts
 - 12M return < 10% AND has return data → score = 0 (growth filter)
+- Missing fields → confidence_mod multiplier 0.3–1.0 (was 0.5–1.0)
 
 Delta scoring: candidates are ranked by `score - weakest_holding_score` to show swap value.
 
@@ -411,7 +414,7 @@ A trader is **eligible for Discovery** if and only if:
 
 ## 13. Test Suite
 
-143 tests across 3 files:
+195 tests across 3 files:
 
 | File | Tests | Area |
 |------|-------|------|

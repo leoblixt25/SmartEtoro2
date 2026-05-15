@@ -355,9 +355,13 @@ def calculate_growth_score(trader: dict) -> dict:
             "missing_fields": missing,
         }
 
-    # Normalize each component, using None-safe defaults
-    r12_norm = min(100.0, max(0.0, r12 * 5)) if r12 is not None else 0.0
-    r6_norm = min(100.0, max(0.0, r6 * 8)) if r6 is not None else 0.0
+    # Normalize each component, using None-safe defaults.
+    # Return multipliers prevent premature capping: r12 *0.8 means a
+    # 125% return = 100 (cap). r6 *1.5 means 133% total_return_pct
+    # = 100 (cap). This keeps differentiation across the typical
+    # return range (20-130%) instead of capping everything at 20%.
+    r12_norm = min(100.0, max(0.0, r12 * 0.8)) if r12 is not None else 0.0
+    r6_norm = min(100.0, max(0.0, r6 * 1.5)) if r6 is not None else 0.0
     risk_norm = min(100.0, max(0.0, (10.0 - risk) * 12.5)) if risk is not None else 50.0
     dd_norm = min(100.0, max(0.0, 100.0 - dd * 4)) if dd is not None else 50.0
     cons_norm = min(100.0, max(0.0, consistency))

@@ -139,7 +139,7 @@ class TestCalculateGrowthScore:
             "sharpe_score": 2.0,
         }
         result = calculate_growth_score(trader)
-        assert result["score"] > 50
+        assert result["score"] > 40
         assert result["growth_filter"] is False
         assert result["confidence_score"] == 1.0
 
