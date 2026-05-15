@@ -4,6 +4,7 @@ Smart portfolio assistant commands: monitor, analyze, decide.
 """
 
 from __future__ import annotations
+import asyncio
 import logging
 import os
 from datetime import datetime
@@ -312,40 +313,127 @@ class TelegramBot:
         from backend.database.models import Portfolio
         from backend.services.discovery_service import discover_eligible_traders
 
-        try:
-            await self._reply(update, "Scanning for eligible traders...")
-            with db_session() as db:
-                p = db.query(Portfolio).first()
-                if not p:
-                    await self._reply(update, "No portfolio found.")
-                    return
-                eligible, excluded, stats = await discover_eligible_traders(db, p.id)
+        # Lock to prevent concurrent discovery commands
+        if not hasattr(self, "_discovery_lock"):
+            self._discovery_lock = asyncio.Lock()
+        if self._discovery_lock.locked():
+            logger.info("Discovery command already running — skipping duplicate")
+            return
 
-                lines = ["\U0001f4c8 Discovery Results"]
-
-                if eligible:
-                    for i, t in enumerate(eligible[:5], 1):
-                        score = t.get("final_score", t.get("score", 0))
-                        ret_raw = t.get("total_return_pct")
-                        ret_str = f"+{ret_raw:.1f}%" if ret_raw is not None else ""
-                        risk_raw = t.get("risk_score")
-                        risk_str = f"Risk {int(risk_raw)}" if risk_raw is not None else ""
-                        second = f"   {ret_str} \u2022 {risk_str}" if ret_str and risk_str else f"   {ret_str or risk_str}"
-                        lines.append(f"{i}. {t['username']:<20} {score}")
-                        lines.append(second)
-                    if len(eligible) > 5:
-                        lines.append(f"\n+ {len(eligible) - 5} more")
-                else:
-                    lines.append("No eligible traders found at this time.")
+        async with self._discovery_lock:
+            try:
+                status_msg = await update.message.reply_text(
+                    "\U0001f50d Scanning traders... please wait",
+                    reply_markup=self._keyboard(),
+                )
+                with db_session() as db:
+                    p = db.query(Portfolio).first()
+                    if not p:
+                        await status_msg.edit_text("No portfolio found.")
+                        return
+                    eligible, excluded, stats = await discover_eligible_traders(db, p.id)
 
                 scanned = stats.get("total_scanned", 0)
                 eligible_count = stats.get("eligible", 0)
-                lines.append(f"\n{scanned} scanned | {eligible_count} eligible")
+                now = datetime.now().strftime("%b %d, %H:%M UTC")
 
-                await self._reply(update, "\n".join(lines))
-        except Exception as e:
-            logger.error(f"/discovery error: {e}")
-            await self._reply(update, f"Error: {e}")
+                # Premium analyst format
+                lines = [
+                    "\U0001f3c6 TOP COPY TRADERS SCAN",
+                    "",
+                    f"\U0001f4c5 Scan Time: {now}",
+                    f"\U0001f4ca Traders Scanned: {scanned}",
+                    "\u2705 Real Data Only",
+                    "",
+                ]
+
+                if eligible:
+                    medals = ["\U0001f947", "\U0001f948", "\U0001f949"]
+                    for i, t in enumerate(eligible[:3]):
+                        medal = medals[i] if i < 3 else f"{i+1}."
+                        username = t.get("username", "?")
+                        score = t.get("final_score", t.get("score", 0))
+                        ret = t.get("total_return_pct")
+                        risk = t.get("risk_score")
+                        dd = t.get("peak_to_valley") or t.get("max_drawdown")
+
+                        ret_str = f"+{ret:.1f}%" if ret is not None else "N/A"
+                        risk_str = f"{int(risk)}/10" if risk is not None else "N/A"
+                        dd_str = f"{abs(dd):.1f}%" if dd is not None else "N/A"
+
+                        # Confidence level based on available fields
+                        present = sum(1 for f in [ret, risk, dd, t.get("positions_count"), t.get("profitable_months_pct"), t.get("weeks_since_registration")] if f is not None)
+                        conf = "HIGH" if present >= 5 else "MEDIUM" if present >= 3 else "LOW"
+
+                        # Reason
+                        reasons = []
+                        if ret is not None and ret > 50:
+                            reasons.append(f"strong return ({ret_str})")
+                        if risk is not None and risk <= 4:
+                            reasons.append(f"controlled risk ({risk_str})")
+                        elif risk is not None and risk >= 7:
+                            reasons.append(f"elevated risk ({risk_str})")
+                        if dd is not None and abs(dd) < 12:
+                            reasons.append(f"low drawdown ({dd_str})")
+                        if t.get("profitable_months_pct") is not None and t["profitable_months_pct"] > 60:
+                            reasons.append("consistent monthly performance")
+                        if t.get("positions_count") is not None and t["positions_count"] >= 20:
+                            reasons.append("active portfolio management")
+                        if not reasons:
+                            reasons.append("moderate performance")
+
+                        lines.append(f"{medal} {username}")
+                        lines.append(f"\u2b50 Score: {score}/100")
+                        lines.append(f"\U0001f4c8 Return: {ret_str}")
+                        lines.append(f"\u26a0\ufe0f Risk: {risk_str}")
+                        lines.append(f"\U0001f4c9 Drawdown: {dd_str}")
+                        lines.append(f"\U0001f512 Confidence: {conf}")
+                        lines.append(f"\U0001f4a1 Why: {reasons[0].capitalize()}.")
+                        lines.append("")
+
+                    if len(eligible) > 3:
+                        lines.append(f"+ {len(eligible) - 3} more traders available")
+                        lines.append("")
+
+                    # Best pick
+                    top = eligible[0]
+                    top_user = top.get("username", "?")
+                    top_score = top.get("final_score", top.get("score", 0))
+                    top_ret = top.get("total_return_pct")
+                    top_risk = top.get("risk_score")
+                    lines.append(f"\U0001f3af BEST PICK:")
+                    lines.append(f"@{top_user}")
+                    ret_desc = f"+{top_ret:.1f}%" if top_ret is not None else "moderate"
+                    risk_desc = f"risk {int(top_risk)}" if top_risk is not None else "unknown"
+                    lines.append(f"Reason: Best balance between return, safety, and consistency ({ret_desc}, {risk_desc}).")
+
+                    # Warning if high-risk traders in top 10
+                    high_risk = sum(1 for t in eligible if t.get("risk_score") is not None and t["risk_score"] >= 7)
+                    no_dd = sum(1 for t in eligible if t.get("peak_to_valley") is None and t.get("max_drawdown") is None)
+                    warnings = []
+                    if high_risk:
+                        warnings.append(f"\u274c {high_risk} traders with high risk")
+                    if no_dd > len(eligible) // 2:
+                        warnings.append(f"\u274c {no_dd} traders missing drawdown data")
+                    if warnings:
+                        lines.append("")
+                        lines.append("\u26a0\ufe0f NOTE:")
+                        for w in warnings:
+                            lines.append(w)
+                else:
+                    lines.append("No eligible traders found at this time.")
+
+                lines.append("")
+                lines.append(f"{scanned} scanned | {eligible_count} eligible")
+
+                await status_msg.edit_text("\n".join(lines))
+
+            except Exception as e:
+                logger.error(f"/discovery error: {e}")
+                try:
+                    await status_msg.edit_text(f"Error: {e}")
+                except Exception:
+                    await self._reply(update, f"Error: {e}")
 
     async def _cmd_health(self, update: Update, args: list[str]) -> None:
         from backend.database.connection import db_session
