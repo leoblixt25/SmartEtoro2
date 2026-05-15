@@ -332,13 +332,11 @@ class TestFilterCandidates:
         assert len(eligible) == 2
         assert len(excluded) == 0
 
-    def test_missing_min_copy_rejected(self):
+    def test_missing_min_copy_accepted(self):
         from backend.ai.eligibility_engine import filter_candidates
         candidates = [{"username": "no_min_field", "source": "tradeinfo", "confidence": 1.0, "available": True, "copiers": 100, "positions_count": 10, "risk_score": 4.0, "total_return_pct": 15.0}]
         eligible, excluded = filter_candidates(candidates, set(), 150)
-        assert len(eligible) == 0
-        reasons = ",".join(excluded[0].get("exclusion_reasons", []))
-        assert "missing_min_copy" in reasons
+        assert len(eligible) == 1
 
     def test_risk_too_high_excluded(self):
         from backend.ai.eligibility_engine import filter_candidates

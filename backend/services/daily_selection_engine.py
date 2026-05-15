@@ -314,10 +314,10 @@ def _passes_ytd_return(trader: Dict) -> Tuple[bool, str]:
 
 
 def _passes_risk(trader: Dict) -> Tuple[bool, str]:
-    """Check acceptable risk level."""
+    """Check acceptable risk level. Unknown risk (None) is accepted."""
     risk = trader.get("risk_score")
     if risk is None:
-        return False, "risk_score_missing"
+        return True, ""
     risk = float(risk)
     if risk <= MAX_RISK_SCORE:
         return True, ""

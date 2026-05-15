@@ -25,11 +25,12 @@ def is_already_copied(username: str, holdings_usernames: set) -> bool:
 def passes_budget(min_copy_amount: float, available_balance: float) -> Tuple[bool, Optional[str]]:
     """Check if the trader's minimum copy amount is within budget.
 
-    Strict: does NOT default to $200. If min_copy_amount is unknown
-    (None/0/missing), the trader is rejected with missing_min_copy.
+    Unknown min_copy_amount (None) is accepted — the allocation engine
+    can use a default or skip if needed. Only reject when the amount
+    is known and exceeds available balance.
     """
     if not min_copy_amount:
-        return False, "missing_min_copy"
+        return True, None
     if min_copy_amount > available_balance:
         return False, f"insufficient_capital (min=${min_copy_amount:.0f}, available=${available_balance:.0f})"
     return True, None
@@ -134,10 +135,14 @@ def has_reliable_data(trader: Dict) -> Tuple[bool, Optional[str]]:
 
 
 def passes_risk(trader: Dict, max_risk: float = 9.0) -> Tuple[bool, Optional[str]]:
-    """Check risk score is within acceptable range."""
+    """Check risk score is within acceptable range.
+
+    Unknown risk (None) is accepted — the scoring engine's confidence
+    penalty will reduce the score for traders without risk data.
+    """
     risk = trader.get("risk_score")
     if risk is None:
-        return False, "missing_risk_score"
+        return True, None
     if float(risk) > max_risk:
         return False, f"risk_score {float(risk):.1f} exceeds {max_risk:.0f}"
     return True, None
@@ -169,14 +174,16 @@ def is_copy_available(trader: Dict) -> Tuple[bool, Optional[str]]:
 
 
 def is_real_trader(trader: Dict) -> Tuple[bool, Optional[str]]:
-    """Strict pre-filter: only accept traders with verified real eToro stats.
+    """Pre-filter: verify this is a genuine eToro account with some activity.
 
-    Auto-reject if:
-      - No tradeinfo response (available=False)
+    This is NOT a data quality check — missing risk_score or return data
+    is handled by has_reliable_data and the scoring engine's confidence
+    penalty. Here we only check basic account validity.
+
+    Rejects if:
+      - No API response (available=False)
       - Empty username
-      - Risk score is None or 0 (no data)
-      - total_return_pct is None (no performance data)
-      - Source is not authoritative tradeinfo (confidence 1.0)
+      - Source is not a real API endpoint
       - Copiers < 50 (only when API provides copiers data)
       - Open positions < 5 (only when API provides positions data)
 
@@ -187,19 +194,13 @@ def is_real_trader(trader: Dict) -> Tuple[bool, Optional[str]]:
     username = trader.get("username", "")
     copiers = trader.get("copiers")
     positions = trader.get("positions_count")
-    risk = trader.get("risk_score")
-    total_return = trader.get("total_return_pct")
     source = trader.get("source", "unknown")
 
     if not available:
         return False, "trader_not_found"
     if not username:
         return False, "missing_username"
-    if risk is None or float(risk) <= 0:
-        return False, "missing_risk_score"
-    if total_return is None:
-        return False, "missing_return_data"
-    if source != "tradeinfo":
+    if source not in ("tradeinfo", "portfolio_live", "gain", "daily_gain"):
         return False, f"unreliable_source ({source})"
     if copiers is not None and copiers < 50:
         return False, f"insufficient_copiers ({copiers})"

@@ -43,10 +43,11 @@ class TestEligibilityEngine:
         assert ok is False
         assert "insufficient_capital" in reason
 
-    def test_passes_budget_default_min_copy(self):
+    def test_passes_budget_unknown_min_copy(self):
         from backend.ai.eligibility_engine import passes_budget
         ok, reason = passes_budget(None, 150)
-        assert ok is False
+        assert ok is True
+        assert reason is None
 
     def test_has_reliable_data_tradeinfo_with_return_ok(self):
         from backend.ai.eligibility_engine import has_reliable_data
@@ -121,14 +122,14 @@ class TestEligibilityEngine:
         assert len(eligible) == 0
         assert any("no_positions" in " ".join(e.get("exclusion_reasons", [])) for e in excluded)
 
-    def test_rejects_missing_min_copy(self):
+    def test_accepts_missing_min_copy(self):
         from backend.ai.eligibility_engine import filter_candidates
         candidates = [
             {"username": "NoMin", "source": "tradeinfo", "confidence": 1.0, "available": True, "copiers": 100, "positions_count": 10, "risk_score": 4.0, "total_return_pct": 15.0, "min_copy_amount": None},
         ]
         eligible, excluded = filter_candidates(candidates, set(), available_balance=5000)
-        assert len(eligible) == 0
-        assert any("missing_min_copy" in " ".join(e.get("exclusion_reasons", [])) for e in excluded)
+        assert len(eligible) == 1
+        assert len(excluded) == 0
 
     def test_rejects_fallback_zero_return(self):
         from backend.ai.eligibility_engine import filter_candidates
@@ -238,29 +239,37 @@ class TestIsRealTrader:
         assert ok is False
         assert "insufficient_positions" in reason
 
-    def test_missing_risk_score_rejected(self):
+    def test_missing_risk_score_accepted_by_is_real_trader(self):
         from backend.ai.eligibility_engine import is_real_trader
         t = {"available": True, "username": "x", "copiers": 100, "positions_count": 10,
              "risk_score": 0, "total_return_pct": 15.0, "source": "tradeinfo"}
         ok, reason = is_real_trader(t)
-        assert ok is False
-        assert "missing_risk_score" in reason
+        assert ok is True
+        assert reason is None
 
-    def test_missing_return_rejected(self):
+    def test_missing_return_accepted_by_is_real_trader(self):
         from backend.ai.eligibility_engine import is_real_trader
         t = {"available": True, "username": "x", "copiers": 100, "positions_count": 10,
              "risk_score": 4, "total_return_pct": None, "source": "tradeinfo"}
         ok, reason = is_real_trader(t)
-        assert ok is False
-        assert "missing_return_data" in reason
+        assert ok is True
+        assert reason is None
 
     def test_unreliable_source_rejected(self):
         from backend.ai.eligibility_engine import is_real_trader
         t = {"available": True, "username": "x", "copiers": 100, "positions_count": 10,
-             "risk_score": 4, "total_return_pct": 15.0, "source": "portfolio_live"}
+             "risk_score": 4, "total_return_pct": 15.0, "source": "unknown"}
         ok, reason = is_real_trader(t)
         assert ok is False
         assert "unreliable_source" in reason
+
+    def test_portfolio_live_source_accepted(self):
+        from backend.ai.eligibility_engine import is_real_trader
+        t = {"available": True, "username": "x", "copiers": 100, "positions_count": 10,
+             "risk_score": 4, "total_return_pct": 15.0, "source": "portfolio_live"}
+        ok, reason = is_real_trader(t)
+        assert ok is True
+        assert reason is None
 
 
 # ── PortfolioEngine ────────────────────────────────────────────────
