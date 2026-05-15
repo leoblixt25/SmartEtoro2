@@ -18,14 +18,7 @@ Output sections:
 import logging
 from typing import Dict, List, Optional
 
-
-def safe_num(value, fmt=".1f", suffix="", missing="missing"):
-    if value is None:
-        return missing
-    try:
-        return f"{float(value):{fmt}}{suffix}"
-    except (ValueError, TypeError):
-        return missing
+from backend.utils.safe_log import safe_fmt
 
 logger = logging.getLogger(__name__)
 
@@ -227,7 +220,7 @@ def format_display(action_plan: Dict) -> str:
             icon = "\U0001f7e2" if score >= 60 else ("\U0001f7e1" if score >= 30 else "\U0001f534")
             lines.append(
                 f"  {icon} {t['username']} \u2014 {score}/100"
-                f" (alloc {t['allocation_pct']:.1f}%, risk {safe_num(t.get('risk_score'))})"
+                f" (alloc {t['allocation_pct']:.1f}%, risk {safe_fmt(t.get('risk_score'))})"
             )
     else:
         lines.append("  No active traders.")

@@ -16,15 +16,7 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-
-def safe_fmt(value, fmt=".1f", suffix="", missing="missing"):
-    """Format a numeric value safely — returns 'missing' if value is None."""
-    if value is None:
-        return missing
-    try:
-        return f"{float(value):{fmt}}{suffix}"
-    except (ValueError, TypeError):
-        return missing
+from backend.utils.safe_log import safe_fmt
 
 
 class EToroAPIClient:
