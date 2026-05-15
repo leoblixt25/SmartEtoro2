@@ -17,6 +17,16 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 
 
+def safe_fmt(value, fmt=".1f", suffix="", missing="missing"):
+    """Format a numeric value safely — returns 'missing' if value is None."""
+    if value is None:
+        return missing
+    try:
+        return f"{float(value):{fmt}}{suffix}"
+    except (ValueError, TypeError):
+        return missing
+
+
 class EToroAPIClient:
     """
     Client for the official eToro Public API.
@@ -412,7 +422,7 @@ class EToroAPIClient:
         timeout: float = 15.0,
         browser_headers: bool = False,
     ) -> Optional[Dict]:
-        """GET with 3-retry exponential backoff and full status/body logging.
+        """GET with 3-retry exponential backoff, jitter, and global rate limiting.
 
         Args:
             url: Target URL.
@@ -422,82 +432,95 @@ class EToroAPIClient:
                              Use this for public/unauthenticated endpoints.
 
         Returns parsed JSON on 200, None on non-retryable errors.
-        Retries 429 and 5xx with 2^attempt backoff (2s, 4s, 8s).
-        Logs every status code, response body snippet, and JSON errors.
+        Retries 429 and 5xx with jittered exponential backoff.
+        Stops retrying after 10 total rate limit hits (marks session degraded).
+        All outbound requests go through a semaphore (max 8 concurrent).
         """
         import asyncio
+        import random
+        if not hasattr(self, "_api_sem"):
+            self._api_sem = asyncio.Semaphore(8)
+            self._rate_limit_hits = 0
         for attempt in range(1, 4):
             try:
-                async with httpx.AsyncClient(timeout=timeout) as client:
-                    headers = self._get_browser_headers() if browser_headers else self._get_headers()
-                    response = await client.get(url, params=params, headers=headers)
-                    body_snippet = response.text[:500] if response.text else "(empty body)"
+                async with self._api_sem:
+                    async with httpx.AsyncClient(timeout=timeout) as client:
+                        headers = self._get_browser_headers() if browser_headers else self._get_headers()
+                        response = await client.get(url, params=params, headers=headers)
+                body_snippet = response.text[:500] if response.text else "(empty body)"
 
-                    if response.status_code == 200:
-                        try:
-                            data = response.json()
-                            logger.debug("GET %s → 200 OK (%d bytes, %d keys)",
-                                         url, len(response.text), len(data) if isinstance(data, dict) else 0)
-                            return data
-                        except (ValueError, json.JSONDecodeError) as e:
-                            logger.error("GET %s → 200 OK BUT INVALID JSON: %s | body=%s",
-                                          url, e, body_snippet)
-                            return None
-
-                    if response.status_code == 204:
-                        logger.info("GET %s → 204 No Content (user has no trade data for this period)", url)
+                if response.status_code == 200:
+                    try:
+                        data = response.json()
+                        logger.debug("GET %s → 200 OK (%d bytes, %d keys)",
+                                     url, len(response.text), len(data) if isinstance(data, dict) else 0)
+                        return data
+                    except (ValueError, json.JSONDecodeError) as e:
+                        logger.error("GET %s → 200 OK BUT INVALID JSON: %s | body=%s",
+                                      url, e, body_snippet)
                         return None
 
-                    if response.status_code == 401:
-                        logger.error("GET %s → 401 Unauthorized — check ETORO_API_KEY / ETORO_API_SECRET credentials", url)
-                        return None
-
-                    if response.status_code == 403:
-                        logger.error("GET %s → 403 Forbidden — API key lacks access to this endpoint", url)
-                        return None
-
-                    if response.status_code == 404:
-                        logger.info("GET %s → 404 Not Found (user or endpoint does not exist)", url)
-                        return None
-
-                    if response.status_code == 429:
-                        if attempt < 3:
-                            backoff = 2 ** attempt
-                            logger.warning("GET %s → 429 Rate Limited, retry %d/3 after %ds",
-                                           url, attempt, backoff)
-                            await asyncio.sleep(backoff)
-                            continue
-                        logger.error("GET %s → 429 Rate Limited, exhausted all 3 retries", url)
-                        return None
-
-                    if 500 <= response.status_code < 600:
-                        if attempt < 3:
-                            backoff = 2 ** attempt
-                            logger.warning("GET %s → %d Server Error, retry %d/3 after %ds | body=%s",
-                                           url, response.status_code, attempt, backoff, body_snippet)
-                            await asyncio.sleep(backoff)
-                            continue
-                        logger.error("GET %s → %d Server Error, exhausted all 3 retries | body=%s",
-                                      url, response.status_code, body_snippet)
-                        return None
-
-                    # Any other status (300, 400 without 401/403/404, etc.)
-                    logger.warning("GET %s → %d (unhandled status) | body=%s",
-                                   url, response.status_code, body_snippet)
+                if response.status_code == 204:
+                    logger.info("GET %s → 204 No Content (user has no trade data for this period)", url)
                     return None
+
+                if response.status_code == 401:
+                    logger.error("GET %s → 401 Unauthorized — check ETORO_API_KEY / ETORO_API_SECRET credentials", url)
+                    return None
+
+                if response.status_code == 403:
+                    logger.error("GET %s → 403 Forbidden — API key lacks access to this endpoint", url)
+                    return None
+
+                if response.status_code == 404:
+                    logger.info("GET %s → 404 Not Found (user or endpoint does not exist)", url)
+                    return None
+
+                if response.status_code == 429:
+                    self._rate_limit_hits += 1
+                    if self._rate_limit_hits >= 10:
+                        logger.error("GET %s → 10+ rate limits hit — stopping retries, marking degraded", url)
+                        return None
+                    if attempt < 3:
+                        backoff = (2 ** attempt) + random.uniform(0, 1)
+                        logger.warning("GET %s → 429 Rate Limited, retry %d/3 after %.1fs (hit #%d)",
+                                       url, attempt, backoff, self._rate_limit_hits)
+                        await asyncio.sleep(backoff)
+                        continue
+                    logger.error("GET %s → 429 Rate Limited, exhausted all 3 retries (%d total hits)",
+                                  url, self._rate_limit_hits)
+                    return None
+
+                if 500 <= response.status_code < 600:
+                    if attempt < 3:
+                        backoff = 2 ** attempt
+                        logger.warning("GET %s → %d Server Error, retry %d/3 after %ds | body=%s",
+                                       url, response.status_code, attempt, backoff, body_snippet)
+                        await asyncio.sleep(backoff)
+                        continue
+                    logger.error("GET %s → %d Server Error, exhausted all 3 retries | body=%s",
+                                  url, response.status_code, body_snippet)
+                    return None
+
+                # Any other status (300, 400 without 401/403/404, etc.)
+                logger.warning("GET %s → %d (unhandled status) | body=%s",
+                               url, response.status_code, body_snippet)
+                return None
 
             except httpx.TimeoutException:
                 if attempt < 3:
-                    logger.warning("GET %s → Timeout (attempt %d/3), retrying after %ds",
-                                   url, attempt, 2 ** attempt)
-                    await asyncio.sleep(2 ** attempt)
+                    backoff = (2 ** attempt) + random.uniform(0, 1)
+                    logger.warning("GET %s → Timeout (attempt %d/3), retrying after %.1fs",
+                                   url, attempt, backoff)
+                    await asyncio.sleep(backoff)
                     continue
                 logger.error("GET %s → Timeout after 3 retries", url)
                 return None
             except httpx.RequestError as e:
                 if attempt < 3:
-                    logger.warning("GET %s → RequestError (attempt %d/3): %s", url, attempt, e)
-                    await asyncio.sleep(2 ** attempt)
+                    backoff = (2 ** attempt) + random.uniform(0, 1)
+                    logger.warning("GET %s → RequestError (attempt %d/3, retry %.1fs): %s", url, attempt, backoff, e)
+                    await asyncio.sleep(backoff)
                     continue
                 logger.error("GET %s → RequestError after 3 retries: %s", url, e)
                 return None
@@ -590,13 +613,16 @@ class EToroAPIClient:
                 "missing_fields": missing_fields,
             })
             logger.info(
-                "Tradeinfo for %s: return=%.1f%% risk=%.1f copiers=%s positions=%s",
-                username, result["total_return_pct"], result["risk_score"],
-                result["copiers"], result["positions_count"],
+                "Tradeinfo for %s: return=%s risk=%s copiers=%s positions=%s",
+                username,
+                safe_fmt(result["total_return_pct"], suffix="%"),
+                safe_fmt(result["risk_score"]),
+                result["copiers"] if result["copiers"] is not None else "missing",
+                result["positions_count"] if result["positions_count"] is not None else "missing",
             )
             return result
 
-        logger.info(f"Tradeinfo unavailable for {username}, trying fallback endpoints")
+        logger.info("Tradeinfo unavailable for %s, trying fallback endpoints", username)
 
         # Step 2: Fallback A — portfolio/live
         live = await self._api_get_with_retry(
@@ -626,8 +652,10 @@ class EToroAPIClient:
                 "missing_fields": missing_fields,
             })
             logger.info(
-                "Fallback portfolio/live for %s: return=%.1f%% risk=%.1f",
-                username, result["total_return_pct"], result["risk_score"],
+                "Fallback portfolio/live for %s: return=%s risk=%s",
+                username,
+                safe_fmt(result["total_return_pct"], suffix="%"),
+                safe_fmt(result["risk_score"]),
             )
             return result
 
@@ -666,8 +694,9 @@ class EToroAPIClient:
                 "missing_fields": missing_fields,
             })
             logger.info(
-                "Fallback daily-gain for %s: return=%.1f%%",
-                username, result["total_return_pct"],
+                "Fallback daily-gain for %s: return=%s",
+                username,
+                safe_fmt(result["total_return_pct"], suffix="%"),
             )
             return result
 
@@ -818,13 +847,13 @@ class EToroAPIClient:
         return username in KNOWN_FAKE
 
     async def enrich_candidates(
-        self, usernames: List[str], max_concurrent: int = 50,
+        self, usernames: List[str], max_concurrent: int = 10,
     ) -> Dict:
         """Enrich a list of usernames via tradeinfo API with concurrency limit.
 
         Args:
             usernames: List of eToro usernames to enrich.
-            max_concurrent: Maximum concurrent API calls (default 50).
+            max_concurrent: Maximum concurrent API calls (default 10).
 
         Returns:
             Same dict format as discover_candidates().
@@ -1051,23 +1080,25 @@ class EToroAPIClient:
         total_traders_from_api = 0
         api_errors = 0
         rate_limits = 0
+        discovery_sem = asyncio.Semaphore(5)
 
         async def _fetch(url: str, desc: str) -> tuple:
-            nonlocal pages_fetched, pages_with_data, api_errors, rate_limits
-            use_browser = url.startswith("https://www.etoro.com") or url.startswith("https://api.etoro.com")
-            try:
-                data = await self._api_get_with_retry(url, timeout=10.0, browser_headers=use_browser)
-                pages_fetched += 1
-                if data is None:
+            async with discovery_sem:
+                nonlocal pages_fetched, pages_with_data, api_errors, rate_limits
+                use_browser = url.startswith("https://www.etoro.com") or url.startswith("https://api.etoro.com")
+                try:
+                    data = await self._api_get_with_retry(url, timeout=10.0, browser_headers=use_browser)
+                    pages_fetched += 1
+                    if data is None:
+                        return None, desc
+                    raw = self._extract_discovery_traders(data)
+                    if isinstance(raw, list) and raw:
+                        pages_with_data += 1
+                        return raw, desc
                     return None, desc
-                raw = self._extract_discovery_traders(data)
-                if isinstance(raw, list) and raw:
-                    pages_with_data += 1
-                    return raw, desc
-                return None, desc
-            except Exception:
-                api_errors += 1
-                return None, desc
+                except Exception:
+                    api_errors += 1
+                    return None, desc
 
         tasks = [_fetch(url, desc) for url, desc in endpoints]
         results = await asyncio.gather(*tasks, return_exceptions=True)

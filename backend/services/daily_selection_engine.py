@@ -236,7 +236,7 @@ async def _enrich_all(
     """
     import asyncio
 
-    sem = asyncio.Semaphore(30)
+    sem = asyncio.Semaphore(5)
     enriched: List[Dict] = []
 
     async def _fetch(trader: Dict) -> Optional[Dict]:

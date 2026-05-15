@@ -181,15 +181,17 @@ Growth Score (0–100) formula:
 | 6M Return | 15% | `min(100, r6 × 1.5)` — total_return_pct proxy, 67% = cap |
 | Risk (inverted) | 20% | `min(100, (10 - risk) × 12.5)` |
 | Max Drawdown (inverted) | 20% | `min(100, 100 - dd × 4)` |
-| Consistency | 20% | from consistency_score, sharpe, or volatility; defaults 50 |
+| Consistency | 20% | from consistency_score, sharpe, or volatility; defaults 0 — no free points for missing data |
+| Verified Copiers | bonus | `min(25, log10(copiers) × 12.5)` — added after base score |
+| Verified Positions | bonus | +10 if positions_count >= 5 — added after base score |
 
-Confidence: 40% returns + 60% stability/risk. Lower multipliers keep differentiation across 20–130% return range.
+Confidence: 40% returns + 60% stability/risk. Missing risk, dd, consistency now default to 0 instead of 50, removing the flat baseline that collapsed differentiation. Copier/position bonuses reward traders with verified popularity and activity.
 
 Penalties:
 - Risk > 7 → -30 pts
 - Max Drawdown > 25% → -20 pts
 - 12M return < 10% AND has return data → score = 0 (growth filter)
-- Missing fields → confidence_mod multiplier 0.3–1.0 (was 0.5–1.0)
+- Missing fields → confidence_mod multiplier 0.3–1.0
 
 Delta scoring: candidates are ranked by `score - weakest_holding_score` to show swap value.
 

@@ -28,6 +28,16 @@ from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+
+def safe_fmt(value, fmt=".1f", suffix="", missing="missing"):
+    """Format a numeric value safely — returns 'missing' if value is None."""
+    if value is None:
+        return missing
+    try:
+        return f"{float(value):{fmt}}{suffix}"
+    except (ValueError, TypeError):
+        return missing
+
 # ── Weights ────────────────────────────────────────────────────────
 # Balanced: returns do not dominate; stability, risk, and consistency
 # each have meaningful influence.
@@ -183,6 +193,7 @@ def _get_drawdown(trader: dict) -> Optional[float]:
 
 
 def _get_consistency(trader: dict) -> float:
+    """Score consistency 0-100. Returns 0 if no data — no free points for missing metrics."""
     v = trader.get("consistency_score")
     if v is not None and float(v) > 0:
         return min(100.0, max(0.0, float(v)))
@@ -193,7 +204,7 @@ def _get_consistency(trader: dict) -> float:
     if vol is not None and float(vol) > 0:
         v = float(vol)
         return min(100.0, max(0.0, 100.0 - (v - 10.0) * 2.5))
-    return 50.0
+    return 0.0
 
 
 def _build_explanation(trader: dict, score: float, confidence: float, source: str, penalties: list) -> list:
@@ -362,8 +373,8 @@ def calculate_growth_score(trader: dict) -> dict:
     # return range (20-130%) instead of capping everything at 20%.
     r12_norm = min(100.0, max(0.0, r12 * 0.8)) if r12 is not None else 0.0
     r6_norm = min(100.0, max(0.0, r6 * 1.5)) if r6 is not None else 0.0
-    risk_norm = min(100.0, max(0.0, (10.0 - risk) * 12.5)) if risk is not None else 50.0
-    dd_norm = min(100.0, max(0.0, 100.0 - dd * 4)) if dd is not None else 50.0
+    risk_norm = min(100.0, max(0.0, (10.0 - risk) * 12.5)) if risk is not None else 0.0
+    dd_norm = min(100.0, max(0.0, 100.0 - dd * 4)) if dd is not None else 0.0
     cons_norm = min(100.0, max(0.0, consistency))
 
     base_score = (
@@ -381,6 +392,20 @@ def calculate_growth_score(trader: dict) -> dict:
     if dd is not None and dd > 25:
         score -= PENALTY_DRAWDOWN_HIGH
         penalties.append(f"dd={dd:.1f}% > 25%: -{PENALTY_DRAWDOWN_HIGH}pts")
+
+    # ── Verified data bonuses: traders with real copiers, positions get extra points ──
+    import math
+    raw_copiers_val = trader.get("copiers")
+    if raw_copiers_val is not None and raw_copiers_val > 0:
+        copier_bonus = min(25.0, max(0.0, math.log10(raw_copiers_val) * 12.5))
+        score += copier_bonus
+        penalties.append(f"copiers={raw_copiers_val}: +{copier_bonus:.0f}pts")
+
+    raw_positions_val = trader.get("positions_count")
+    if raw_positions_val is not None and raw_positions_val >= 5:
+        maturity_bonus = 10.0
+        score += maturity_bonus
+        penalties.append(f"positions={raw_positions_val}: +{maturity_bonus:.0f}pts")
 
     score = max(0.0, round(score, 1))
     final_score = round(score * confidence_mod, 1)
@@ -414,37 +439,17 @@ def calculate_growth_score(trader: dict) -> dict:
         "missing_fields": missing,
     }
 
-    # ── Per-trader debug logging (STEP 4 requirement) ──
+    # ── Per-trader debug logging ──
     logger.info(
-        f"""
-    ===== TRADER DEBUG =====
-    Username: {username}
-
-    RAW API:
-    risk={raw_risk}
-    copiers={raw_copiers}
-    return={raw_return}
-    drawdown={raw_dd}
-    min_copy={raw_min_copy}
-
-    NORMALIZED:
-    risk={risk}
-    copiers={raw_copiers}
-    return_12m={r12}
-    consistency={consistency}
-
-    MISSING:
-    {missing}
-
-    SCORE BREAKDOWN:
-    return_12m_score={round(r12_norm, 1) if r12_norm else 0}
-    risk_score={round(risk_norm, 1) if risk_norm else 0}
-    consistency_score={round(cons_norm, 1) if cons_norm else 0}
-    confidence_modifier={confidence_mod}
-    base_score={round(score, 1)}
-    final_score={final_score}
-    ========================
-    """
+        "Trader %s: raw(risk=%s copiers=%s ret=%s dd=%s) "
+        "norm(risk=%s copiers=%s r12=%s cons=%s) "
+        "missing=[%s] "
+        "scores(r12=%.1f risk=%.1f cons=%.1f mod=%.2f base=%.1f final=%.1f)",
+        username,
+        safe_fmt(raw_risk), raw_copiers, safe_fmt(raw_return, suffix="%"), safe_fmt(raw_dd, suffix="%"),
+        safe_fmt(risk), raw_copiers, safe_fmt(r12, suffix="%"), round(consistency, 1),
+        ", ".join(str(m) for m in missing) if missing else "none",
+        r12_norm, risk_norm, cons_norm, confidence_mod, score, final_score,
     )
     return result
 

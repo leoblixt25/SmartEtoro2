@@ -459,9 +459,11 @@ class TestScoringEnginePipeline:
         from backend.ai.scoring_engine import generate_scout_report
         holdings = [
             {"username": "a", "source": "tradeinfo", "confidence": 1.0,
-             "return_12m": 80.0, "risk_score": 3.0},
+             "return_12m": 80.0, "risk_score": 3.0,
+             "max_drawdown": 5.0, "volatility": 10.0},
             {"username": "b", "source": "tradeinfo", "confidence": 1.0,
-             "return_12m": 80.0, "risk_score": 4.0},
+             "return_12m": 80.0, "risk_score": 4.0,
+             "max_drawdown": 5.0, "volatility": 10.0},
         ]
         report = generate_scout_report(holdings, [])
         assert report["action_required"] is False

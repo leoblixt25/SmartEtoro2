@@ -307,7 +307,7 @@ class TestTraderHealthEngine:
         }
         trader["_holdings_source"] = "api_mirror"
         result = analyze_trader_health(trader, [], {})
-        assert result["signal"] in ("watch", "hold")
+        assert result["signal"] == "reduce"
         assert result["holdings_source"] == "api_mirror"
 
     def test_analyze_trader_missing_holdings(self):
