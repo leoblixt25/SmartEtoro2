@@ -21,6 +21,7 @@ def _insight(t) -> str:
     weeks = t.get("weeks_since_registration")
 
     is_high_ret = ret is not None and ret > 100
+    is_mod_ret = ret is not None and 50 < ret <= 100
     is_low_ret = ret is not None and ret <= 50
     is_low_risk = risk is not None and risk <= 3
     is_mod_risk = risk is not None and 4 <= risk <= 5
