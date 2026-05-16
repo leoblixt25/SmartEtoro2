@@ -1,21 +1,26 @@
 """Pure scoring functions — no I/O, no side effects.
 
-Professional-grade scoring system:
-  - Return (35pt):      linear up to 150%, diminished returns beyond
-  - Risk (30pt):        step function. Risk 1-2→30, 3-4→25, 5-6→15, 7→5, 8+→0
-  - Positions (15pt):   linear up to 50 positions
-  - Drawdown (10pt):    optional bonus. peakToValley <10%→10pt, <15%→7pt, <20%→3pt
-  - Consistency (5pt):  optional bonus. profitableMonthsPct >70%→5pt, >50%→3pt
-  - Experience (5pt):   optional bonus. weeks >156→5pt, >52→3pt
+Professional-grade scoring system (mandatory components):
+  - Return (30pt):      linear up to 150%, diminished returns beyond
+  - Risk (25pt):        step function. Risk 1-2→25, 3-4→20, 5-6→12, 7→4, 8+→0
+  - Drawdown (20pt):    mandatory. <10%→20pt, <15%→15pt, <20%→8pt, <25%→3pt, >=25%→0pt
+  - Positions (10pt):   linear up to 50 positions
+  - Consistency (10pt): profitableMonthsPct >80%→10pt, >65%→7pt, >50%→3pt
+  - Experience (5pt):   weeks >156→5pt, >52→3pt
 
-No confidence modifier, no data quality gate, no penalty trees.
-Missing optional fields simply get 0 for that component.
-Total capped at 100. Score 80+ = strong and copy-worthy.
+All components are mandatory — missing data = 0 for that component.
+Total capped at 100. Score 80+ = elite, 70+ = strong and copy-worthy,
+60+ = decent, below 60 = questionable for professional allocation.
+
+Drawdown is now a mandatory 20pt component (not optional bonus) to ensure
+traders with excessive drawdown (>20%) are properly penalized.
+Risk threshold tightened: only risk 1-2 gets max 25.
 
 Scoring reflects professional copy-trading values:
-  - Risk > 7 is heavily penalized (no professional allocates to these)
+  - Risk > 6 is heavily penalized (no professional allocates to these)
   - Extreme returns (>150%) get no extra credit (likely unsustainable)
-  - Drawdown, consistency, and experience reward complete data
+  - Drawdown > 20% severely impacts score
+  - Consistency > 65% is the benchmark for reliability
   - Missing data naturally lowers score (no fake defaults)
 """
 
@@ -74,14 +79,14 @@ def _best_return_pct(profile: TraderProfile) -> Optional[float]:
 
 
 def _return_score(best_return: Optional[float]) -> float:
-    """Max 35 points, capped at 150% return (diminishing returns beyond)."""
+    """Max 30 points, capped at 150% return (diminishing returns beyond)."""
     if best_return is None:
         return 0.0
-    return round(min(best_return, 150.0) / 150.0 * 35.0, 1)
+    return round(min(best_return, 150.0) / 150.0 * 30.0, 1)
 
 
 def _risk_score_step(risk: Optional[float]) -> float:
-    """Max 30 points, step function. Risk 1-2→30, 3-4→25, 5-6→15, 7→5, 8+→0.
+    """Max 25 points, step function. Risk 1-2→25, 3-4→20, 5-6→12, 7→4, 8+→0.
 
     Professional analysts heavily penalize risk > 6.
     Risk 8+ is considered untouchable for copy trading.
@@ -89,48 +94,56 @@ def _risk_score_step(risk: Optional[float]) -> float:
     if risk is None or risk < 1 or risk > 10:
         return 0.0
     if risk <= 2:
-        return 30.0
-    if risk <= 4:
         return 25.0
+    if risk <= 4:
+        return 20.0
     if risk <= 6:
-        return 15.0
+        return 12.0
     if risk <= 7:
-        return 5.0
+        return 4.0
     return 0.0
 
 
 def _positions_score(positions: Optional[int]) -> float:
-    """Max 15 points, linear up to 50 positions."""
+    """Max 10 points, linear up to 50 positions."""
     if positions is None or positions <= 0:
         return 0.0
-    return round(min(float(positions), 50.0) / 50.0 * 15.0, 1)
+    return round(min(float(positions), 50.0) / 50.0 * 10.0, 1)
 
 
 def _drawdown_score(peak_to_valley: Optional[float]) -> float:
-    """Max 10 points. Lower drawdown = higher score.
+    """Mandatory — max 20 points. Fine-grained drawdown penalty.
 
     peakToValley is a negative percentage (e.g. -16.24 means -16.24%).
     We use the absolute value.
+    Drawdown > 25% gets 0 — unacceptable for professional allocation.
     """
     if peak_to_valley is None:
         return 0.0
     dd = abs(float(peak_to_valley))
     if dd < 10.0:
-        return 10.0
+        return 20.0
     if dd < 15.0:
-        return 7.0
+        return 15.0
     if dd < 20.0:
+        return 8.0
+    if dd < 25.0:
         return 3.0
     return 0.0
 
 
 def _consistency_score(profitable_months_pct: Optional[float]) -> float:
-    """Max 5 points. >70% profitable months → bonus."""
+    """Max 10 points. Stricter thresholds for reliability.
+
+    >80%: elite consistency, >65%: good, >50%: acceptable.
+    """
     if profitable_months_pct is None:
         return 0.0
     pct = float(profitable_months_pct)
-    if pct >= 70.0:
-        return 5.0
+    if pct >= 80.0:
+        return 10.0
+    if pct >= 65.0:
+        return 7.0
     if pct >= 50.0:
         return 3.0
     return 0.0
@@ -170,11 +183,12 @@ def _confidence_label(profile: TraderProfile) -> str:
 
 
 def calculate_score_from_profile(profile: TraderProfile) -> TraderProfile:
-    """Score a trader using base metrics + optional professional bonuses.
+    """Score a trader across all 6 mandatory components.
 
-    Base: return (35), risk (30), positions (15) = 80 max
-    Bonuses (optional): drawdown (10), consistency (5), experience (5) = 20 max
-    Total capped at 100. Missing data = 0 for that component.
+    All components are mandatory (missing = 0 for that component):
+      Return (30) + Risk (25) + Drawdown (20) + Positions (10)
+      + Consistency (10) + Experience (5) = 100 max
+    Total capped at 100. Score 80+ = elite, 70+ = strong, 60+ = decent.
     """
     username = profile.username
 
@@ -189,27 +203,27 @@ def calculate_score_from_profile(profile: TraderProfile) -> TraderProfile:
         profile.explanation = [f"rejected: {source_reason}"]
         return profile
 
-    # ── 1. Return score (max 35) ──
+    # ── 1. Return score (max 30) ──
     best_return = _best_return_pct(profile)
     ret_score = _return_score(best_return)
 
-    # ── 2. Risk score (max 30) ──
+    # ── 2. Risk score (max 25) ──
     risk = profile.raw_risk_score
     risk_score = _risk_score_step(risk)
 
-    # ── 3. Positions score (max 15) ──
-    positions = profile.raw_positions_count
-    pos_score = _positions_score(positions)
-
-    # ── 4. Drawdown bonus (max 10, optional) ──
+    # ── 3. Drawdown (max 20, mandatory) ──
     dd = profile.raw_peak_to_valley
     dd_score = _drawdown_score(dd)
 
-    # ── 5. Consistency bonus (max 5, optional) ──
+    # ── 4. Positions score (max 10) ──
+    positions = profile.raw_positions_count
+    pos_score = _positions_score(positions)
+
+    # ── 5. Consistency (max 10) ──
     prof_months = profile.raw_profitable_months_pct
     cons_score = _consistency_score(prof_months)
 
-    # ── 6. Experience bonus (max 5, optional) ──
+    # ── 6. Experience (max 5) ──
     weeks = profile.raw_weeks_since_registration
     exp_score = _experience_score(weeks)
 
@@ -225,8 +239,8 @@ def calculate_score_from_profile(profile: TraderProfile) -> TraderProfile:
         f"source={profile.source}",
         f"return={best_return:.1f}%" if best_return else "return=none",
         f"risk={risk:.1f}" if risk and risk > 0 else "risk=none",
-        f"positions={positions}" if positions and positions > 0 else "positions=none",
         f"drawdown={abs(dd):.1f}%" if dd else "drawdown=none",
+        f"positions={positions}" if positions and positions > 0 else "positions=none",
         f"consistency={prof_months:.0f}%" if prof_months else "consistency=none",
         f"experience={weeks}w" if weeks else "experience=none",
     ]

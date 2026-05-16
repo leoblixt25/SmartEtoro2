@@ -647,7 +647,7 @@ class TestScoreNoFakeDefaults:
         assert result.norm_drawdown == 0.0, "dd should not default to 50"
         assert result.norm_consistency == 0.0, "consistency should not default to 50"
         # With only return data, score = return_score (risk/positions = 0)
-        expected_return_score = min(50, 150) / 150.0 * 35.0
+        expected_return_score = min(50, 150) / 150.0 * 30.0
         assert result.score == pytest.approx(expected_return_score, abs=1.0)
 
     def test_no_fake_copiers_entered(self):

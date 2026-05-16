@@ -356,60 +356,84 @@ class TelegramBot:
                 ]
 
                 if eligible:
-                    medals = ["\U0001f947", "\U0001f948", "\U0001f949"]
-                    for i, t in enumerate(eligible[:3]):
-                        medal = medals[i] if i < 3 else f"{i+1}."
+                    medals = ["\U0001f947", "\U0001f948", "\U0001f949", "4.", "5.", "6.", "7.", "8.", "9.", "10."]
+                    for i, t in enumerate(eligible[:5]):
+                        medal = medals[i] if i < len(medals) else f"{i+1}."
                         username = t.get("username", "?")
                         score = t.get("final_score", t.get("score", 0))
                         ret = t.get("total_return_pct")
                         risk = t.get("risk_score")
                         dd = t.get("peak_to_valley") or t.get("max_drawdown")
+                        prof_months = t.get("profitable_months_pct")
+                        weeks = t.get("weeks_since_registration")
+                        positions = t.get("positions_count")
 
                         ret_str = f"+{ret:.1f}%" if ret is not None else "N/A"
                         risk_str = f"{int(risk)}/10" if risk is not None else "N/A"
                         dd_str = f"{abs(dd):.1f}%" if dd is not None else "N/A"
 
-                        present = sum(1 for f in [ret, risk, dd, t.get("positions_count"), t.get("profitable_months_pct"), t.get("weeks_since_registration")] if f is not None)
+                        present = sum(1 for f in [ret, risk, dd, positions, prof_months, weeks] if f is not None)
                         conf = "HIGH" if present >= 5 else "MEDIUM" if present >= 3 else "LOW"
 
+                        if risk is not None:
+                            if risk <= 3:
+                                style = "\U0001f7e2 Conservative"
+                            elif risk <= 5:
+                                style = "\U0001f7e1 Balanced"
+                            elif risk <= 7:
+                                style = "\U0001f7e0 Aggressive"
+                            else:
+                                style = "\U0001f534 High Risk"
+                        else:
+                            style = "\u26aa Unknown"
+
                         reasons = []
-                        if ret is not None and ret > 50:
+                        if ret is not None and ret > 80:
                             reasons.append(f"strong return ({ret_str})")
-                        if risk is not None and risk <= 4:
-                            reasons.append(f"controlled risk ({risk_str})")
-                        elif risk is not None and risk >= 7:
-                            reasons.append(f"elevated risk ({risk_str})")
-                        if dd is not None and abs(dd) < 12:
-                            reasons.append(f"low drawdown ({dd_str})")
-                        if t.get("profitable_months_pct") is not None and t["profitable_months_pct"] > 60:
-                            reasons.append("consistent monthly performance")
-                        if t.get("positions_count") is not None and t["positions_count"] >= 20:
-                            reasons.append("active portfolio management")
+                        elif ret is not None and ret > 30:
+                            reasons.append(f"solid return ({ret_str})")
+                        if risk is not None and risk <= 3:
+                            reasons.append("excellent risk control")
+                        elif risk is not None and risk <= 5:
+                            reasons.append("controlled risk")
+                        if dd is not None and abs(dd) < 10:
+                            reasons.append("low drawdown")
+                        elif dd is not None and abs(dd) < 15:
+                            reasons.append("healthy drawdown")
+                        if prof_months is not None and prof_months > 70:
+                            reasons.append("very consistent")
+                        elif prof_months is not None and prof_months > 50:
+                            reasons.append("mostly consistent")
+                        if positions is not None and positions >= 20:
+                            reasons.append("active mgmt")
+                        if weeks is not None and weeks >= 156:
+                            reasons.append("long track record")
+                        elif weeks is not None and weeks >= 52:
+                            reasons.append("proven over 1yr+")
                         if not reasons:
-                            reasons.append("moderate performance")
+                            reasons.append("moderate profile")
 
-                        lines.append(f"{medal} {username}")
-                        lines.append(f"\u2b50 Score: {score}/100")
-                        lines.append(f"\U0001f4c8 Return: {ret_str}")
-                        lines.append(f"\u26a0\ufe0f Risk: {risk_str}")
-                        lines.append(f"\U0001f4c9 Drawdown: {dd_str}")
-                        lines.append(f"\U0001f512 Confidence: {conf}")
-                        lines.append(f"\U0001f4a1 Why: {reasons[0].capitalize()}.")
-                        lines.append("")
+                        reason_text = ", ".join(reasons[:3]).capitalize() + "."
 
-                    if len(eligible) > 3:
-                        lines.append(f"+ {len(eligible) - 3} more traders available")
-                        lines.append("")
+                        lines.append(
+                            f'{medal} <b>{username}</b> | \u2b50 <b>{score:.0f}/100</b> '
+                            f'| {style} | \U0001f512 {conf}'
+                        )
+                        lines.append(
+                            f'\U0001f4c8 <b>{ret_str}</b> Return '
+                            f'| \u26a0\ufe0f <b>{risk_str}</b> Risk '
+                            f'| \U0001f4c9 <b>{dd_str}</b> DD'
+                        )
+                        lines.append(f'\U0001f4a1 {reason_text}')
+                        lines.append('\u2501' * 20)
 
                     top = eligible[0]
                     top_user = top.get("username", "?")
                     top_ret = top.get("total_return_pct")
                     top_risk = top.get("risk_score")
-                    lines.append("\U0001f3af BEST PICK:")
-                    lines.append(f"@{top_user}")
                     ret_desc = f"+{top_ret:.1f}%" if top_ret is not None else "moderate"
                     risk_desc = f"risk {int(top_risk)}" if top_risk is not None else "unknown"
-                    lines.append(f"Reason: Best balance between return, safety, and consistency ({ret_desc}, {risk_desc}).")
+                    lines.append(f"\U0001f3af BEST PICK: <b>{top_user}</b> ({ret_desc}, {risk_desc})")
 
                     high_risk = sum(1 for t in eligible if t.get("risk_score") is not None and t["risk_score"] >= 7)
                     no_dd = sum(1 for t in eligible if t.get("peak_to_valley") is None and t.get("max_drawdown") is None)
