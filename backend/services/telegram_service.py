@@ -347,11 +347,8 @@ class TelegramBot:
                 now = datetime.now().strftime("%b %d, %H:%M UTC")
 
                 lines = [
-                    "\U0001f3c6 TOP COPY TRADERS SCAN",
-                    "",
-                    f"\U0001f4c5 Scan Time: {now}",
-                    f"\U0001f4ca Traders Scanned: {scanned}",
-                    "\u2705 Real Data Only",
+                    "\U0001f3c6 <b>TOP COPY TRADERS SCAN</b>",
+                    f"\U0001f4c5 <b>{now}</b> | \U0001f4ca <b>{scanned} scanned</b> | \u2705 <b>Real data</b> | \U0001f3af <b>{eligible_count} passed</b>",
                     "",
                 ]
 
@@ -370,7 +367,8 @@ class TelegramBot:
 
                         ret_str = f"+{ret:.1f}%" if ret is not None else "N/A"
                         risk_str = f"{int(risk)}/10" if risk is not None else "N/A"
-                        dd_str = f"{abs(dd):.1f}%" if dd is not None else "N/A"
+                        dd_abs = abs(dd) if dd is not None else None
+                        dd_str = f"{dd_abs:.1f}%" if dd_abs is not None else "N/A"
 
                         present = sum(1 for f in [ret, risk, dd, positions, prof_months, weeks] if f is not None)
                         conf = "HIGH" if present >= 5 else "MEDIUM" if present >= 3 else "LOW"
@@ -387,36 +385,47 @@ class TelegramBot:
                         else:
                             style = "\u26aa Unknown"
 
-                        reasons = []
-                        if ret is not None and ret > 80:
-                            reasons.append(f"strong return ({ret_str})")
-                        elif ret is not None and ret > 30:
-                            reasons.append(f"solid return ({ret_str})")
-                        if risk is not None and risk <= 3:
-                            reasons.append("excellent risk control")
-                        elif risk is not None and risk <= 5:
-                            reasons.append("controlled risk")
-                        if dd is not None and abs(dd) < 10:
-                            reasons.append("low drawdown")
-                        elif dd is not None and abs(dd) < 15:
-                            reasons.append("healthy drawdown")
-                        if prof_months is not None and prof_months > 70:
-                            reasons.append("very consistent")
-                        elif prof_months is not None and prof_months > 50:
-                            reasons.append("mostly consistent")
-                        if positions is not None and positions >= 20:
-                            reasons.append("active mgmt")
-                        if weeks is not None and weeks >= 156:
-                            reasons.append("long track record")
-                        elif weeks is not None and weeks >= 52:
-                            reasons.append("proven over 1yr+")
-                        if not reasons:
-                            reasons.append("moderate profile")
+                        # ── Dynamic insight sentence ────────────────
+                        is_high_ret = ret is not None and ret > 100
+                        is_mod_ret = ret is not None and 50 < ret <= 100
+                        is_low_risk = risk is not None and risk <= 3
+                        is_mod_risk = risk is not None and 4 <= risk <= 5
+                        is_low_dd = dd_abs is not None and dd_abs < 10
+                        is_mod_dd = dd_abs is not None and 10 <= dd_abs < 18
+                        is_high_cons = prof_months is not None and prof_months > 70
+                        is_long_exp = weeks is not None and weeks >= 156
 
-                        reason_text = ", ".join(reasons[:3]).capitalize() + "."
+                        if is_high_ret and is_low_risk and is_low_dd:
+                            insight = "Elite risk-adjusted returns with excellent drawdown control."
+                        elif is_high_ret and is_mod_risk and is_low_dd:
+                            insight = "Excellent balance between strong returns and controlled risk."
+                        elif is_high_ret and is_mod_risk and is_mod_dd:
+                            insight = "Good return profile with manageable drawdown and risk."
+                        elif is_mod_ret and is_low_risk and is_low_dd:
+                            insight = "Very stable profile with unusually low drawdown."
+                        elif is_mod_ret and is_mod_risk and is_low_dd:
+                            insight = "Solid and consistent with strong capital preservation."
+                        elif is_low_risk and is_low_dd and is_high_cons:
+                            insight = "Remarkable consistency paired with disciplined risk management."
+                        elif is_high_ret and (not is_low_risk) and (not is_low_dd):
+                            insight = "Higher return profile with slightly elevated risk."
+                        elif is_mod_ret and is_mod_risk and is_mod_dd:
+                            insight = "Consistent long-term growth and disciplined risk."
+                        elif is_high_ret and (risk is not None and risk > 5):
+                            insight = "Strong performance but more aggressive profile."
+                        elif is_long_exp and is_low_dd:
+                            insight = "Proven long-term track record with excellent stability."
+                        elif is_high_cons and is_mod_ret:
+                            insight = "Impressive month-to-month consistency with solid returns."
+                        elif is_long_exp and is_mod_ret:
+                            insight = "Reliable performer with years of steady returns."
+                        elif is_high_ret and is_high_cons:
+                            insight = "Attractive combination of high returns and consistency."
+                        else:
+                            insight = "Balanced profile across return, risk, and stability."
 
                         lines.append(
-                            f'{medal} <b>{username}</b> | \u2b50 <b>{score:.0f}/100</b> '
+                            f'{medal} <b>{username}</b> | \U0001f3c5 <b>Score: {score:.0f}/100</b> '
                             f'| {style} | \U0001f512 {conf}'
                         )
                         lines.append(
@@ -424,34 +433,39 @@ class TelegramBot:
                             f'| \u26a0\ufe0f <b>{risk_str}</b> Risk '
                             f'| \U0001f4c9 <b>{dd_str}</b> DD'
                         )
-                        lines.append(f'\U0001f4a1 {reason_text}')
+                        lines.append(f'\U0001f4a1 {insight}')
+                        lines.append("")
                         lines.append('\u2501' * 20)
 
+                    # ── BEST PICK ───────────────────────────────────
                     top = eligible[0]
                     top_user = top.get("username", "?")
                     top_ret = top.get("total_return_pct")
                     top_risk = top.get("risk_score")
-                    ret_desc = f"+{top_ret:.1f}%" if top_ret is not None else "moderate"
-                    risk_desc = f"risk {int(top_risk)}" if top_risk is not None else "unknown"
-                    lines.append(f"\U0001f3af BEST PICK: <b>{top_user}</b> ({ret_desc}, {risk_desc})")
+                    top_dd = top.get("peak_to_valley") or top.get("max_drawdown")
+                    ret_val = f"+{top_ret:.1f}%" if top_ret is not None else "N/A"
+                    risk_val = f"Risk {int(top_risk)}" if top_risk is not None else "N/A"
+                    dd_val = f"{abs(top_dd):.1f}% DD" if top_dd is not None else "N/A"
 
-                    high_risk = sum(1 for t in eligible if t.get("risk_score") is not None and t["risk_score"] >= 7)
-                    no_dd = sum(1 for t in eligible if t.get("peak_to_valley") is None and t.get("max_drawdown") is None)
-                    warnings = []
-                    if high_risk:
-                        warnings.append(f"\u274c {high_risk} traders with high risk")
-                    if no_dd > len(eligible) // 2:
-                        warnings.append(f"\u274c {no_dd} traders missing drawdown data")
-                    if warnings:
-                        lines.append("")
-                        lines.append("\u26a0\ufe0f NOTE:")
-                        for w in warnings:
-                            lines.append(w)
+                    # Generate best-pick diamond insight
+                    if top_ret is not None and top_ret > 100 and top_risk is not None and top_risk <= 4:
+                        diamond = "Best balance of return, risk control, and consistency."
+                    elif top_dd is not None and abs(top_dd) < 12:
+                        diamond = "Strongest capital preservation with solid upside."
+                    elif top_ret is not None and top_ret > 80:
+                        diamond = "Top return potential with acceptable risk levels."
+                    else:
+                        diamond = "Most well-rounded trader across all metrics."
+
+                    lines.append("")
+                    lines.append(f"\U0001f451 <b>BEST PICK: {top_user}</b>")
+                    lines.append(f"\U0001f48e {diamond}")
+                    lines.append(f"\U0001f4c8 <b>{ret_val}</b> | \u26a0\ufe0f <b>{risk_val}</b> | \U0001f4c9 <b>{dd_val}</b>")
+                    lines.append("")
+                    lines.append(f"\U0001f525 <b>Insight:</b> Only <b>{eligible_count}/{scanned}</b> traders passed strict filtering.")
+
                 else:
                     lines.append("No eligible traders found at this time.")
-
-                lines.append("")
-                lines.append(f"{scanned} scanned | {eligible_count} eligible")
 
                 text = "\n".join(lines)
                 if status_msg:
