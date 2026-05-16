@@ -120,7 +120,7 @@ class TelegramBot:
 
     async def _reply(self, update: Update, text: str, **kwargs) -> None:
         markup = self._keyboard()
-        await update.message.reply_text(text, reply_markup=markup, **kwargs)
+        await update.message.reply_text(text, reply_markup=markup, parse_mode=ParseMode.HTML, **kwargs)
 
     async def process_update(self, payload: dict) -> None:
         if not self.enabled or not self._bot:
@@ -333,7 +333,7 @@ class TelegramBot:
                         text = "No portfolio found."
                         if status_msg:
                             try:
-                                await status_msg.edit_text(text)
+                                await status_msg.edit_text(text, parse_mode="HTML")
                             except Exception:
                                 await self._reply(update, text)
                         else:
