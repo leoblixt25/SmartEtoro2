@@ -616,6 +616,25 @@ class EToroAPIClient:
             if win_raw is None:
                 missing_fields.append("winRatio")
 
+            # Check for AUC/AUM fields in tradeinfo response (signals capacity limits)
+            auc_value = None
+            for auc_field in (
+                "TotalAssetsUnderCopy", "totalAssetsUnderCopy",
+                "AUM", "aum", "AUC", "auc",
+                "assetsUnderCopy", "AssetsUnderCopy",
+                "totalPositionSize", "TotalPositionSize",
+            ):
+                v = tradeinfo.get(auc_field)
+                if v is not None:
+                    try:
+                        auc_value = float(v)
+                        # is_copyable = False when AUC is very high (heuristic: >1M)
+                        if auc_value > 1_000_000:
+                            is_copyable = False
+                        break
+                    except (ValueError, TypeError):
+                        continue
+
             result.update({
                 "avg_return": float(avg_raw) if avg_raw is not None else None,
                 "risk_score": float(risk_raw) if risk_raw is not None and risk_raw != 0 else None,
@@ -634,6 +653,7 @@ class EToroAPIClient:
                 "win_ratio": float(win_raw) if win_raw is not None else None,
                 "trades_count": int(trades_raw) if trades_raw is not None else None,
                 "weeks_since_registration": int(weeks_raw) if weeks_raw is not None else None,
+                "assets_under_copy": auc_value,
                 "missing_fields": missing_fields,
             })
             logger.info(
@@ -974,6 +994,7 @@ class EToroAPIClient:
                     "win_ratio": metrics.get("win_ratio"),
                     "trades_count": metrics.get("trades_count"),
                     "weeks_since_registration": metrics.get("weeks_since_registration"),
+                    "assets_under_copy": metrics.get("assets_under_copy"),
                 })
             else:
                 unavailable.append({"username": username, "reason": "all_endpoints_failed"})

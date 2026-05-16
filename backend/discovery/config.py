@@ -43,9 +43,9 @@ MIN_VERIFIED_FIELDS = 0
 MIN_FINAL_SCORE_FOR_RECOMMENDATION = 10.0
 
 # ── Discovery Scan Targets ──────────────────────────────────────────
-DISCOVERY_SCAN_TARGET = 250
-DISCOVERY_MIN = 100
-DISCOVERY_MAX = 250
+DISCOVERY_SCAN_TARGET = 500
+DISCOVERY_MIN = 200
+DISCOVERY_MAX = 500
 
 # ── Fetch Layer ──────────────────────────────────────────────────────
 API_SEMAPHORE_MAX = 8
