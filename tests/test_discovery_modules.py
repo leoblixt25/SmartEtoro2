@@ -326,8 +326,7 @@ class TestCalculateScoreFromProfile:
             "max_drawdown": "verified",
         }
         result = calculate_score_from_profile(p)
-        # Return = 11.3 * 0.25 = 2.8, dd = 95 * 0.15 = 14.25, risk = 74 * 0.10 = 7.4
-        # Total = 2.8 + 14.25 + 7.4 = 24.5
+        # return=14.1*0.333 + risk_adj=0*0.333 + dd=95*0.200 + risk=70*0.133 = 33.0
         assert result.score > 15
         assert result.growth_filter is False
 
@@ -652,10 +651,9 @@ class TestScoreNoFakeDefaults:
         assert result.norm_risk == 0.0, "risk should not default to 50"
         assert result.norm_drawdown == 0.0, "dd should not default to 50"
         assert result.norm_consistency == 0.0, "consistency should not default to 50"
-        # With only return data, score = return_component(50) * 0.25
-        # return_component(50) = 8 * sqrt(50) = 56.6
-        # score = 56.6 * 0.25 = 14.15
-        assert result.score == pytest.approx(14.2, abs=1.0)
+        # With weight redistribution, all weight goes to the only available component.
+        # return_component(50) = 10 * sqrt(50) = 70.7, score = 70.7 * 1.0 = 70.7
+        assert result.score == pytest.approx(70.7, abs=1.0)
 
     def test_no_fake_copiers_entered(self):
         from backend.discovery.validate import build_trader_profile

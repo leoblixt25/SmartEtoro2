@@ -1,22 +1,25 @@
 """Pure scoring functions — no I/O, no side effects.
 
-Weighted component scoring system (each component scores 0-100):
-  - Return (25%):        sqrt curve — rewards high returns with diminishing marginal benefit
-  - Risk-Adjusted (25%): return / max(drawdown, 5) — rewards efficient returns
-  - Consistency (20%):   profitableMonthsPct — rewards steady gains over luck
-  - Drawdown (15%):      linear penalty — severe for >20%
-  - Risk Score (10%):    linear penalty — risk 8+ gets 0
-  - Trend (5%):          volatility + experience + win ratio — rewards stable recent performance
+Weighted component scoring (each component 0-100):
+  - Return (25%):        sqrt curve — 10*sqrt(return), capped at 100
+  - Risk-Adjusted (25%): return / max(drawdown, 5), 25*sqrt(ratio), capped at 100
+  - Consistency (20%):   profitableMonthsPct linear from 30% floor
+  - Drawdown (15%):      linear penalty — 3.3pt per % above 5
+  - Risk Score (10%):    linear penalty — 15pt per risk point
+  - Trend (5%):          experience + stability + win rate
 
-Final = Return * 0.25 + RiskAdj * 0.25 + Consistency * 0.20 + Drawdown * 0.15 + Risk * 0.10 + Trend * 0.05
-All components mandatory — missing data = 0 for that component.
-Score targets: 80-90 excellent, 70-79 good, 55-69 average, <55 poor.
+When a component has no data, its weight is redistributed proportionally
+to components that DO have data. This prevents data sparsity from
+capping the total score.
+
+Target score bands (with full data):
+  80-90 excellent, 70-79 strong, 55-69 average, <55 weak
 """
 
 from __future__ import annotations
 import math
 import logging
-from typing import Optional
+from typing import Optional, List
 from backend.discovery.types import TraderProfile
 from backend.discovery.validate import validate_data_source, check_constraints
 from backend.discovery.validate import build_trader_profile
@@ -24,7 +27,51 @@ from backend.discovery.validate import build_trader_profile
 logger = logging.getLogger(__name__)
 
 
-# ── Backward-compat helpers (kept for scoring_engine imports) ─────
+# ── Base weights (sum = 1.0) ──────────────────────────────────────
+
+BASE_WEIGHTS = {
+    "return": 0.25,
+    "risk_adjusted": 0.25,
+    "consistency": 0.20,
+    "drawdown": 0.15,
+    "risk": 0.10,
+    "trend": 0.05,
+}
+
+
+def _available_weights(profile: TraderProfile) -> dict:
+    """Return effective weights, redistributing missing-component weight.
+
+    'Missing' means the underlying raw field is None.
+    Distribution is proportional to the base weight of present components.
+    """
+    present: List[str] = []
+
+    def _has(key: str) -> bool:
+        return getattr(profile, f"raw_{key}", None) is not None
+
+    # map component → field(s) to check
+    checks = {
+        "return": lambda: _has("return_12m") or _has("total_return_pct") or _has("avg_monthly_return"),
+        "risk_adjusted": lambda: (_has("return_12m") or _has("total_return_pct")) and _has("peak_to_valley"),
+        "consistency": lambda: _has("profitable_months_pct"),
+        "drawdown": lambda: _has("peak_to_valley"),
+        "risk": lambda: _has("risk_score"),
+        "trend": lambda: _has("weeks_since_registration") or _has("volatility") or _has("win_ratio"),
+    }
+
+    for comp, check in checks.items():
+        if check():
+            present.append(comp)
+
+    if not present:
+        return {k: v for k, v in BASE_WEIGHTS.items()}
+
+    total_base = sum(BASE_WEIGHTS[c] for c in present)
+    return {c: BASE_WEIGHTS[c] / total_base for c in present}
+
+
+# ── Backward-compat helpers ───────────────────────────────────────
 
 
 def _compute_confidence_score(profile: TraderProfile) -> float:
@@ -54,7 +101,7 @@ def _has_return_data(profile: TraderProfile) -> bool:
     ])
 
 
-# ── Helpers ──────────────────────────────────────────────────────
+# ── Helpers ───────────────────────────────────────────────────────
 
 
 def _best_return_pct(profile: TraderProfile) -> Optional[float]:
@@ -81,28 +128,21 @@ def _safe_drawdown(dd: Optional[float]) -> float:
 def _return_component(best_return: Optional[float]) -> float:
     """Return score 0-100. Nonlinear sqrt curve.
 
-    0%→0, 25%→40, 50%→57, 100%→80, 150%→93, 200%+→100.
-    Missing data = 0.
+    0%→0, 25%→50, 50%→71, 100%→100, 150%→100, 200%+→100.
     """
     if best_return is None or best_return <= 0:
         return 0.0
-    r = min(float(best_return), 250.0)
-    return round(min(100.0, 8.0 * math.sqrt(r)), 1)
+    return round(min(100.0, 10.0 * math.sqrt(float(best_return))), 1)
 
 
 def _risk_adjusted_component(
     best_return: Optional[float],
     drawdown: Optional[float],
 ) -> float:
-    """Risk-adjusted return score 0-100.
+    """Risk-adjusted return 0-100. return / max(dd, 5), sqrt curve.
 
-    Formula: return / max(drawdown, 5)
-    Rewards efficient returns: 120% return with 12% DD = 10.0 ratio
-    283% return with 16% DD = 17.7 ratio
-    107% return with 14% DD = 7.6 ratio
-
-    Ratio→Score (sqrt curve, 20*sqrt):
-      <2→0, 5→45, 8→57, 10→63, 15→77, 20→89, 30+→100
+    Ratio→Score:
+      2→35, 5→56, 8→71, 12→87, 16→100
     """
     if best_return is None or best_return <= 0:
         return 0.0
@@ -110,48 +150,45 @@ def _risk_adjusted_component(
     if dd < 5.0:
         dd = 5.0
     ratio = float(best_return) / dd
-    if ratio < 2.0:
+    if ratio < 1.5:
         return 0.0
-    return round(min(100.0, 20.0 * math.sqrt(min(ratio, 40.0))), 1)
+    return round(min(100.0, 25.0 * math.sqrt(min(ratio, 25.0))), 1)
 
 
 def _consistency_component(profitable_months_pct: Optional[float]) -> float:
-    """Consistency score 0-100. Linear from 40% threshold.
+    """Consistency score 0-100. Linear from 30% floor.
 
-    <40%→0, 50%→17, 60%→33, 70%→50, 80%→67, 90%→83, 100%→100
-    Missing data = 0.
+    <30%→0, 50%→29, 60%→43, 70%→57, 80%→71, 90%→86, 100%→100
     """
     if profitable_months_pct is None:
         return 0.0
     pct = float(profitable_months_pct)
-    if pct < 40.0:
+    if pct < 30.0:
         return 0.0
-    return round(min(100.0, (pct - 40.0) * 1.67), 1)
+    return round(min(100.0, (pct - 30.0) * 1.43), 1)
 
 
 def _drawdown_component(peak_to_valley: Optional[float]) -> float:
-    """Drawdown score 0-100. Linear penalty.
+    """Drawdown score 0-100. Linear: -3.3pt per % above 5.
 
-    <5%→95, 10%→80, 15%→60, 20%→40, 25%→20, 30%→0
-    Missing data = 0.
+    5%→95, 10%→83, 15%→67, 20%→50, 25%→34, 30%→17, 35%→0
     """
     dd = _safe_drawdown(peak_to_valley)
-    if dd >= 30.0:
+    if dd > 35.0:
         return 0.0
     if dd < 5.0:
         return 95.0
-    return round(max(0.0, 100.0 - 4.0 * (dd - 5.0)), 1)
+    return round(max(0.0, 100.0 - 3.3 * (dd - 5.0)), 1)
 
 
 def _risk_component(risk: Optional[float]) -> float:
-    """Risk score 0-100. Linear penalty.
+    """Risk score 0-100. Linear: -15pt per risk point.
 
-    1→98, 2→86, 3→74, 4→62, 5→50, 6→38, 7→26, 8→14, 9→2, 10→0
-    Missing data = 0.
+    1→100, 2→85, 3→70, 4→55, 5→40, 6→25, 7→10, 8+→0
     """
     if risk is None or risk < 1 or risk > 10:
         return 0.0
-    return round(max(0.0, 110.0 - float(risk) * 12.0), 1)
+    return round(max(0.0, 115.0 - float(risk) * 15.0), 1)
 
 
 def _trend_component(
@@ -160,15 +197,12 @@ def _trend_component(
     win_ratio: Optional[float],
     avg_monthly_return: Optional[float],
 ) -> float:
-    """Trend score 0-100. Best-effort from available data.
+    """Trend score 0-100. Experience + stability + win rate + momentum.
 
-    Components:
     - Experience (30pt): weeks >= 156→30, >= 52→18, >= 26→8
-    - Stability (35pt): low volatility rewards consistent recent performance
-      vol < 10→35, < 20→25, < 30→15, >= 30→5
-    - Win ratio (35pt): high win rate = good recent execution
-      > 70%→35, > 60%→25, > 50%→15, <= 50%→5
-    - Momentum bonus (up to +15): positive avg_monthly_return adds confidence
+    - Stability (35pt): vol < 10→35, < 20→25, < 30→15, >= 30→5
+    - Win ratio (35pt): > 70%→35, > 60%→25, > 50%→15, <= 50%→5
+    - Momentum bonus (+15): positive avg_monthly_return
     """
     score = 0.0
 
@@ -208,16 +242,6 @@ def _trend_component(
     return round(min(100.0, score), 1)
 
 
-# ── Weights (0-1) ────────────────────────────────────────────────
-
-RETURN_WEIGHT = 0.25
-RISK_ADJ_WEIGHT = 0.25
-CONSISTENCY_WEIGHT = 0.20
-DRAWDOWN_WEIGHT = 0.15
-RISK_WEIGHT = 0.10
-TREND_WEIGHT = 0.05
-
-
 def _confidence_label(profile: TraderProfile) -> str:
     """HIGH if all 5 core metrics present, MEDIUM if 3-4, LOW if <3."""
     core_metrics = [
@@ -241,9 +265,7 @@ def _confidence_label(profile: TraderProfile) -> str:
 def calculate_score_from_profile(profile: TraderProfile) -> TraderProfile:
     """Score a trader across 6 weighted components (each 0-100).
 
-    Return (25%) + RiskAdj (25%) + Consistency (20%)
-    + Drawdown (15%) + Risk (10%) + Trend (5%).
-    Total 0-100. Score 80+ = excellent, 70+ = good, 55+ = average.
+    Missing-data weights are redistributed proportionally.
     """
     username = profile.username
 
@@ -258,41 +280,47 @@ def calculate_score_from_profile(profile: TraderProfile) -> TraderProfile:
         profile.explanation = [f"rejected: {source_reason}"]
         return profile
 
-    # ── 1. Return component (0-100, weight 25%) ───────────────────
+    # ── 1. Return component (0-100) ───────────────────────────────
     best_return = _best_return_pct(profile)
     ret_score = _return_component(best_return)
 
-    # ── 2. Risk-adjusted return (0-100, weight 25%) ───────────────
+    # ── 2. Risk-adjusted return (0-100) ───────────────────────────
     dd = profile.raw_peak_to_valley
     ra_score = _risk_adjusted_component(best_return, dd)
 
-    # ── 3. Consistency (0-100, weight 20%) ────────────────────────
+    # ── 3. Consistency (0-100) ────────────────────────────────────
     prof_months = profile.raw_profitable_months_pct
     cons_score = _consistency_component(prof_months)
 
-    # ── 4. Drawdown control (0-100, weight 15%) ──────────────────
+    # ── 4. Drawdown control (0-100) ──────────────────────────────
     dd_score = _drawdown_component(dd)
 
-    # ── 5. Risk score (0-100, weight 10%) ─────────────────────────
+    # ── 5. Risk score (0-100) ─────────────────────────────────────
     risk = profile.raw_risk_score
     risk_score_val = _risk_component(risk)
 
-    # ── 6. Trend (0-100, weight 5%) ──────────────────────────────
+    # ── 6. Trend (0-100) ─────────────────────────────────────────
     weeks = profile.raw_weeks_since_registration
     vol = profile.raw_volatility
     win = profile.raw_win_ratio
     avg_monthly = profile.raw_avg_monthly_return
     trend_score = _trend_component(weeks, vol, win, avg_monthly)
 
-    # ── Weighted total ───────────────────────────────────────────
-    total_score = (
-        ret_score * RETURN_WEIGHT
-        + ra_score * RISK_ADJ_WEIGHT
-        + cons_score * CONSISTENCY_WEIGHT
-        + dd_score * DRAWDOWN_WEIGHT
-        + risk_score_val * RISK_WEIGHT
-        + trend_score * TREND_WEIGHT
-    )
+    # ── Weighted total with redistribution ───────────────────────
+    component_scores = {
+        "return": ret_score,
+        "risk_adjusted": ra_score,
+        "consistency": cons_score,
+        "drawdown": dd_score,
+        "risk": risk_score_val,
+        "trend": trend_score,
+    }
+
+    weights = _available_weights(profile)
+
+    total_score = 0.0
+    for comp, w in weights.items():
+        total_score += component_scores.get(comp, 0.0) * w
     total_score = min(100.0, total_score)
 
     profile.score = round(total_score, 1)
@@ -310,7 +338,6 @@ def calculate_score_from_profile(profile: TraderProfile) -> TraderProfile:
         f"experience={weeks}w" if weeks else "experience=none",
     ]
 
-    # Store sub-scores for explainability
     profile.norm_return_12m = ret_score
     profile.norm_return_6m = ra_score
     profile.norm_risk = risk_score_val
@@ -344,7 +371,6 @@ def calculate_growth_score(trader: dict) -> dict:
     profile = calculate_score_from_profile(profile)
     source_valid = validate_data_source(profile) is None
     best_return = _best_return_pct(profile)
-    dd = profile.raw_peak_to_valley
 
     return {
         "score": profile.score,
@@ -377,7 +403,7 @@ def calculate_growth_score(trader: dict) -> dict:
 
 
 def rank_candidates(holdings: list[dict], candidates: list[dict], top_n: int = 10) -> list[dict]:
-    """Backward-compatible wrapper. Scores discovery candidates and returns best swaps."""
+    """Backward-compatible wrapper. Scores discovery candidates."""
     from backend.discovery.validate import apply_constraints as apply_constraints_raw
 
     qualified = []
