@@ -470,7 +470,7 @@ class TelegramBot:
                 text = "\n".join(lines)
                 if status_msg:
                     try:
-                        await status_msg.edit_text(text)
+                        await status_msg.edit_text(text, parse_mode="HTML")
                     except Exception:
                         await self._reply(update, text)
                 else:

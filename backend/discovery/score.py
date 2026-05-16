@@ -1,20 +1,19 @@
 """Pure scoring functions — no I/O, no side effects.
 
 Professional-grade scoring system (mandatory components):
-  - Return (30pt):      linear up to 150%, diminished returns beyond
+  - Return (35pt):      linear up to 150%, diminished returns beyond
   - Risk (25pt):        step function. Risk 1-2→25, 3-4→20, 5-6→12, 7→4, 8+→0
   - Drawdown (20pt):    mandatory. <10%→20pt, <15%→15pt, <20%→8pt, <25%→3pt, >=25%→0pt
-  - Positions (10pt):   linear up to 50 positions
+  - Positions (5pt):    linear up to 50 positions
   - Consistency (10pt): profitableMonthsPct >80%→10pt, >65%→7pt, >50%→3pt
   - Experience (5pt):   weeks >156→5pt, >52→3pt
 
 All components are mandatory — missing data = 0 for that component.
-Total capped at 100. Score 80+ = elite, 70+ = strong and copy-worthy,
-60+ = decent, below 60 = questionable for professional allocation.
+Total capped at 100. Score 80+ = elite, 70+ = strong, 60+ = decent.
 
-Drawdown is now a mandatory 20pt component (not optional bonus) to ensure
-traders with excessive drawdown (>20%) are properly penalized.
-Risk threshold tightened: only risk 1-2 gets max 25.
+Drawdown is a mandatory 20pt component to ensure traders with excessive
+drawdown (>20%) are properly penalized. Positions is 5pt (many eToro
+tradeinfo responses omit this field) — missing it costs only 5pt max.
 
 Scoring reflects professional copy-trading values:
   - Risk > 6 is heavily penalized (no professional allocates to these)
@@ -79,10 +78,10 @@ def _best_return_pct(profile: TraderProfile) -> Optional[float]:
 
 
 def _return_score(best_return: Optional[float]) -> float:
-    """Max 30 points, capped at 150% return (diminishing returns beyond)."""
+    """Max 35 points, capped at 150% return (diminishing returns beyond)."""
     if best_return is None:
         return 0.0
-    return round(min(best_return, 150.0) / 150.0 * 30.0, 1)
+    return round(min(best_return, 150.0) / 150.0 * 35.0, 1)
 
 
 def _risk_score_step(risk: Optional[float]) -> float:
@@ -105,10 +104,13 @@ def _risk_score_step(risk: Optional[float]) -> float:
 
 
 def _positions_score(positions: Optional[int]) -> float:
-    """Max 10 points, linear up to 50 positions."""
+    """Max 5 points, linear up to 50 positions.
+
+    Kept small because eToro tradeinfo API often omits this field.
+    """
     if positions is None or positions <= 0:
         return 0.0
-    return round(min(float(positions), 50.0) / 50.0 * 10.0, 1)
+    return round(min(float(positions), 50.0) / 50.0 * 5.0, 1)
 
 
 def _drawdown_score(peak_to_valley: Optional[float]) -> float:
@@ -186,7 +188,7 @@ def calculate_score_from_profile(profile: TraderProfile) -> TraderProfile:
     """Score a trader across all 6 mandatory components.
 
     All components are mandatory (missing = 0 for that component):
-      Return (30) + Risk (25) + Drawdown (20) + Positions (10)
+      Return (35) + Risk (25) + Drawdown (20) + Positions (5)
       + Consistency (10) + Experience (5) = 100 max
     Total capped at 100. Score 80+ = elite, 70+ = strong, 60+ = decent.
     """
@@ -203,7 +205,7 @@ def calculate_score_from_profile(profile: TraderProfile) -> TraderProfile:
         profile.explanation = [f"rejected: {source_reason}"]
         return profile
 
-    # ── 1. Return score (max 30) ──
+    # ── 1. Return score (max 35) ──
     best_return = _best_return_pct(profile)
     ret_score = _return_score(best_return)
 
@@ -215,7 +217,7 @@ def calculate_score_from_profile(profile: TraderProfile) -> TraderProfile:
     dd = profile.raw_peak_to_valley
     dd_score = _drawdown_score(dd)
 
-    # ── 4. Positions score (max 10) ──
+    # ── 4. Positions score (max 5) ──
     positions = profile.raw_positions_count
     pos_score = _positions_score(positions)
 
