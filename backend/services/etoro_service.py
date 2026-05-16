@@ -900,7 +900,7 @@ class EToroAPIClient:
             max_concurrent: Maximum concurrent API calls (default 10).
 
         Returns:
-            Same dict format as discover_candidates().
+            Dict with available, unavailable, scanned, valid_count, rejected.
         """
         if not usernames:
             return {"available": [], "unavailable": [], "scanned": 0, "valid_count": 0, "rejected": 0}
@@ -1013,23 +1013,6 @@ class EToroAPIClient:
         )
         return result
 
-    def _extract_discovery_traders(self, data) -> List[Dict]:
-        """Extract list of trader objects from flexible API response formats."""
-        if isinstance(data, list):
-            return data
-        if isinstance(data, dict):
-            for key in ["data", "results", "items", "traders", "users",
-                         "feedItems", "discoverItems", "topTraders",
-                         "PopularCopyTraders", "UserRanking"]:
-                nested = data.get(key)
-                if isinstance(nested, list):
-                    return nested
-                if isinstance(nested, dict):
-                    result = self._extract_discovery_traders(nested)
-                    if result:
-                        return result
-        return []
-
     async def discover_via_search(self, target: int = 300) -> List[str]:
         """Discover traders via the working search/people API endpoint.
 
@@ -1093,119 +1076,6 @@ class EToroAPIClient:
         )
 
         return [u for u in unique if not self._is_fake_username(u)]
-
-    async def discover_candidates(self, usernames: Optional[List[str]] = None) -> Dict:
-        """Discover trader candidates with resilient multi-endpoint fallback.
-
-        Args:
-            usernames: Optional list of usernames to check. If None, uses
-                       CANDIDATE_TRADERS env var or FALLBACK_TRADERS constant.
-
-        Uses get_trader_metrics() which tries:
-          1. Primary: /api/v1/user-info/people/{username}/tradeinfo
-          2. Fallback: portfolio/live, gain, daily-gain
-
-        Returns dict with:
-          available   — candidates with metrics from any source
-          unavailable — list of {username, reason} for fully failed candidates
-          scanned     — total usernames checked
-          valid_count — length of available
-          rejected    — length of unavailable
-        """
-        from backend.utils.constants import CANDIDATE_TRADERS_ENV
-
-        if usernames is None:
-            raw = os.getenv(CANDIDATE_TRADERS_ENV, "")
-            usernames = [u.strip() for u in raw.split(",") if u.strip()] if raw else []
-
-        if not usernames:
-            logger.warning("No candidate traders configured — scout will have no discovery targets")
-            return {"available": [], "unavailable": [], "scanned": 0, "valid_count": 0, "rejected": 0}
-
-        logger.info(f"Discovering {len(usernames)} candidate traders")
-
-        available = []
-        unavailable = []
-
-        for username in usernames:
-            metrics = await self.get_trader_metrics(username)
-
-            if metrics["available"]:
-                is_copyable = metrics.get("is_copyable", True)
-                min_copy = metrics.get("min_copy_amount")
-
-                if metrics.get("total_return_pct") is None and metrics.get("confidence", 0.0) < 1.0:
-                    unavailable.append({
-                        "username": username,
-                        "reason": "no_return_data",
-                        "detail": (
-                            f"source={metrics['source']} returned None return "
-                            f"(confidence={metrics.get('confidence', 0.0)})"
-                        ),
-                    })
-                    logger.info(
-                        f"Rejected {username}: return=None from "
-                        f"{metrics['source']} (confidence={metrics.get('confidence', 0.0)})"
-                    )
-                    continue
-
-                if not is_copyable:
-                    unavailable.append({
-                        "username": username,
-                        "reason": "not_copyable",
-                        "detail": f"is_copyable={is_copyable}",
-                    })
-                    logger.info(f"Rejected {username}: copyable={is_copyable}")
-                    continue
-
-                available.append({
-                    "username": username,
-                    "risk_score": metrics.get("risk_score"),
-                    "total_return_pct": metrics.get("total_return_pct"),
-                    "max_drawdown": metrics.get("max_drawdown"),
-                    "volatility": metrics.get("volatility"),
-                    "avg_return": metrics.get("avg_return"),
-                    "avg_monthly_return": metrics.get("avg_return"),
-                    "copiers": metrics.get("copiers"),
-                    "positions_count": metrics.get("positions_count"),
-                    "is_copiable": is_copyable,
-                    "min_copy_amount": min_copy,
-                    "available": metrics.get("available", True),
-                    "confidence": metrics.get("confidence", 0.0),
-                    "source": metrics.get("source", "unknown"),
-                    "missing_fields": metrics.get("missing_fields", []),
-                })
-                ret_str = f"{metrics['total_return_pct']:.1f}%" if metrics.get("total_return_pct") is not None else "None"
-                risk_str = f"{metrics.get('risk_score')}" if metrics.get("risk_score") is not None else "None"
-                logger.info(
-                    f"Candidate {username}: riskScore={risk_str}, "
-                    f"return={ret_str}, source={metrics['source']}"
-                )
-            else:
-                unavailable.append({"username": username, "reason": "all_endpoints_failed"})
-
-        result = {
-            "available": available,
-            "unavailable": unavailable,
-            "scanned": len(usernames),
-            "valid_count": len(available),
-            "rejected": len(unavailable),
-        }
-
-        logger.info(
-            f"Discovery: {len(available)} valid / {len(unavailable)} rejected "
-            f"(total {len(usernames)} scanned)"
-        )
-        for u in unavailable:
-            logger.info(f"  Rejected: {u['username']} — {u['reason']}")
-
-        if not available:
-            logger.warning(
-                f"All {len(usernames)} candidate tradeinfo lookups failed — "
-                f"caller should use fallback"
-            )
-
-        return result
 
     def _get_mock_account_summary(self) -> Dict:
         import random
