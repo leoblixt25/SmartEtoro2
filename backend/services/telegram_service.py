@@ -445,7 +445,7 @@ class TelegramBot:
                             f'\U0001f4c8 <b>{ret_str}</b> \u2022 \u26a0\ufe0f Risk <b>{risk_str}</b> \u2022 \U0001f4c9 DD <b>{dd_str}</b>'
                         )
                         lines.append(
-                            f'\U0001f4ca R<>{ret_c:.0f} RA<>{ra_c:.0f} C<>{cons_c:.0f} DD<>{dd_c:.0f} Rk<>{risk_c:.0f}'
+                            f'\U0001f4ca R:{ret_c:.0f} RA:{ra_c:.0f} C:{cons_c:.0f} DD:{dd_c:.0f} Rk:{risk_c:.0f}'
                         )
                         lines.append(style)
                         lines.append(f'\U0001f4a1 {insight}')
