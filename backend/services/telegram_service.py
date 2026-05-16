@@ -364,15 +364,13 @@ class TelegramBot:
                         dd = t.get("peak_to_valley") or t.get("max_drawdown")
                         prof_months = t.get("profitable_months_pct")
                         weeks = t.get("weeks_since_registration")
-                        positions = t.get("positions_count")
 
                         ret_str = f"+{ret:.1f}%" if ret is not None else "N/A"
                         risk_str = f"{int(risk)}/10" if risk is not None else "N/A"
                         dd_abs = abs(dd) if dd is not None else None
                         dd_str = f"{dd_abs:.1f}%" if dd_abs is not None else "N/A"
 
-                        present = sum(1 for f in [ret, risk, dd, positions, prof_months, weeks] if f is not None)
-                        conf = "HIGH" if present >= 5 else "MEDIUM" if present >= 3 else "LOW"
+                        comp = t.get("details", {}).get("components", {})
 
                         if risk is not None:
                             if risk <= 3:
@@ -433,11 +431,20 @@ class TelegramBot:
                         else:
                             insight = "Balanced across key metrics."
 
+                        ret_c = comp.get("return", 0)
+                        ra_c = comp.get("risk_adjusted", 0)
+                        cons_c = comp.get("consistency", 0)
+                        dd_c = comp.get("drawdown", 0)
+                        risk_c = comp.get("risk", 0)
+
                         lines.append(
-                            f'{medal} <b>{username}</b> \u2b50 <b>{score:.0f}/100</b> \U0001f512 {conf}'
+                            f'{medal} <b>{username}</b> \u2b50 <b>{score:.0f}/100</b>'
                         )
                         lines.append(
                             f'\U0001f4c8 <b>{ret_str}</b> \u2022 \u26a0\ufe0f Risk <b>{risk_str}</b> \u2022 \U0001f4c9 DD <b>{dd_str}</b>'
+                        )
+                        lines.append(
+                            f'\U0001f4ca R<>{ret_c:.0f} RA<>{ra_c:.0f} C<>{cons_c:.0f} DD<>{dd_c:.0f} Rk<>{risk_c:.0f}'
                         )
                         lines.append(style)
                         lines.append(f'\U0001f4a1 {insight}')
@@ -449,15 +456,21 @@ class TelegramBot:
                     top_ret = top.get("total_return_pct")
                     top_risk = top.get("risk_score")
                     top_dd = top.get("peak_to_valley") or top.get("max_drawdown")
+                    top_comp = top.get("details", {}).get("components", {})
+                    top_cons = top_comp.get("consistency", 0)
+                    top_dd_val = top_comp.get("drawdown", 0)
+                    top_ra = top_comp.get("risk_adjusted", 0)
 
+                    best_reason = "Most well-rounded performer."
                     if top_ret is not None and top_ret > 100 and top_risk is not None and top_risk <= 4:
-                        best_reason = "Best mix of return, safety, and consistency."
-                    elif top_dd is not None and abs(top_dd) < 12:
-                        best_reason = "Strongest capital preservation."
-                    elif top_ret is not None and top_ret > 80:
+                        if top_cons >= 60 and top_dd_val >= 60:
+                            best_reason = "Best mix of return, safety, and consistency."
+                        elif top_ra >= 60:
+                            best_reason = "Top-tier risk-adjusted returns."
+                    if top_cons >= 70 and top_dd_val >= 70:
+                        best_reason = "Strongest capital preservation with consistency."
+                    elif top_ret is not None and top_ret > 80 and (top_risk is None or top_risk <= 5):
                         best_reason = "Top return with acceptable risk."
-                    else:
-                        best_reason = "Most well-rounded performer."
 
                     lines.append("")
                     lines.append(f"\U0001f3af <b>BEST PICK</b>")

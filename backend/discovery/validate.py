@@ -8,7 +8,12 @@ from __future__ import annotations
 import logging
 from typing import Dict, List, Optional
 from backend.discovery.types import TraderProfile
-from backend.discovery.config import MIN_CONFIDENCE_TO_SCORE, CONSTRAINT_MAX_DRAWDOWN, CONSTRAINT_MIN_TRACK_RECORD_DAYS
+from backend.discovery.config import (
+    MIN_CONFIDENCE_TO_SCORE,
+    CONSTRAINT_MAX_DRAWDOWN, CONSTRAINT_MAX_RISK,
+    CONSTRAINT_MIN_TRACK_RECORD_DAYS, CONSTRAINT_MIN_WEEKS,
+    CONSTRAINT_MIN_CONSISTENCY,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -198,15 +203,33 @@ def validate_data_source(profile: TraderProfile) -> Optional[str]:
 
 
 def check_constraints(profile: TraderProfile) -> Optional[str]:
-    """Hard-constraint checks on a single profile. Returns rejection reason or None."""
+    """Hard-constraint checks on a single profile. Returns rejection reason or None.
+
+    Quality filters (from professional copy-trading standards):
+    - Drawdown > 35%: unacceptable risk of ruin
+    - Risk score > 7: too aggressive for copy trading
+    - Track record < 90d or weeks < 13: too new, insufficient data
+    - Profitable months < 40%: inconsistent, unreliable
+    """
     reasons = []
 
-    if profile.raw_drawdown is not None and profile.raw_drawdown > CONSTRAINT_MAX_DRAWDOWN:
-        reasons.append(f"max_drawdown {profile.raw_drawdown:.1f}% > {CONSTRAINT_MAX_DRAWDOWN}%")
+    if profile.raw_drawdown is not None and abs(float(profile.raw_drawdown)) > CONSTRAINT_MAX_DRAWDOWN:
+        reasons.append(f"max_drawdown {abs(float(profile.raw_drawdown)):.1f}% > {CONSTRAINT_MAX_DRAWDOWN}%")
+
+    if profile.raw_risk_score is not None and profile.raw_risk_score > CONSTRAINT_MAX_RISK:
+        reasons.append(f"risk_score {profile.raw_risk_score:.0f} > {CONSTRAINT_MAX_RISK}")
 
     if profile.track_record_days is not None and profile.track_record_days > 0:
         if profile.track_record_days < CONSTRAINT_MIN_TRACK_RECORD_DAYS:
             reasons.append(f"track_record {profile.track_record_days}d < {CONSTRAINT_MIN_TRACK_RECORD_DAYS}d")
+
+    if profile.raw_weeks_since_registration is not None and profile.raw_weeks_since_registration > 0:
+        if profile.raw_weeks_since_registration < CONSTRAINT_MIN_WEEKS:
+            reasons.append(f"active only {profile.raw_weeks_since_registration}w < {CONSTRAINT_MIN_WEEKS}w")
+
+    if profile.raw_profitable_months_pct is not None:
+        if profile.raw_profitable_months_pct < CONSTRAINT_MIN_CONSISTENCY:
+            reasons.append(f"profitable_months {profile.raw_profitable_months_pct:.0f}% < {CONSTRAINT_MIN_CONSISTENCY}%")
 
     return "; ".join(reasons) if reasons else None
 
@@ -225,12 +248,21 @@ def apply_constraints(candidates: list[dict]) -> list[dict]:
     qualified = []
     for c in candidates:
         dd = c.get("max_drawdown")
+        risk = c.get("risk_score")
         tr_days = c.get("track_record_days")
+        weeks = c.get("weeks_since_registration")
+        prof_months = c.get("profitable_months_pct")
         reasons = []
         if dd is not None and float(dd) > CONSTRAINT_MAX_DRAWDOWN:
             reasons.append(f"max_drawdown {float(dd):.1f}% > {CONSTRAINT_MAX_DRAWDOWN}%")
+        if risk is not None and float(risk) > CONSTRAINT_MAX_RISK:
+            reasons.append(f"risk_score {float(risk):.0f} > {CONSTRAINT_MAX_RISK}")
         if tr_days is not None and int(tr_days) > 0 and int(tr_days) < CONSTRAINT_MIN_TRACK_RECORD_DAYS:
             reasons.append(f"track_record {int(tr_days)}d < {CONSTRAINT_MIN_TRACK_RECORD_DAYS}d")
+        if weeks is not None and int(weeks) > 0 and int(weeks) < CONSTRAINT_MIN_WEEKS:
+            reasons.append(f"active only {int(weeks)}w < {CONSTRAINT_MIN_WEEKS}w")
+        if prof_months is not None and float(prof_months) < CONSTRAINT_MIN_CONSISTENCY:
+            reasons.append(f"profitable_months {float(prof_months):.0f}% < {CONSTRAINT_MIN_CONSISTENCY}%")
         if reasons:
             logger.info("Disqualified %s: %s", c.get("username", "?"), "; ".join(reasons))
             continue

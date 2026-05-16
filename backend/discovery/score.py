@@ -1,29 +1,20 @@
 """Pure scoring functions — no I/O, no side effects.
 
-Professional-grade scoring system (mandatory components):
-  - Return (35pt):      linear up to 150%, diminished returns beyond
-  - Risk (25pt):        step function. Risk 1-2→25, 3-4→20, 5-6→12, 7→4, 8+→0
-  - Drawdown (20pt):    mandatory. <10%→20pt, <15%→15pt, <20%→8pt, <25%→3pt, >=25%→0pt
-  - Positions (5pt):    linear up to 50 positions
-  - Consistency (10pt): profitableMonthsPct >80%→10pt, >65%→7pt, >50%→3pt
-  - Experience (5pt):   weeks >156→5pt, >52→3pt
+Weighted component scoring system (each component scores 0-100):
+  - Return (25%):        sqrt curve — rewards high returns with diminishing marginal benefit
+  - Risk-Adjusted (25%): return / max(drawdown, 5) — rewards efficient returns
+  - Consistency (20%):   profitableMonthsPct — rewards steady gains over luck
+  - Drawdown (15%):      linear penalty — severe for >20%
+  - Risk Score (10%):    linear penalty — risk 8+ gets 0
+  - Trend (5%):          volatility + experience + win ratio — rewards stable recent performance
 
-All components are mandatory — missing data = 0 for that component.
-Total capped at 100. Score 80+ = elite, 70+ = strong, 60+ = decent.
-
-Drawdown is a mandatory 20pt component to ensure traders with excessive
-drawdown (>20%) are properly penalized. Positions is 5pt (many eToro
-tradeinfo responses omit this field) — missing it costs only 5pt max.
-
-Scoring reflects professional copy-trading values:
-  - Risk > 6 is heavily penalized (no professional allocates to these)
-  - Extreme returns (>150%) get no extra credit (likely unsustainable)
-  - Drawdown > 20% severely impacts score
-  - Consistency > 65% is the benchmark for reliability
-  - Missing data naturally lowers score (no fake defaults)
+Final = Return * 0.25 + RiskAdj * 0.25 + Consistency * 0.20 + Drawdown * 0.15 + Risk * 0.10 + Trend * 0.05
+All components mandatory — missing data = 0 for that component.
+Score targets: 80-90 excellent, 70-79 good, 55-69 average, <55 poor.
 """
 
 from __future__ import annotations
+import math
 import logging
 from typing import Optional
 from backend.discovery.types import TraderProfile
@@ -63,7 +54,7 @@ def _has_return_data(profile: TraderProfile) -> bool:
     ])
 
 
-# ── Simple scoring helpers ─────────────────────────────────────────
+# ── Helpers ──────────────────────────────────────────────────────
 
 
 def _best_return_pct(profile: TraderProfile) -> Optional[float]:
@@ -77,120 +68,182 @@ def _best_return_pct(profile: TraderProfile) -> Optional[float]:
     return None
 
 
-def _return_score(best_return: Optional[float]) -> float:
-    """Max 35 points, capped at 150% return (diminishing returns beyond)."""
-    if best_return is None:
-        return 0.0
-    return round(min(best_return, 150.0) / 150.0 * 35.0, 1)
+def _safe_drawdown(dd: Optional[float]) -> float:
+    """Get absolute drawdown, default large if missing."""
+    if dd is None:
+        return 999.0
+    return abs(float(dd))
 
 
-def _risk_score_step(risk: Optional[float]) -> float:
-    """Max 25 points, step function. Risk 1-2→25, 3-4→20, 5-6→12, 7→4, 8+→0.
+# ── Component scores (all 0-100) ─────────────────────────────────
 
-    Professional analysts heavily penalize risk > 6.
-    Risk 8+ is considered untouchable for copy trading.
+
+def _return_component(best_return: Optional[float]) -> float:
+    """Return score 0-100. Nonlinear sqrt curve.
+
+    0%→0, 25%→40, 50%→57, 100%→80, 150%→93, 200%+→100.
+    Missing data = 0.
     """
-    if risk is None or risk < 1 or risk > 10:
+    if best_return is None or best_return <= 0:
         return 0.0
-    if risk <= 2:
-        return 25.0
-    if risk <= 4:
-        return 20.0
-    if risk <= 6:
-        return 12.0
-    if risk <= 7:
-        return 4.0
-    return 0.0
+    r = min(float(best_return), 250.0)
+    return round(min(100.0, 8.0 * math.sqrt(r)), 1)
 
 
-def _positions_score(positions: Optional[int]) -> float:
-    """Max 5 points, linear up to 50 positions.
+def _risk_adjusted_component(
+    best_return: Optional[float],
+    drawdown: Optional[float],
+) -> float:
+    """Risk-adjusted return score 0-100.
 
-    Kept small because eToro tradeinfo API often omits this field.
+    Formula: return / max(drawdown, 5)
+    Rewards efficient returns: 120% return with 12% DD = 10.0 ratio
+    283% return with 16% DD = 17.7 ratio
+    107% return with 14% DD = 7.6 ratio
+
+    Ratio→Score (sqrt curve, 20*sqrt):
+      <2→0, 5→45, 8→57, 10→63, 15→77, 20→89, 30+→100
     """
-    if positions is None or positions <= 0:
+    if best_return is None or best_return <= 0:
         return 0.0
-    return round(min(float(positions), 50.0) / 50.0 * 5.0, 1)
-
-
-def _drawdown_score(peak_to_valley: Optional[float]) -> float:
-    """Mandatory — max 20 points. Fine-grained drawdown penalty.
-
-    peakToValley is a negative percentage (e.g. -16.24 means -16.24%).
-    We use the absolute value.
-    Drawdown > 25% gets 0 — unacceptable for professional allocation.
-    """
-    if peak_to_valley is None:
+    dd = _safe_drawdown(drawdown)
+    if dd < 5.0:
+        dd = 5.0
+    ratio = float(best_return) / dd
+    if ratio < 2.0:
         return 0.0
-    dd = abs(float(peak_to_valley))
-    if dd < 10.0:
-        return 20.0
-    if dd < 15.0:
-        return 15.0
-    if dd < 20.0:
-        return 8.0
-    if dd < 25.0:
-        return 3.0
-    return 0.0
+    return round(min(100.0, 20.0 * math.sqrt(min(ratio, 40.0))), 1)
 
 
-def _consistency_score(profitable_months_pct: Optional[float]) -> float:
-    """Max 10 points. Stricter thresholds for reliability.
+def _consistency_component(profitable_months_pct: Optional[float]) -> float:
+    """Consistency score 0-100. Linear from 40% threshold.
 
-    >80%: elite consistency, >65%: good, >50%: acceptable.
+    <40%→0, 50%→17, 60%→33, 70%→50, 80%→67, 90%→83, 100%→100
+    Missing data = 0.
     """
     if profitable_months_pct is None:
         return 0.0
     pct = float(profitable_months_pct)
-    if pct >= 80.0:
-        return 10.0
-    if pct >= 65.0:
-        return 7.0
-    if pct >= 50.0:
-        return 3.0
-    return 0.0
-
-
-def _experience_score(weeks: Optional[int]) -> float:
-    """Max 5 points. 3+ years → bonus, 1+ year → partial."""
-    if weeks is None:
+    if pct < 40.0:
         return 0.0
-    if weeks >= 156:  # 3+ years
-        return 5.0
-    if weeks >= 52:   # 1+ year
-        return 3.0
-    return 0.0
+    return round(min(100.0, (pct - 40.0) * 1.67), 1)
 
+
+def _drawdown_component(peak_to_valley: Optional[float]) -> float:
+    """Drawdown score 0-100. Linear penalty.
+
+    <5%→95, 10%→80, 15%→60, 20%→40, 25%→20, 30%→0
+    Missing data = 0.
+    """
+    dd = _safe_drawdown(peak_to_valley)
+    if dd >= 30.0:
+        return 0.0
+    if dd < 5.0:
+        return 95.0
+    return round(max(0.0, 100.0 - 4.0 * (dd - 5.0)), 1)
+
+
+def _risk_component(risk: Optional[float]) -> float:
+    """Risk score 0-100. Linear penalty.
+
+    1→98, 2→86, 3→74, 4→62, 5→50, 6→38, 7→26, 8→14, 9→2, 10→0
+    Missing data = 0.
+    """
+    if risk is None or risk < 1 or risk > 10:
+        return 0.0
+    return round(max(0.0, 110.0 - float(risk) * 12.0), 1)
+
+
+def _trend_component(
+    weeks: Optional[int],
+    volatility: Optional[float],
+    win_ratio: Optional[float],
+    avg_monthly_return: Optional[float],
+) -> float:
+    """Trend score 0-100. Best-effort from available data.
+
+    Components:
+    - Experience (30pt): weeks >= 156→30, >= 52→18, >= 26→8
+    - Stability (35pt): low volatility rewards consistent recent performance
+      vol < 10→35, < 20→25, < 30→15, >= 30→5
+    - Win ratio (35pt): high win rate = good recent execution
+      > 70%→35, > 60%→25, > 50%→15, <= 50%→5
+    - Momentum bonus (up to +15): positive avg_monthly_return adds confidence
+    """
+    score = 0.0
+
+    if weeks is not None and weeks > 0:
+        if weeks >= 156:
+            score += 30.0
+        elif weeks >= 52:
+            score += 18.0
+        elif weeks >= 26:
+            score += 8.0
+
+    if volatility is not None and volatility > 0:
+        v = float(volatility)
+        if v < 10.0:
+            score += 35.0
+        elif v < 20.0:
+            score += 25.0
+        elif v < 30.0:
+            score += 15.0
+        else:
+            score += 5.0
+
+    if win_ratio is not None and win_ratio > 0:
+        wr = float(win_ratio)
+        if wr >= 70.0:
+            score += 35.0
+        elif wr >= 60.0:
+            score += 25.0
+        elif wr >= 50.0:
+            score += 15.0
+        else:
+            score += 5.0
+
+    if avg_monthly_return is not None and float(avg_monthly_return) > 0:
+        score = min(100.0, score + 15.0)
+
+    return round(min(100.0, score), 1)
+
+
+# ── Weights (0-1) ────────────────────────────────────────────────
+
+RETURN_WEIGHT = 0.25
+RISK_ADJ_WEIGHT = 0.25
+CONSISTENCY_WEIGHT = 0.20
+DRAWDOWN_WEIGHT = 0.15
+RISK_WEIGHT = 0.10
+TREND_WEIGHT = 0.05
 
 
 def _confidence_label(profile: TraderProfile) -> str:
-    """HIGH if all 6 core metrics present, MEDIUM if 4-5, LOW if <4."""
+    """HIGH if all 5 core metrics present, MEDIUM if 3-4, LOW if <3."""
     core_metrics = [
         profile.raw_total_return_pct is not None,
         profile.raw_risk_score is not None and profile.raw_risk_score > 0,
-        profile.raw_positions_count is not None and profile.raw_positions_count > 0,
         profile.raw_peak_to_valley is not None,
         profile.raw_profitable_months_pct is not None,
         profile.raw_weeks_since_registration is not None,
     ]
     present = sum(core_metrics)
-    if present >= 5:
+    if present >= 4:
         return "HIGH"
-    if present >= 3:
+    if present >= 2:
         return "MEDIUM"
     return "LOW"
 
 
-# ── Core scoring ─────────────────────────────────────────────────────
+# ── Core scoring ─────────────────────────────────────────────────
 
 
 def calculate_score_from_profile(profile: TraderProfile) -> TraderProfile:
-    """Score a trader across all 6 mandatory components.
+    """Score a trader across 6 weighted components (each 0-100).
 
-    All components are mandatory (missing = 0 for that component):
-      Return (35) + Risk (25) + Drawdown (20) + Positions (5)
-      + Consistency (10) + Experience (5) = 100 max
-    Total capped at 100. Score 80+ = elite, 70+ = strong, 60+ = decent.
+    Return (25%) + RiskAdj (25%) + Consistency (20%)
+    + Drawdown (15%) + Risk (10%) + Trend (5%).
+    Total 0-100. Score 80+ = excellent, 70+ = good, 55+ = average.
     """
     username = profile.username
 
@@ -205,31 +258,42 @@ def calculate_score_from_profile(profile: TraderProfile) -> TraderProfile:
         profile.explanation = [f"rejected: {source_reason}"]
         return profile
 
-    # ── 1. Return score (max 35) ──
+    # ── 1. Return component (0-100, weight 25%) ───────────────────
     best_return = _best_return_pct(profile)
-    ret_score = _return_score(best_return)
+    ret_score = _return_component(best_return)
 
-    # ── 2. Risk score (max 25) ──
-    risk = profile.raw_risk_score
-    risk_score = _risk_score_step(risk)
-
-    # ── 3. Drawdown (max 20, mandatory) ──
+    # ── 2. Risk-adjusted return (0-100, weight 25%) ───────────────
     dd = profile.raw_peak_to_valley
-    dd_score = _drawdown_score(dd)
+    ra_score = _risk_adjusted_component(best_return, dd)
 
-    # ── 4. Positions score (max 5) ──
-    positions = profile.raw_positions_count
-    pos_score = _positions_score(positions)
-
-    # ── 5. Consistency (max 10) ──
+    # ── 3. Consistency (0-100, weight 20%) ────────────────────────
     prof_months = profile.raw_profitable_months_pct
-    cons_score = _consistency_score(prof_months)
+    cons_score = _consistency_component(prof_months)
 
-    # ── 6. Experience (max 5) ──
+    # ── 4. Drawdown control (0-100, weight 15%) ──────────────────
+    dd_score = _drawdown_component(dd)
+
+    # ── 5. Risk score (0-100, weight 10%) ─────────────────────────
+    risk = profile.raw_risk_score
+    risk_score_val = _risk_component(risk)
+
+    # ── 6. Trend (0-100, weight 5%) ──────────────────────────────
     weeks = profile.raw_weeks_since_registration
-    exp_score = _experience_score(weeks)
+    vol = profile.raw_volatility
+    win = profile.raw_win_ratio
+    avg_monthly = profile.raw_avg_monthly_return
+    trend_score = _trend_component(weeks, vol, win, avg_monthly)
 
-    total_score = min(100.0, ret_score + risk_score + pos_score + dd_score + cons_score + exp_score)
+    # ── Weighted total ───────────────────────────────────────────
+    total_score = (
+        ret_score * RETURN_WEIGHT
+        + ra_score * RISK_ADJ_WEIGHT
+        + cons_score * CONSISTENCY_WEIGHT
+        + dd_score * DRAWDOWN_WEIGHT
+        + risk_score_val * RISK_WEIGHT
+        + trend_score * TREND_WEIGHT
+    )
+    total_score = min(100.0, total_score)
 
     profile.score = round(total_score, 1)
     profile.final_score = round(total_score, 1)
@@ -242,19 +306,25 @@ def calculate_score_from_profile(profile: TraderProfile) -> TraderProfile:
         f"return={best_return:.1f}%" if best_return else "return=none",
         f"risk={risk:.1f}" if risk and risk > 0 else "risk=none",
         f"drawdown={abs(dd):.1f}%" if dd else "drawdown=none",
-        f"positions={positions}" if positions and positions > 0 else "positions=none",
         f"consistency={prof_months:.0f}%" if prof_months else "consistency=none",
         f"experience={weeks}w" if weeks else "experience=none",
     ]
 
+    # Store sub-scores for explainability
+    profile.norm_return_12m = ret_score
+    profile.norm_return_6m = ra_score
+    profile.norm_risk = risk_score_val
+    profile.norm_drawdown = dd_score
+    profile.norm_consistency = cons_score
+
     return profile
 
 
-# ── Backward-compatible wrappers ─────────────────────────────────────
+# ── Backward-compatible wrappers ─────────────────────────────────
 
 
 def calculate_growth_score(trader: dict) -> dict:
-    """Backward-compatible. Returns result dict matching old format."""
+    """Backward-compatible. Returns result dict with component breakdown."""
     profile = build_trader_profile(trader)
 
     constraint_reason = check_constraints(profile)
@@ -274,6 +344,7 @@ def calculate_growth_score(trader: dict) -> dict:
     profile = calculate_score_from_profile(profile)
     source_valid = validate_data_source(profile) is None
     best_return = _best_return_pct(profile)
+    dd = profile.raw_peak_to_valley
 
     return {
         "score": profile.score,
@@ -292,8 +363,11 @@ def calculate_growth_score(trader: dict) -> dict:
             "consistency": 0.0,
             "growth_efficiency": 0.0,
             "components": {
-                "r12_norm": 0.0, "r6_norm": 0.0,
-                "risk_norm": 0.0, "dd_norm": 0.0, "cons_norm": 0.0,
+                "return": profile.norm_return_12m,
+                "risk_adjusted": profile.norm_return_6m,
+                "consistency": profile.norm_consistency,
+                "drawdown": profile.norm_drawdown,
+                "risk": profile.norm_risk,
             },
         },
         "penalties": [],

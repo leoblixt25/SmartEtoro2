@@ -29,8 +29,11 @@ MISSING_DD_PENALTY = 0.15
 MISSING_VOL_PENALTY = 0.10
 
 # ── Constraints ──────────────────────────────────────────────────────
-CONSTRAINT_MAX_DRAWDOWN = 15.0
-CONSTRAINT_MIN_TRACK_RECORD_DAYS = 365
+CONSTRAINT_MAX_DRAWDOWN = 35.0
+CONSTRAINT_MAX_RISK = 7
+CONSTRAINT_MIN_TRACK_RECORD_DAYS = 90
+CONSTRAINT_MIN_WEEKS = 13
+CONSTRAINT_MIN_CONSISTENCY = 40.0
 
 # ── Data Quality Gates ───────────────────────────────────────────────
 # Minimum verified fields (%s) required for a trader to be scored at all.

@@ -223,7 +223,7 @@ class TestCheckConstraints:
     def test_high_drawdown_fails(self):
         from backend.discovery.types import TraderProfile
         from backend.discovery.validate import check_constraints
-        p = TraderProfile(username="t", raw_drawdown=20.0)
+        p = TraderProfile(username="t", raw_drawdown=40.0)
         reason = check_constraints(p)
         assert reason is not None
         assert "max_drawdown" in reason
@@ -231,7 +231,7 @@ class TestCheckConstraints:
     def test_short_track_record_fails(self):
         from backend.discovery.types import TraderProfile
         from backend.discovery.validate import check_constraints
-        p = TraderProfile(username="t", raw_drawdown=5.0, track_record_days=100)
+        p = TraderProfile(username="t", raw_drawdown=5.0, track_record_days=50)
         reason = check_constraints(p)
         assert reason is not None
         assert "track_record" in reason
@@ -250,7 +250,7 @@ class TestApplyConstraintsBackwardCompat:
     def test_filters_high_drawdown(self):
         from backend.discovery.validate import apply_constraints
         candidates = [
-            {"username": "a", "max_drawdown": 20.0},
+            {"username": "a", "max_drawdown": 40.0},
             {"username": "b", "max_drawdown": 5.0},
         ]
         result = apply_constraints(candidates)
@@ -279,6 +279,10 @@ class TestCalculateScoreFromProfile:
             raw_positions_count=10,
             raw_consistency_score=70.0,
             raw_avg_monthly_return=3.0,
+            raw_peak_to_valley=-8.0,
+            raw_profitable_months_pct=70.0,
+            raw_win_ratio=65.0,
+            raw_weeks_since_registration=200,
         )
         p.field_status = {
             "return_12m": "verified", "return_6m": "verified",
@@ -288,7 +292,7 @@ class TestCalculateScoreFromProfile:
             "consistency_score": "verified", "avg_monthly_return": "verified",
         }
         result = calculate_score_from_profile(p)
-        assert result.score > 30.0, f"Expected score > 30, got {result.score}"
+        assert result.score > 40.0, f"Expected score > 40, got {result.score}"
         assert result.final_score > 0
         assert result.growth_filter is False
         assert result.final_score == result.score
@@ -302,7 +306,7 @@ class TestCalculateScoreFromProfile:
         assert result.score == 0.0
 
     def test_low_return_still_scores_via_risk(self):
-        """Low return gets low return_score but risk adds meaningful points."""
+        """Low return gets low return_score but risk and dd add points."""
         from backend.discovery.types import TraderProfile
         from backend.discovery.score import calculate_score_from_profile
         p = TraderProfile(
@@ -313,6 +317,7 @@ class TestCalculateScoreFromProfile:
             raw_total_return_pct=2.0,
             raw_risk_score=3.0,
             raw_drawdown=5.0,
+            raw_peak_to_valley=-5.0,
         )
         p.field_status = {
             "return_12m": "verified",
@@ -321,8 +326,9 @@ class TestCalculateScoreFromProfile:
             "max_drawdown": "verified",
         }
         result = calculate_score_from_profile(p)
-        # Return score = min(2,150)/150*50 = 0.7, risk = 25, raw = 25.7
-        assert result.score > 20
+        # Return = 11.3 * 0.25 = 2.8, dd = 95 * 0.15 = 14.25, risk = 74 * 0.10 = 7.4
+        # Total = 2.8 + 14.25 + 7.4 = 24.5
+        assert result.score > 15
         assert result.growth_filter is False
 
     def test_copier_bonus_applied(self):
@@ -595,7 +601,7 @@ class TestBackwardCompatScoringEngine:
         from backend.ai.scoring_engine import apply_constraints
         candidates = [
             {"username": "a", "max_drawdown": 5.0},
-            {"username": "b", "max_drawdown": 20.0},
+            {"username": "b", "max_drawdown": 40.0},
         ]
         result = apply_constraints(candidates)
         assert len(result) == 1
@@ -646,9 +652,10 @@ class TestScoreNoFakeDefaults:
         assert result.norm_risk == 0.0, "risk should not default to 50"
         assert result.norm_drawdown == 0.0, "dd should not default to 50"
         assert result.norm_consistency == 0.0, "consistency should not default to 50"
-        # With only return data, score = return_score (risk/positions = 0)
-        expected_return_score = min(50, 150) / 150.0 * 35.0
-        assert result.score == pytest.approx(expected_return_score, abs=1.0)
+        # With only return data, score = return_component(50) * 0.25
+        # return_component(50) = 8 * sqrt(50) = 56.6
+        # score = 56.6 * 0.25 = 14.15
+        assert result.score == pytest.approx(14.2, abs=1.0)
 
     def test_no_fake_copiers_entered(self):
         from backend.discovery.validate import build_trader_profile
