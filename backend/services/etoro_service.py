@@ -1039,15 +1039,22 @@ class EToroAPIClient:
                     break
                 items = data.get("items", []) if isinstance(data, dict) else []
                 page_usernames = []
+                page_blocked = 0
                 for item in items:
                     if isinstance(item, dict):
                         uname = item.get("userName")
-                        if uname and isinstance(uname, str) and uname.strip():
-                            page_usernames.append(uname.strip())
+                        if not uname or not isinstance(uname, str) or not uname.strip():
+                            continue
+                        is_copyable = item.get("IsCopyable", item.get("isCopyable"))
+                        if is_copyable is False:
+                            page_blocked += 1
+                            continue
+                        page_usernames.append(uname.strip())
                 discovered.extend(page_usernames)
                 logger.info(
-                    "Discovery search: page %d returned %d usernames (total: %d)",
-                    page, len(page_usernames), len(discovered),
+                    "Discovery search: page %d returned %d usernames "
+                    "(%d blocked, total: %d)",
+                    page, len(page_usernames), page_blocked, len(discovered),
                 )
                 if len(page_usernames) < page_size:
                     logger.info("Discovery search: last page reached at page %d", page)
