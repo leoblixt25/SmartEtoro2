@@ -21,41 +21,50 @@ def _insight(t) -> str:
     weeks = t.get("weeks_since_registration")
 
     is_high_ret = ret is not None and ret > 100
-    is_mod_ret = ret is not None and 50 < ret <= 100
+    is_low_ret = ret is not None and ret <= 50
     is_low_risk = risk is not None and risk <= 3
     is_mod_risk = risk is not None and 4 <= risk <= 5
     is_low_dd = dd_abs is not None and dd_abs < 10
     is_mod_dd = dd_abs is not None and 10 <= dd_abs < 18
+    is_high_dd = dd_abs is not None and dd_abs >= 18
     is_high_cons = prof_months is not None and prof_months > 70
     is_long_exp = weeks is not None and weeks >= 156
 
     if is_high_ret and is_low_risk and is_low_dd:
-        return "Elite risk-adjusted returns with excellent drawdown control."
+        return "Elite risk-adjusted returns."
     if is_high_ret and is_mod_risk and is_low_dd:
-        return "Excellent balance between strong returns and controlled risk."
+        return "Strong return with controlled risk."
+    if is_high_ret and is_mod_risk and is_mod_dd and is_high_cons:
+        return "High returns with reliable consistency."
     if is_high_ret and is_mod_risk and is_mod_dd:
-        return "Good return profile with manageable drawdown and risk."
-    if is_mod_ret and is_low_risk and is_low_dd:
-        return "Very stable profile with unusually low drawdown."
-    if is_mod_ret and is_mod_risk and is_low_dd:
-        return "Solid and consistent with strong capital preservation."
-    if is_low_risk and is_low_dd and is_high_cons:
-        return "Remarkable consistency paired with disciplined risk management."
-    if is_high_ret and (not is_low_risk) and (not is_low_dd):
-        return "Higher return profile with slightly elevated risk."
-    if is_mod_ret and is_mod_risk and is_mod_dd:
-        return "Consistent long-term growth and disciplined risk."
+        return "Good return with manageable drawdown."
+    if is_high_ret and is_mod_risk and is_high_dd:
+        return "Strong returns but elevated drawdown."
     if is_high_ret and (risk is not None and risk > 5):
-        return "Strong performance but more aggressive profile."
-    if is_long_exp and is_low_dd:
-        return "Proven long-term track record with excellent stability."
+        return "Aggressive profile with high upside."
     if is_high_cons and is_mod_ret:
-        return "Impressive month-to-month consistency with solid returns."
+        return "Remarkable consistency."
+    if is_high_cons and is_low_dd and is_mod_ret:
+        return "Consistency plus capital preservation."
+    if is_low_risk and is_low_dd and is_high_cons:
+        return "Textbook capital preservation."
+    if is_low_risk and is_low_dd:
+        return "Very stable with low drawdown."
+    if is_low_risk and is_mod_ret:
+        return "Solid and disciplined risk taker."
+    if is_mod_ret and is_mod_risk and is_low_dd:
+        return "Solid returns with capital preservation."
+    if is_mod_ret and is_mod_risk and is_mod_dd:
+        return "Consistent long-term performer."
+    if is_long_exp and is_low_dd:
+        return "Proven stability over years."
     if is_long_exp and is_mod_ret:
-        return "Reliable performer with years of steady returns."
-    if is_high_ret and is_high_cons:
-        return "Attractive combination of high returns and consistency."
-    return "Balanced profile across return, risk, and stability."
+        return "Reliable veteran performer."
+    if is_high_cons and is_high_ret:
+        return "Rare combo of consistency and returns."
+    if is_low_ret:
+        return "Low return profile, limited upside."
+    return "Balanced across key metrics."
 
 
 def format_trader_block(t, rank: int) -> str:
@@ -81,22 +90,22 @@ def format_trader_block(t, rank: int) -> str:
 
     if risk is not None:
         if risk <= 3:
-            style = "\U0001f7e2 Conservative"
+            style = "\U0001f7e2 Conservative Growth"
         elif risk <= 5:
-            style = "\U0001f7e1 Balanced"
+            style = "\U0001f7e1 Balanced Growth"
         elif risk <= 7:
-            style = "\U0001f7e0 Aggressive"
+            style = "\U0001f7e0 Aggressive Growth"
         else:
             style = "\U0001f534 High Risk"
     else:
         style = "\u26aa Unknown"
 
     lines = [
-        f'{medal} <b>{username}</b> | \U0001f3c5 <b>Score: {score:.0f}/100</b> | {style} | \U0001f512 {conf}',
-        f'\U0001f4c8 <b>{ret_str}</b> Return | \u26a0\ufe0f <b>{risk_str}</b> Risk | \U0001f4c9 <b>{dd_str}</b> DD',
+        f'{medal} <b>{username}</b> \u2b50 <b>{score:.0f}/100</b> \U0001f512 {conf}',
+        f'\U0001f4c8 <b>{ret_str}</b> \u2022 \u26a0\ufe0f Risk <b>{risk_str}</b> \u2022 \U0001f4c9 DD <b>{dd_str}</b>',
+        style,
         f'\U0001f4a1 {_insight(t)}',
-        "",
-        '\u2501' * 20,
+        '\u2501' * 16,
     ]
     return "\n".join(lines)
 
@@ -156,8 +165,9 @@ async def main():
     eligible_count = len(rescored)
 
     now = datetime.now().strftime("%b %d, %H:%M UTC")
-    print("\U0001f3c6 <b>TOP COPY TRADERS SCAN</b>")
-    print(f"\U0001f4c5 <b>{now}</b> | \U0001f4ca <b>{scanned} scanned</b> | \u2705 <b>Real data</b> | \U0001f3af <b>{eligible_count} passed</b>")
+    print("\U0001f3c6 <b>TOP COPY TRADERS</b>")
+    print(f"\U0001f4c5 <b>{now}</b>")
+    print(f"\U0001f4ca <b>{scanned} Scanned</b> \u2022 \u2705 <b>Real Data Only</b>")
     print("")
 
     for i, t in enumerate(rescored[:5]):
@@ -168,25 +178,20 @@ async def main():
     top_ret = top.get("total_return_pct")
     top_risk = top.get("risk_score")
     top_dd = top.get("peak_to_valley") or top.get("max_drawdown")
-    ret_val = f"+{top_ret:.1f}%" if top_ret is not None else "N/A"
-    risk_val = f"Risk {int(top_risk)}" if top_risk is not None else "N/A"
-    dd_val = f"{abs(top_dd):.1f}% DD" if top_dd is not None else "N/A"
 
     if top_ret is not None and top_ret > 100 and top_risk is not None and top_risk <= 4:
-        diamond = "Best balance of return, risk control, and consistency."
+        best_reason = "Best mix of return, safety, and consistency."
     elif top_dd is not None and abs(top_dd) < 12:
-        diamond = "Strongest capital preservation with solid upside."
+        best_reason = "Strongest capital preservation."
     elif top_ret is not None and top_ret > 80:
-        diamond = "Top return potential with acceptable risk levels."
+        best_reason = "Top return with acceptable risk."
     else:
-        diamond = "Most well-rounded trader across all metrics."
+        best_reason = "Most well-rounded performer."
 
     print("")
-    print(f"\U0001f451 <b>BEST PICK: {top_user}</b>")
-    print(f"\U0001f48e {diamond}")
-    print(f"\U0001f4c8 <b>{ret_val}</b> | \u26a0\ufe0f <b>{risk_val}</b> | \U0001f4c9 <b>{dd_val}</b>")
-    print("")
-    print(f"\U0001f525 <b>Insight:</b> Only <b>{eligible_count}/{scanned}</b> traders passed strict filtering.")
+    print(f"\U0001f3af <b>BEST PICK</b>")
+    print(f"<b>{top_user}</b> \u2192 {best_reason}")
+    print(f"\U0001f4cc <b>{eligible_count} eligible traders</b> from <b>{scanned} scanned</b>")
 
     # Show ALL with breakdown
     print("\n\n--- FULL RANKING WITH BREAKDOWN ---")

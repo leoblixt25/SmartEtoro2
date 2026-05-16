@@ -347,8 +347,9 @@ class TelegramBot:
                 now = datetime.now().strftime("%b %d, %H:%M UTC")
 
                 lines = [
-                    "\U0001f3c6 <b>TOP COPY TRADERS SCAN</b>",
-                    f"\U0001f4c5 <b>{now}</b> | \U0001f4ca <b>{scanned} scanned</b> | \u2705 <b>Real data</b> | \U0001f3af <b>{eligible_count} passed</b>",
+                    "\U0001f3c6 <b>TOP COPY TRADERS</b>",
+                    f"\U0001f4c5 <b>{now}</b>",
+                    f"\U0001f4ca <b>{scanned} Scanned</b> \u2022 \u2705 <b>Real Data Only</b>",
                     "",
                 ]
 
@@ -375,67 +376,72 @@ class TelegramBot:
 
                         if risk is not None:
                             if risk <= 3:
-                                style = "\U0001f7e2 Conservative"
+                                style = "\U0001f7e2 Conservative Growth"
                             elif risk <= 5:
-                                style = "\U0001f7e1 Balanced"
+                                style = "\U0001f7e1 Balanced Growth"
                             elif risk <= 7:
-                                style = "\U0001f7e0 Aggressive"
+                                style = "\U0001f7e0 Aggressive Growth"
                             else:
                                 style = "\U0001f534 High Risk"
                         else:
                             style = "\u26aa Unknown"
 
-                        # ── Dynamic insight sentence ────────────────
                         is_high_ret = ret is not None and ret > 100
-                        is_mod_ret = ret is not None and 50 < ret <= 100
+                        is_low_ret = ret is not None and ret <= 50
                         is_low_risk = risk is not None and risk <= 3
                         is_mod_risk = risk is not None and 4 <= risk <= 5
                         is_low_dd = dd_abs is not None and dd_abs < 10
                         is_mod_dd = dd_abs is not None and 10 <= dd_abs < 18
+                        is_high_dd = dd_abs is not None and dd_abs >= 18
                         is_high_cons = prof_months is not None and prof_months > 70
                         is_long_exp = weeks is not None and weeks >= 156
 
                         if is_high_ret and is_low_risk and is_low_dd:
-                            insight = "Elite risk-adjusted returns with excellent drawdown control."
+                            insight = "Elite risk-adjusted returns."
                         elif is_high_ret and is_mod_risk and is_low_dd:
-                            insight = "Excellent balance between strong returns and controlled risk."
+                            insight = "Strong return with controlled risk."
+                        elif is_high_ret and is_mod_risk and is_mod_dd and is_high_cons:
+                            insight = "High returns with reliable consistency."
                         elif is_high_ret and is_mod_risk and is_mod_dd:
-                            insight = "Good return profile with manageable drawdown and risk."
-                        elif is_mod_ret and is_low_risk and is_low_dd:
-                            insight = "Very stable profile with unusually low drawdown."
-                        elif is_mod_ret and is_mod_risk and is_low_dd:
-                            insight = "Solid and consistent with strong capital preservation."
-                        elif is_low_risk and is_low_dd and is_high_cons:
-                            insight = "Remarkable consistency paired with disciplined risk management."
-                        elif is_high_ret and (not is_low_risk) and (not is_low_dd):
-                            insight = "Higher return profile with slightly elevated risk."
-                        elif is_mod_ret and is_mod_risk and is_mod_dd:
-                            insight = "Consistent long-term growth and disciplined risk."
+                            insight = "Good return with manageable drawdown."
+                        elif is_high_ret and is_mod_risk and is_high_dd:
+                            insight = "Strong returns but elevated drawdown."
                         elif is_high_ret and (risk is not None and risk > 5):
-                            insight = "Strong performance but more aggressive profile."
-                        elif is_long_exp and is_low_dd:
-                            insight = "Proven long-term track record with excellent stability."
+                            insight = "Aggressive profile with high upside."
                         elif is_high_cons and is_mod_ret:
-                            insight = "Impressive month-to-month consistency with solid returns."
+                            insight = "Remarkable consistency."
+                        elif is_high_cons and is_low_dd and is_mod_ret:
+                            insight = "Consistency plus capital preservation."
+                        elif is_low_risk and is_low_dd and is_high_cons:
+                            insight = "Textbook capital preservation."
+                        elif is_low_risk and is_low_dd:
+                            insight = "Very stable with low drawdown."
+                        elif is_low_risk and is_mod_ret:
+                            insight = "Solid and disciplined risk taker."
+                        elif is_mod_ret and is_mod_risk and is_low_dd:
+                            insight = "Solid returns with capital preservation."
+                        elif is_mod_ret and is_mod_risk and is_mod_dd:
+                            insight = "Consistent long-term performer."
+                        elif is_long_exp and is_low_dd:
+                            insight = "Proven stability over years."
                         elif is_long_exp and is_mod_ret:
-                            insight = "Reliable performer with years of steady returns."
-                        elif is_high_ret and is_high_cons:
-                            insight = "Attractive combination of high returns and consistency."
+                            insight = "Reliable veteran performer."
+                        elif is_high_cons and is_high_ret:
+                            insight = "Rare combo of consistency and returns."
+                        elif is_low_ret:
+                            insight = "Low return profile, limited upside."
                         else:
-                            insight = "Balanced profile across return, risk, and stability."
+                            insight = "Balanced across key metrics."
 
                         lines.append(
-                            f'{medal} <b>{username}</b> | \U0001f3c5 <b>Score: {score:.0f}/100</b> '
-                            f'| {style} | \U0001f512 {conf}'
+                            f'{medal} <b>{username}</b> \u2b50 <b>{score:.0f}/100</b> \U0001f512 {conf}'
                         )
                         lines.append(
-                            f'\U0001f4c8 <b>{ret_str}</b> Return '
-                            f'| \u26a0\ufe0f <b>{risk_str}</b> Risk '
-                            f'| \U0001f4c9 <b>{dd_str}</b> DD'
+                            f'\U0001f4c8 <b>{ret_str}</b> \u2022 \u26a0\ufe0f Risk <b>{risk_str}</b> \u2022 \U0001f4c9 DD <b>{dd_str}</b>'
                         )
+                        lines.append(style)
                         lines.append(f'\U0001f4a1 {insight}')
-                        lines.append("")
-                        lines.append('\u2501' * 20)
+                        lines.append('\u2501' * 16)
 
                     # ── BEST PICK ───────────────────────────────────
                     top = eligible[0]
@@ -443,26 +449,20 @@ class TelegramBot:
                     top_ret = top.get("total_return_pct")
                     top_risk = top.get("risk_score")
                     top_dd = top.get("peak_to_valley") or top.get("max_drawdown")
-                    ret_val = f"+{top_ret:.1f}%" if top_ret is not None else "N/A"
-                    risk_val = f"Risk {int(top_risk)}" if top_risk is not None else "N/A"
-                    dd_val = f"{abs(top_dd):.1f}% DD" if top_dd is not None else "N/A"
 
-                    # Generate best-pick diamond insight
                     if top_ret is not None and top_ret > 100 and top_risk is not None and top_risk <= 4:
-                        diamond = "Best balance of return, risk control, and consistency."
+                        best_reason = "Best mix of return, safety, and consistency."
                     elif top_dd is not None and abs(top_dd) < 12:
-                        diamond = "Strongest capital preservation with solid upside."
+                        best_reason = "Strongest capital preservation."
                     elif top_ret is not None and top_ret > 80:
-                        diamond = "Top return potential with acceptable risk levels."
+                        best_reason = "Top return with acceptable risk."
                     else:
-                        diamond = "Most well-rounded trader across all metrics."
+                        best_reason = "Most well-rounded performer."
 
                     lines.append("")
-                    lines.append(f"\U0001f451 <b>BEST PICK: {top_user}</b>")
-                    lines.append(f"\U0001f48e {diamond}")
-                    lines.append(f"\U0001f4c8 <b>{ret_val}</b> | \u26a0\ufe0f <b>{risk_val}</b> | \U0001f4c9 <b>{dd_val}</b>")
-                    lines.append("")
-                    lines.append(f"\U0001f525 <b>Insight:</b> Only <b>{eligible_count}/{scanned}</b> traders passed strict filtering.")
+                    lines.append(f"\U0001f3af <b>BEST PICK</b>")
+                    lines.append(f"<b>{top_user}</b> \u2192 {best_reason}")
+                    lines.append(f"\U0001f4cc <b>{eligible_count} eligible traders</b> from <b>{scanned} scanned</b>")
 
                 else:
                     lines.append("No eligible traders found at this time.")
