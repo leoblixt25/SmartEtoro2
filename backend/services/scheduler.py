@@ -185,33 +185,8 @@ class SchedulerService:
 
                 eligible, excluded, stats = await discover_eligible_traders(db, p.id)
 
-                lines = ["Daily Discovery Report\n"]
-                lines.append(
-                    f"Scanned: {stats.get('total_scanned', 0)}  "
-                    f"Eligible: {stats.get('eligible', 0)}  "
-                    f"Excluded: {stats.get('excluded', 0)}\n"
-                )
-
-                if eligible:
-                    for i, t in enumerate(eligible[:5], 1):
-                        score = t.get("score", 0)
-                        ret = t.get("total_return_pct", 0)
-                        risk_raw = t.get("risk_score")
-                        risk_str = f"{risk_raw:.1f}" if risk_raw is not None else "unavailable"
-                        mincpy = t.get("min_copy_amount")
-                        mincpy_str = f"${mincpy:.0f}" if mincpy else "unavailable"
-                        copiers = t.get("copiers", "?")
-                        lines.append(
-                            f"{i}. {t['username']} \u2014 {score}/100\n"
-                            f"   Return: {ret:+.1f}%  Risk: {risk_str}  "
-                            f"Copiers: {copiers}  Min copy: {mincpy_str}"
-                        )
-                    if len(eligible) > 5:
-                        lines.append(f"\n... and {len(eligible) - 5} more")
-                else:
-                    lines.append("No eligible traders found this cycle.")
-
-                await bot.send_message("\n".join(lines))
+                text = bot._build_discovery_message(eligible, stats)
+                await bot.send_message(text)
                 logger.info("Daily discovery report sent")
         except Exception as e:
             logger.exception("Daily discovery job failed")

@@ -342,147 +342,7 @@ class TelegramBot:
 
                     eligible, excluded, stats = await discover_eligible_traders(db, p.id)
 
-                scanned = stats.get("total_scanned", 0)
-                eligible_count = stats.get("eligible", 0)
-                now = datetime.now().strftime("%b %d, %H:%M UTC")
-
-                lines = [
-                    "\U0001f3c6 <b>TOP COPY TRADERS</b>",
-                    f"\U0001f4c5 <b>{now}</b>",
-                    f"\U0001f4ca <b>{scanned} Scanned</b> \u2022 \u2705 <b>Real Data Only</b>",
-                    "",
-                ]
-
-                if eligible:
-                    medals = ["\U0001f947", "\U0001f948", "\U0001f949", "4.", "5.", "6.", "7.", "8.", "9.", "10."]
-                    for i, t in enumerate(eligible[:5]):
-                        medal = medals[i] if i < len(medals) else f"{i+1}."
-                        username = t.get("username", "?")
-                        score = t.get("final_score", t.get("score", 0))
-                        ret = t.get("total_return_pct")
-                        risk = t.get("risk_score")
-                        dd = t.get("peak_to_valley") or t.get("max_drawdown")
-                        prof_months = t.get("profitable_months_pct")
-                        weeks = t.get("weeks_since_registration")
-
-                        ret_str = f"+{ret:.1f}%" if ret is not None else "N/A"
-                        risk_str = f"{int(risk)}/10" if risk is not None else "N/A"
-                        dd_abs = abs(dd) if dd is not None else None
-                        dd_str = f"{dd_abs:.1f}%" if dd_abs is not None else "N/A"
-
-                        comp = t.get("details", {}).get("components", {})
-
-                        is_high_ret = ret is not None and ret > 100
-                        is_mod_ret = ret is not None and 50 < ret <= 100
-                        is_low_ret = ret is not None and ret <= 50
-                        is_low_risk = risk is not None and risk <= 3
-                        is_mod_risk = risk is not None and 4 <= risk <= 5
-                        is_low_dd = dd_abs is not None and dd_abs < 10
-                        is_mod_dd = dd_abs is not None and 10 <= dd_abs < 18
-                        is_high_dd = dd_abs is not None and dd_abs >= 18
-                        is_high_cons = prof_months is not None and prof_months > 70
-                        is_long_exp = weeks is not None and weeks >= 156
-
-                        if is_high_ret and is_low_risk and is_low_dd:
-                            insight = "Elite risk-adjusted returns."
-                        elif is_high_ret and is_mod_risk and is_low_dd:
-                            insight = "Strong return with controlled risk."
-                        elif is_high_ret and is_mod_risk and is_mod_dd and is_high_cons:
-                            insight = "High returns with reliable consistency."
-                        elif is_high_ret and is_mod_risk and is_mod_dd:
-                            insight = "Good return with manageable drawdown."
-                        elif is_high_ret and is_mod_risk and is_high_dd:
-                            insight = "Strong returns but elevated drawdown."
-                        elif is_high_ret and (risk is not None and risk > 5):
-                            insight = "Aggressive profile with high upside."
-                        elif is_high_cons and is_mod_ret:
-                            insight = "Remarkable consistency."
-                        elif is_high_cons and is_low_dd and is_mod_ret:
-                            insight = "Consistency plus capital preservation."
-                        elif is_low_risk and is_low_dd and is_high_cons:
-                            insight = "Textbook capital preservation."
-                        elif is_low_risk and is_low_dd:
-                            insight = "Very stable with low drawdown."
-                        elif is_low_risk and is_mod_ret:
-                            insight = "Solid and disciplined risk taker."
-                        elif is_mod_ret and is_mod_risk and is_low_dd:
-                            insight = "Solid returns with capital preservation."
-                        elif is_mod_ret and is_mod_risk and is_mod_dd:
-                            insight = "Consistent long-term performer."
-                        elif is_long_exp and is_low_dd:
-                            insight = "Proven stability over years."
-                        elif is_long_exp and is_mod_ret:
-                            insight = "Reliable veteran performer."
-                        elif is_high_cons and is_high_ret:
-                            insight = "Rare combo of consistency and returns."
-                        elif is_low_ret:
-                            insight = "Low return profile, limited upside."
-                        else:
-                            insight = "Balanced across key metrics."
-
-                        ret_c = comp.get("return", 0)
-                        ra_c = comp.get("risk_adjusted", 0)
-                        cons_c = comp.get("consistency", 0)
-                        dd_c = comp.get("drawdown", 0)
-                        risk_c = comp.get("risk", 0)
-
-                        lines.append(
-                            f'{medal} <b>{username}</b> \u2b50 <b>{score:.0f}/100</b>'
-                        )
-                        lines.append(
-                            f'\U0001f4c8 <b>{ret_str}</b> \u2022 \u26a0\ufe0f Risk <b>{risk_str}</b> \u2022 \U0001f4c9 DD <b>{dd_str}</b>'
-                        )
-                        lines.append(
-                            f'\U0001f4ca Ret:{ret_c:.0f} RA:{ra_c:.0f} Con:{cons_c:.0f} DD:{dd_c:.0f} Rsk:{risk_c:.0f}'
-                        )
-                        lines.append(f'\U0001f4a1 {insight}')
-                        lines.append('\u2501' * 16)
-
-                    # ── BEST PICK: most balanced trader ──────────────
-                    def _balance_score(t):
-                        c = t.get("details", {}).get("components", {})
-                        return (
-                            c.get("consistency", 0) * 0.30
-                            + c.get("drawdown", 0) * 0.25
-                            + c.get("risk_adjusted", 0) * 0.20
-                            + c.get("return", 0) * 0.15
-                        )
-
-
-
-                    top = max(eligible, key=_balance_score)
-                    top_user = top.get("username", "?")
-                    top_ret = top.get("total_return_pct")
-                    top_risk = top.get("risk_score")
-                    top_dd = top.get("peak_to_valley") or top.get("max_drawdown")
-                    top_comp = top.get("details", {}).get("components", {})
-                    top_cons = top_comp.get("consistency", 0)
-                    top_dd_val = top_comp.get("drawdown", 0)
-                    top_ra = top_comp.get("risk_adjusted", 0)
-
-                    best_reason = "Most well-rounded performer."
-                    if top_cons >= 70 and top_dd_val >= 70 and top_ra >= 60:
-                        best_reason = "Best mix of safety, consistency, and efficiency."
-                    elif top_cons >= 60 and top_dd_val >= 70:
-                        best_reason = "Strongest capital preservation with consistency."
-                    elif top_cons >= 60 and top_dd_val >= 60 and top_ra >= 60:
-                        best_reason = "Well-balanced with solid risk-adjusted returns."
-                    elif top_ra >= 60 and top_dd_val >= 60:
-                        best_reason = "Top-tier risk-adjusted returns."
-                    elif top_cons >= 50 and top_dd_val >= 50:
-                        best_reason = "Reliable performer with controlled downside."
-                    elif top_ret is not None and top_ret > 80 and (top_risk is None or top_risk <= 5):
-                        best_reason = "Top return with acceptable risk."
-
-                    lines.append("")
-                    lines.append(f"\U0001f3af <b>BEST PICK</b>")
-                    lines.append(f"<b>{top_user}</b> \u2192 {best_reason}")
-                    lines.append(f"\U0001f4cc <b>{eligible_count} eligible traders</b> from <b>{scanned} scanned</b>")
-
-                else:
-                    lines.append("No eligible traders found at this time.")
-
-                text = "\n".join(lines)
+                text = self._build_discovery_message(eligible, stats)
                 if status_msg:
                     try:
                         await status_msg.edit_text(text, parse_mode="HTML")
@@ -499,6 +359,145 @@ class TelegramBot:
                     except Exception:
                         pass
                 await self._reply(update, f"Error: {e}")
+
+    def _build_discovery_message(self, eligible: list, stats: dict) -> str:
+        scanned = stats.get("total_scanned", 0)
+        eligible_count = stats.get("eligible", 0)
+        now = datetime.now().strftime("%b %d, %H:%M UTC")
+
+        lines = [
+            "\U0001f3c6 <b>TOP COPY TRADERS</b>",
+            f"\U0001f4c5 <b>{now}</b>",
+            f"\U0001f4ca <b>{scanned} Scanned</b> \u2022 \u2705 <b>Real Data Only</b>",
+            "",
+        ]
+
+        if eligible:
+            medals = ["\U0001f947", "\U0001f948", "\U0001f949", "4.", "5.", "6.", "7.", "8.", "9.", "10."]
+            for i, t in enumerate(eligible[:5]):
+                medal = medals[i] if i < len(medals) else f"{i+1}."
+                username = t.get("username", "?")
+                score = t.get("final_score", t.get("score", 0))
+                ret = t.get("total_return_pct")
+                risk = t.get("risk_score")
+                dd = t.get("peak_to_valley") or t.get("max_drawdown")
+                prof_months = t.get("profitable_months_pct")
+                weeks = t.get("weeks_since_registration")
+
+                ret_str = f"+{ret:.1f}%" if ret is not None else "N/A"
+                risk_str = f"{int(risk)}/10" if risk is not None else "N/A"
+                dd_abs = abs(dd) if dd is not None else None
+                dd_str = f"{dd_abs:.1f}%" if dd_abs is not None else "N/A"
+
+                comp = t.get("details", {}).get("components", {})
+
+                is_high_ret = ret is not None and ret > 100
+                is_mod_ret = ret is not None and 50 < ret <= 100
+                is_low_ret = ret is not None and ret <= 50
+                is_low_risk = risk is not None and risk <= 3
+                is_mod_risk = risk is not None and 4 <= risk <= 5
+                is_low_dd = dd_abs is not None and dd_abs < 10
+                is_mod_dd = dd_abs is not None and 10 <= dd_abs < 18
+                is_high_dd = dd_abs is not None and dd_abs >= 18
+                is_high_cons = prof_months is not None and prof_months > 70
+                is_long_exp = weeks is not None and weeks >= 156
+
+                if is_high_ret and is_low_risk and is_low_dd:
+                    insight = "Elite risk-adjusted returns."
+                elif is_high_ret and is_mod_risk and is_low_dd:
+                    insight = "Strong return with controlled risk."
+                elif is_high_ret and is_mod_risk and is_mod_dd and is_high_cons:
+                    insight = "High returns with reliable consistency."
+                elif is_high_ret and is_mod_risk and is_mod_dd:
+                    insight = "Good return with manageable drawdown."
+                elif is_high_ret and is_mod_risk and is_high_dd:
+                    insight = "Strong returns but elevated drawdown."
+                elif is_high_ret and (risk is not None and risk > 5):
+                    insight = "Aggressive profile with high upside."
+                elif is_high_cons and is_mod_ret:
+                    insight = "Remarkable consistency."
+                elif is_high_cons and is_low_dd and is_mod_ret:
+                    insight = "Consistency plus capital preservation."
+                elif is_low_risk and is_low_dd and is_high_cons:
+                    insight = "Textbook capital preservation."
+                elif is_low_risk and is_low_dd:
+                    insight = "Very stable with low drawdown."
+                elif is_low_risk and is_mod_ret:
+                    insight = "Solid and disciplined risk taker."
+                elif is_mod_ret and is_mod_risk and is_low_dd:
+                    insight = "Solid returns with capital preservation."
+                elif is_mod_ret and is_mod_risk and is_mod_dd:
+                    insight = "Consistent long-term performer."
+                elif is_long_exp and is_low_dd:
+                    insight = "Proven stability over years."
+                elif is_long_exp and is_mod_ret:
+                    insight = "Reliable veteran performer."
+                elif is_high_cons and is_high_ret:
+                    insight = "Rare combo of consistency and returns."
+                elif is_low_ret:
+                    insight = "Low return profile, limited upside."
+                else:
+                    insight = "Balanced across key metrics."
+
+                ret_c = comp.get("return", 0)
+                ra_c = comp.get("risk_adjusted", 0)
+                cons_c = comp.get("consistency", 0)
+                dd_c = comp.get("drawdown", 0)
+                risk_c = comp.get("risk", 0)
+
+                lines.append(
+                    f'{medal} <b>{username}</b> \u2b50 <b>{score:.0f}/100</b>'
+                )
+                lines.append(
+                    f'\U0001f4c8 <b>{ret_str}</b> \u2022 \u26a0\ufe0f Risk <b>{risk_str}</b> \u2022 \U0001f4c9 DD <b>{dd_str}</b>'
+                )
+                lines.append(
+                    f'\U0001f4ca Ret:{ret_c:.0f} RA:{ra_c:.0f} Con:{cons_c:.0f} DD:{dd_c:.0f} Rsk:{risk_c:.0f}'
+                )
+                lines.append(f'\U0001f4a1 {insight}')
+                lines.append('\u2501' * 16)
+
+            def _balance_score(t):
+                c = t.get("details", {}).get("components", {})
+                return (
+                    c.get("consistency", 0) * 0.30
+                    + c.get("drawdown", 0) * 0.25
+                    + c.get("risk_adjusted", 0) * 0.20
+                    + c.get("return", 0) * 0.15
+                )
+
+            top = max(eligible, key=_balance_score)
+            top_user = top.get("username", "?")
+            top_ret = top.get("total_return_pct")
+            top_risk = top.get("risk_score")
+            top_dd = top.get("peak_to_valley") or top.get("max_drawdown")
+            top_comp = top.get("details", {}).get("components", {})
+            top_cons = top_comp.get("consistency", 0)
+            top_dd_val = top_comp.get("drawdown", 0)
+            top_ra = top_comp.get("risk_adjusted", 0)
+
+            best_reason = "Most well-rounded performer."
+            if top_cons >= 70 and top_dd_val >= 70 and top_ra >= 60:
+                best_reason = "Best mix of safety, consistency, and efficiency."
+            elif top_cons >= 60 and top_dd_val >= 70:
+                best_reason = "Strongest capital preservation with consistency."
+            elif top_cons >= 60 and top_dd_val >= 60 and top_ra >= 60:
+                best_reason = "Well-balanced with solid risk-adjusted returns."
+            elif top_ra >= 60 and top_dd_val >= 60:
+                best_reason = "Top-tier risk-adjusted returns."
+            elif top_cons >= 50 and top_dd_val >= 50:
+                best_reason = "Reliable performer with controlled downside."
+            elif top_ret is not None and top_ret > 80 and (top_risk is None or top_risk <= 5):
+                best_reason = "Top return with acceptable risk."
+
+            lines.append("")
+            lines.append(f"\U0001f3af <b>BEST PICK</b>")
+            lines.append(f"<b>{top_user}</b> \u2192 {best_reason}")
+            lines.append(f"\U0001f4cc <b>{eligible_count} eligible traders</b> from <b>{scanned} scanned</b>")
+        else:
+            lines.append("No eligible traders found at this time.")
+
+        return "\n".join(lines)
 
     async def _cmd_health(self, update: Update, args: list[str]) -> None:
         from backend.database.connection import db_session

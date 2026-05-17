@@ -24,6 +24,7 @@ export const portfolioAPI = {
   update:    (id, d) => api.patch(`/api/portfolios/${id}`, d).then(r => r.data),
   overview:  (id) =>    api.get(`/api/portfolios/${id}/overview`).then(r => r.data),
   dashboard: (id) =>    api.get(`/api/portfolios/${id}/dashboard`).then(r => r.data),
+  discovery: (id) =>    api.get(`/api/portfolios/${id}/discovery`).then(r => r.data),
 }
 
 export const tradersAPI = {
