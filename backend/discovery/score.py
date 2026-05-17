@@ -1,11 +1,10 @@
 """Pure scoring functions — no I/O, no side effects.
 
 Weighted component scoring (each component 0-100):
-  - Return (10%):        sqrt curve — 10*sqrt(return), capped at 100
-  - Risk-Adjusted (15%): return / max(drawdown, 5), 25*sqrt(ratio), capped at 100
   - Consistency (25%):   profitableMonthsPct linear from 30% floor
-  - Drawdown (20%):      linear penalty — 3.3pt per % above 5
-  - Risk Score (15%):    linear penalty — 15pt per risk point
+  - Drawdown (25%):      linear penalty — 3.3pt per % above 5
+  - Return (20%):        sqrt curve — 10*sqrt(return), capped at 100
+  - Risk-Adjusted (20%): return / max(drawdown, 5) / max(risk, 1), 25*sqrt(ratio), capped at 100
   - Trend (10%):         experience + stability + win rate
 
 Confidence modifier: final score is multiplied by 0.70/0.85/1.0 based on
@@ -36,11 +35,10 @@ logger = logging.getLogger(__name__)
 # ── Base weights (sum = 1.0) ──────────────────────────────────────
 
 BASE_WEIGHTS = {
-    "return": 0.10,
-    "risk_adjusted": 0.15,
     "consistency": 0.25,
-    "drawdown": 0.20,
-    "risk": 0.15,
+    "drawdown": 0.25,
+    "return": 0.20,
+    "risk_adjusted": 0.20,
     "trend": 0.10,
 }
 
@@ -62,7 +60,6 @@ def _available_weights(profile: TraderProfile) -> dict:
         "risk_adjusted": lambda: (_has("return_12m") or _has("total_return_pct")) and _has("peak_to_valley"),
         "consistency": lambda: _has("profitable_months_pct"),
         "drawdown": lambda: _has("peak_to_valley"),
-        "risk": lambda: _has("risk_score"),
         "trend": lambda: _has("weeks_since_registration") or _has("volatility") or _has("win_ratio"),
     }
 
@@ -144,11 +141,12 @@ def _return_component(best_return: Optional[float]) -> float:
 def _risk_adjusted_component(
     best_return: Optional[float],
     drawdown: Optional[float],
+    risk: Optional[float] = None,
 ) -> float:
-    """Risk-adjusted return 0-100. return / max(dd, 5), sqrt curve.
+    """Risk-adjusted return 0-100. return / max(dd, 5) / risk, sqrt curve.
 
-    Ratio→Score:
-      2→35, 5→56, 8→71, 12→87, 16→100
+    Risk score is folded in as an additional divisor so higher-risk traders
+    need proportionally higher return-per-drawdown to score the same.
     """
     if best_return is None or best_return <= 0:
         return 0.0
@@ -156,7 +154,9 @@ def _risk_adjusted_component(
     if dd < 5.0:
         dd = 5.0
     ratio = float(best_return) / dd
-    if ratio < 1.5:
+    if risk is not None and risk > 1:
+        ratio = ratio / max(float(risk), 1.0)
+    if ratio <= 0:
         return 0.0
     return round(min(100.0, 25.0 * math.sqrt(min(ratio, 25.0))), 1)
 
@@ -290,9 +290,10 @@ def calculate_score_from_profile(profile: TraderProfile) -> TraderProfile:
     best_return = _best_return_pct(profile)
     ret_score = _return_component(best_return)
 
-    # ── 2. Risk-adjusted return (0-100) ───────────────────────────
+    # ── 2. Risk-adjusted return (0-100) — risk score folded in ────
     dd = profile.raw_peak_to_valley
-    ra_score = _risk_adjusted_component(best_return, dd)
+    risk = profile.raw_risk_score
+    ra_score = _risk_adjusted_component(best_return, dd, risk)
 
     # ── 3. Consistency (0-100) ────────────────────────────────────
     prof_months = profile.raw_profitable_months_pct
@@ -301,24 +302,22 @@ def calculate_score_from_profile(profile: TraderProfile) -> TraderProfile:
     # ── 4. Drawdown control (0-100) ──────────────────────────────
     dd_score = _drawdown_component(dd)
 
-    # ── 5. Risk score (0-100) ─────────────────────────────────────
-    risk = profile.raw_risk_score
-    risk_score_val = _risk_component(risk)
-
-    # ── 6. Trend (0-100) ─────────────────────────────────────────
+    # ── 5. Trend (0-100) ─────────────────────────────────────────
     weeks = profile.raw_weeks_since_registration
     vol = profile.raw_volatility
     win = profile.raw_win_ratio
     avg_monthly = profile.raw_avg_monthly_return
     trend_score = _trend_component(weeks, vol, win, avg_monthly)
 
+    # Backward-compat: compute standalone risk score (not used in weighted total)
+    risk_score_val = _risk_component(risk) if risk is not None else 0.0
+
     # ── Weighted total with redistribution ───────────────────────
     component_scores = {
-        "return": ret_score,
-        "risk_adjusted": ra_score,
         "consistency": cons_score,
         "drawdown": dd_score,
-        "risk": risk_score_val,
+        "return": ret_score,
+        "risk_adjusted": ra_score,
         "trend": trend_score,
     }
 
