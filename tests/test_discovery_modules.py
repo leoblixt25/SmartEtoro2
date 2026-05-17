@@ -652,8 +652,10 @@ class TestScoreNoFakeDefaults:
         assert result.norm_drawdown == 0.0, "dd should not default to 50"
         assert result.norm_consistency == 0.0, "consistency should not default to 50"
         # With weight redistribution, all weight goes to the only available component.
-        # return_component(50) = 10 * sqrt(50) = 70.7, score = 70.7 * 1.0 = 70.7
-        assert result.score == pytest.approx(70.7, abs=1.0)
+        # return_component(50) = 10 * sqrt(50) = 70.7
+        # confidence=0.5 → 0.70x modifier, dd=unknown → -10 penalty
+        # score = 70.7 * 0.70 - 10 = 39.5
+        assert result.score == pytest.approx(39.5, abs=1.0)
 
     def test_no_fake_copiers_entered(self):
         from backend.discovery.validate import build_trader_profile

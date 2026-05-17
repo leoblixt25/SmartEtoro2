@@ -1,19 +1,25 @@
 """Pure scoring functions — no I/O, no side effects.
 
 Weighted component scoring (each component 0-100):
-  - Return (25%):        sqrt curve — 10*sqrt(return), capped at 100
-  - Risk-Adjusted (25%): return / max(drawdown, 5), 25*sqrt(ratio), capped at 100
-  - Consistency (20%):   profitableMonthsPct linear from 30% floor
-  - Drawdown (15%):      linear penalty — 3.3pt per % above 5
-  - Risk Score (10%):    linear penalty — 15pt per risk point
-  - Trend (5%):          experience + stability + win rate
+  - Return (10%):        sqrt curve — 10*sqrt(return), capped at 100
+  - Risk-Adjusted (15%): return / max(drawdown, 5), 25*sqrt(ratio), capped at 100
+  - Consistency (25%):   profitableMonthsPct linear from 30% floor
+  - Drawdown (20%):      linear penalty — 3.3pt per % above 5
+  - Risk Score (15%):    linear penalty — 15pt per risk point
+  - Trend (10%):         experience + stability + win rate
+
+Confidence modifier: final score is multiplied by 0.70/0.85/1.0 based on
+data completeness (<60% / <80% / >=80%) to penalize traders with sparse data.
+
+High-drawdown penalty: additional -10pts (DD>25%) or -5pts (DD>20%) on top
+of the drawdown component score.
 
 When a component has no data, its weight is redistributed proportionally
 to components that DO have data. This prevents data sparsity from
 capping the total score.
 
 Target score bands (with full data):
-  80-90 excellent, 70-79 strong, 55-69 average, <55 weak
+  75-85 excellent, 65-74 strong, 50-64 average, <50 weak
 """
 
 from __future__ import annotations
@@ -30,12 +36,12 @@ logger = logging.getLogger(__name__)
 # ── Base weights (sum = 1.0) ──────────────────────────────────────
 
 BASE_WEIGHTS = {
-    "return": 0.25,
-    "risk_adjusted": 0.25,
-    "consistency": 0.20,
-    "drawdown": 0.15,
-    "risk": 0.10,
-    "trend": 0.05,
+    "return": 0.10,
+    "risk_adjusted": 0.15,
+    "consistency": 0.25,
+    "drawdown": 0.20,
+    "risk": 0.15,
+    "trend": 0.10,
 }
 
 
@@ -323,12 +329,38 @@ def calculate_score_from_profile(profile: TraderProfile) -> TraderProfile:
         total_score += component_scores.get(comp, 0.0) * w
     total_score = min(100.0, total_score)
 
-    profile.score = round(total_score, 1)
-    profile.final_score = round(total_score, 1)
-    profile.confidence_modifier = 1.0
-    profile.confidence_score = 1.0
+    # ── Confidence modifier (data completeness penalty) ──────────
+    confidence = _compute_confidence_score(profile)
+    if confidence < 0.6:
+        conf_mod = 0.70
+        penalty_tags = ["low_confidence"]
+    elif confidence < 0.8:
+        conf_mod = 0.85
+        penalty_tags = ["medium_confidence"]
+    else:
+        conf_mod = 1.0
+        penalty_tags = []
+
+    # ── High-drawdown extra penalty ──────────────────────────────
+    dd_abs = _safe_drawdown(dd)
+    if dd_abs > 25:
+        dd_extra = 10
+        penalty_tags.append(f"high_drawdown_{dd_abs:.0f}pct")
+    elif dd_abs > 20:
+        dd_extra = 5
+        penalty_tags.append(f"elevated_drawdown_{dd_abs:.0f}pct")
+    else:
+        dd_extra = 0
+
+    final_raw = total_score * conf_mod - dd_extra
+    final_raw = max(0.0, min(100.0, final_raw))
+
+    profile.score = round(final_raw, 1)
+    profile.final_score = round(final_raw, 1)
+    profile.confidence_modifier = conf_mod
+    profile.confidence_score = confidence
     profile.growth_filter = False
-    profile.penalties = []
+    profile.penalties = penalty_tags
     profile.explanation = [
         f"source={profile.source}",
         f"return={best_return:.1f}%" if best_return else "return=none",

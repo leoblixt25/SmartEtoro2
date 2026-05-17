@@ -438,8 +438,18 @@ class TelegramBot:
                         lines.append(f'\U0001f4a1 {insight}')
                         lines.append('\u2501' * 16)
 
-                    # ── BEST PICK ───────────────────────────────────
-                    top = eligible[0]
+                    # ── BEST PICK: most balanced trader ──────────────
+                    def _balance_score(t):
+                        c = t.get("details", {}).get("components", {})
+                        return (
+                            c.get("consistency", 0) * 0.30
+                            + c.get("drawdown", 0) * 0.25
+                            + c.get("risk", 0) * 0.20
+                            + c.get("risk_adjusted", 0) * 0.10
+                            + c.get("return", 0) * 0.10
+                        )
+
+                    top = max(eligible, key=_balance_score)
                     top_user = top.get("username", "?")
                     top_ret = top.get("total_return_pct")
                     top_risk = top.get("risk_score")
@@ -450,13 +460,16 @@ class TelegramBot:
                     top_ra = top_comp.get("risk_adjusted", 0)
 
                     best_reason = "Most well-rounded performer."
-                    if top_ret is not None and top_ret > 100 and top_risk is not None and top_risk <= 4:
-                        if top_cons >= 60 and top_dd_val >= 60:
-                            best_reason = "Best mix of return, safety, and consistency."
-                        elif top_ra >= 60:
-                            best_reason = "Top-tier risk-adjusted returns."
-                    if top_cons >= 70 and top_dd_val >= 70:
+                    if top_cons >= 70 and top_dd_val >= 70 and top_ra >= 60:
+                        best_reason = "Best mix of safety, consistency, and efficiency."
+                    elif top_cons >= 60 and top_dd_val >= 70:
                         best_reason = "Strongest capital preservation with consistency."
+                    elif top_cons >= 60 and top_dd_val >= 60 and top_ra >= 60:
+                        best_reason = "Well-balanced with solid risk-adjusted returns."
+                    elif top_ra >= 60 and top_dd_val >= 60:
+                        best_reason = "Top-tier risk-adjusted returns."
+                    elif top_cons >= 50 and top_dd_val >= 50:
+                        best_reason = "Reliable performer with controlled downside."
                     elif top_ret is not None and top_ret > 80 and (top_risk is None or top_risk <= 5):
                         best_reason = "Top return with acceptable risk."
 
