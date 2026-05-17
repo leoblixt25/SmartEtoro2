@@ -372,18 +372,6 @@ class TelegramBot:
 
                         comp = t.get("details", {}).get("components", {})
 
-                        if risk is not None:
-                            if risk <= 3:
-                                style = "\U0001f7e2 Conservative Growth"
-                            elif risk <= 5:
-                                style = "\U0001f7e1 Balanced Growth"
-                            elif risk <= 7:
-                                style = "\U0001f7e0 Aggressive Growth"
-                            else:
-                                style = "\U0001f534 High Risk"
-                        else:
-                            style = "\u26aa Unknown"
-
                         is_high_ret = ret is not None and ret > 100
                         is_mod_ret = ret is not None and 50 < ret <= 100
                         is_low_ret = ret is not None and ret <= 50
@@ -447,7 +435,6 @@ class TelegramBot:
                         lines.append(
                             f'\U0001f4ca R:{ret_c:.0f} RA:{ra_c:.0f} C:{cons_c:.0f} DD:{dd_c:.0f} Rk:{risk_c:.0f}'
                         )
-                        lines.append(style)
                         lines.append(f'\U0001f4a1 {insight}')
                         lines.append('\u2501' * 16)
 
