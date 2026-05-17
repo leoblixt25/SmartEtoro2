@@ -444,10 +444,11 @@ class TelegramBot:
                         return (
                             c.get("consistency", 0) * 0.30
                             + c.get("drawdown", 0) * 0.25
-                            + c.get("risk", 0) * 0.20
-                            + c.get("risk_adjusted", 0) * 0.10
-                            + c.get("return", 0) * 0.10
+                            + c.get("risk_adjusted", 0) * 0.20
+                            + c.get("return", 0) * 0.15
                         )
+
+
 
                     top = max(eligible, key=_balance_score)
                     top_user = top.get("username", "?")

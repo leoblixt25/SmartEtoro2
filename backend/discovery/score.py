@@ -2,23 +2,23 @@
 
 Weighted component scoring (each component 0-100):
   - Consistency (25%):   profitableMonthsPct linear from 30% floor
-  - Drawdown (25%):      linear penalty — 3.3pt per % above 5
-  - Return (20%):        sqrt curve — 10*sqrt(return), capped at 100
-  - Risk-Adjusted (20%): return / max(drawdown, 5) / max(risk, 1), 25*sqrt(ratio), capped at 100
+  - Drawdown (25%):      linear penalty — 2.5pt per % above 5
+  - Return (20%):        sqrt curve — 12*sqrt(return), capped at 100
+  - Risk-Adjusted (20%): return / max(dd,5) / risk_penalty, 30*sqrt(ratio), capped at 100
   - Trend (10%):         experience + stability + win rate
 
-Confidence modifier: final score is multiplied by 0.70/0.85/1.0 based on
-data completeness (<60% / <80% / >=80%) to penalize traders with sparse data.
+Risk penalty for risk-adjusted: 1 + (risk-1)*0.25, so risk 3→1.5x, risk 5→2.0x.
+Confidence modifier: 0.80/0.90/1.0 based on data completeness (<60% / <80% / >=80%).
+High-drawdown penalty: -5 (DD>25%) or -3 (DD>20%) on top of component score.
 
-High-drawdown penalty: additional -10pts (DD>25%) or -5pts (DD>20%) on top
-of the drawdown component score.
-
-When a component has no data, its weight is redistributed proportionally
-to components that DO have data. This prevents data sparsity from
-capping the total score.
+Missing-data weights are redistributed proportionally to present components.
 
 Target score bands (with full data):
-  75-85 excellent, 65-74 strong, 50-64 average, <50 weak
+  Elite   80-95  — Top-tier across all metrics
+  Strong  70-79  — Solid across consistency, drawdown, return
+  Good    60-69  — Decent with one weaker area
+  Average 50-59  — Balanced but unremarkable
+  Avoid   <50    — Weak on multiple fronts
 """
 
 from __future__ import annotations
@@ -131,11 +131,11 @@ def _safe_drawdown(dd: Optional[float]) -> float:
 def _return_component(best_return: Optional[float]) -> float:
     """Return score 0-100. Nonlinear sqrt curve.
 
-    0%→0, 25%→50, 50%→71, 100%→100, 150%→100, 200%+→100.
+    0%→0, 25%→60, 50%→85, 70%→100, 100%+→100.
     """
     if best_return is None or best_return <= 0:
         return 0.0
-    return round(min(100.0, 10.0 * math.sqrt(float(best_return))), 1)
+    return round(min(100.0, 12.0 * math.sqrt(float(best_return))), 1)
 
 
 def _risk_adjusted_component(
@@ -143,10 +143,10 @@ def _risk_adjusted_component(
     drawdown: Optional[float],
     risk: Optional[float] = None,
 ) -> float:
-    """Risk-adjusted return 0-100. return / max(dd, 5) / risk, sqrt curve.
+    """Risk-adjusted return 0-100. return / max(dd,5) / risk_penalty, sqrt curve.
 
-    Risk score is folded in as an additional divisor so higher-risk traders
-    need proportionally higher return-per-drawdown to score the same.
+    Risk penalty = 1 + (risk-1)*0.25 so higher-risk traders need proportionally
+    higher return-per-drawdown to score the same. risk 3→1.5x, risk 5→2.0x.
     """
     if best_return is None or best_return <= 0:
         return 0.0
@@ -155,36 +155,36 @@ def _risk_adjusted_component(
         dd = 5.0
     ratio = float(best_return) / dd
     if risk is not None and risk > 1:
-        ratio = ratio / max(float(risk), 1.0)
+        ratio = ratio / (1.0 + (float(risk) - 1.0) * 0.25)
     if ratio <= 0:
         return 0.0
-    return round(min(100.0, 25.0 * math.sqrt(min(ratio, 25.0))), 1)
+    return round(min(100.0, 30.0 * math.sqrt(min(ratio, 25.0))), 1)
 
 
 def _consistency_component(profitable_months_pct: Optional[float]) -> float:
     """Consistency score 0-100. Linear from 30% floor.
 
-    <30%→0, 50%→29, 60%→43, 70%→57, 80%→71, 90%→86, 100%→100
+    <30%→0, 50%→30, 60%→45, 70%→60, 80%→75, 90%→90, 100%→100
     """
     if profitable_months_pct is None:
         return 0.0
     pct = float(profitable_months_pct)
     if pct < 30.0:
         return 0.0
-    return round(min(100.0, (pct - 30.0) * 1.43), 1)
+    return round(min(100.0, (pct - 30.0) * 1.5), 1)
 
 
 def _drawdown_component(peak_to_valley: Optional[float]) -> float:
-    """Drawdown score 0-100. Linear: -3.3pt per % above 5.
+    """Drawdown score 0-100. Linear: -2.5pt per % above 5.
 
-    5%→95, 10%→83, 15%→67, 20%→50, 25%→34, 30%→17, 35%→0
+    5%→100, 10%→88, 15%→75, 20%→63, 25%→50, 30%→38, 35%→25
     """
     dd = _safe_drawdown(peak_to_valley)
     if dd > 35.0:
         return 0.0
     if dd < 5.0:
-        return 95.0
-    return round(max(0.0, 100.0 - 3.3 * (dd - 5.0)), 1)
+        return 100.0
+    return round(max(0.0, 100.0 - 2.5 * (dd - 5.0)), 1)
 
 
 def _risk_component(risk: Optional[float]) -> float:
@@ -331,10 +331,10 @@ def calculate_score_from_profile(profile: TraderProfile) -> TraderProfile:
     # ── Confidence modifier (data completeness penalty) ──────────
     confidence = _compute_confidence_score(profile)
     if confidence < 0.6:
-        conf_mod = 0.70
+        conf_mod = 0.80
         penalty_tags = ["low_confidence"]
     elif confidence < 0.8:
-        conf_mod = 0.85
+        conf_mod = 0.90
         penalty_tags = ["medium_confidence"]
     else:
         conf_mod = 1.0
@@ -343,10 +343,10 @@ def calculate_score_from_profile(profile: TraderProfile) -> TraderProfile:
     # ── High-drawdown extra penalty ──────────────────────────────
     dd_abs = _safe_drawdown(dd)
     if dd_abs > 25:
-        dd_extra = 10
+        dd_extra = 5
         penalty_tags.append(f"high_drawdown_{dd_abs:.0f}pct")
     elif dd_abs > 20:
-        dd_extra = 5
+        dd_extra = 3
         penalty_tags.append(f"elevated_drawdown_{dd_abs:.0f}pct")
     else:
         dd_extra = 0
