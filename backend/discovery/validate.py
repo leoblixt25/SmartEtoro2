@@ -91,7 +91,7 @@ def build_trader_profile(raw: dict) -> TraderProfile:
     raw_tr = raw.get("total_return_pct")
     fs["total_return_pct"] = classify_return(raw_tr)
 
-    raw_avg = raw.get("avg_monthly_return")
+    raw_avg = raw.get("avg_monthly_return") or raw.get("avg_return")
     fs["avg_monthly_return"] = classify_return(raw_avg)
 
     # ── Risk / stability ──────────────────────────────────────────

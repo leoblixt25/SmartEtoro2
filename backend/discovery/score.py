@@ -4,7 +4,7 @@ Weighted component scoring (each component 0-100):
   - Consistency (25%):   profitableMonthsPct linear from 30% floor
   - Drawdown (25%):      linear penalty — 2.5pt per % above 5
   - Return (20%):        sqrt curve — 12*sqrt(return), capped at 100
-  - Risk-Adjusted (20%): return / max(dd,5) / risk_penalty, 30*sqrt(ratio), capped at 100
+  - Risk-Adjusted (20%): return / max(dd,5) / risk_penalty, 35*sqrt(ratio), capped at 100
   - Trend (10%):         experience + stability + win rate
 
 Risk penalty for risk-adjusted: 1 + (risk-1)*0.25, so risk 3→1.5x, risk 5→2.0x.
@@ -78,19 +78,15 @@ def _available_weights(profile: TraderProfile) -> dict:
 
 
 def _compute_confidence_score(profile: TraderProfile) -> float:
-    """Backward-compat: data completeness 0-1 (7 checks)."""
+    """Data completeness 0-1 based on fields the tradeinfo API actually returns."""
     checks = [
-        ("return_12m", lambda p: p.raw_return_12m is not None and p.raw_return_12m != 0),
         ("total_return_pct", lambda p: p.raw_total_return_pct is not None and p.raw_total_return_pct != 0),
         ("risk_score", lambda p: p.raw_risk_score is not None and p.raw_risk_score > 0),
         ("max_drawdown", lambda p: p.raw_drawdown is not None and p.raw_drawdown > 0),
         ("volatility", lambda p: p.raw_volatility is not None and p.raw_volatility > 0),
-        ("avg_monthly_return", lambda p: p.raw_avg_monthly_return is not None and p.raw_avg_monthly_return > 0),
-        ("sharpe_score", lambda p: p.raw_sharpe is not None and p.raw_sharpe != 0),
+        ("profitable_months_pct", lambda p: p.raw_profitable_months_pct is not None and p.raw_profitable_months_pct > 0),
     ]
     present = sum(1 for _, check in checks if check(profile))
-    if not checks:
-        return 0.0
     return round(0.3 + (present / len(checks)) * 0.7, 2)
 
 
@@ -158,7 +154,7 @@ def _risk_adjusted_component(
         ratio = ratio / (1.0 + (float(risk) - 1.0) * 0.25)
     if ratio <= 0:
         return 0.0
-    return round(min(100.0, 30.0 * math.sqrt(min(ratio, 25.0))), 1)
+    return round(min(100.0, 35.0 * math.sqrt(min(ratio, 25.0))), 1)
 
 
 def _consistency_component(profitable_months_pct: Optional[float]) -> float:
