@@ -1086,6 +1086,7 @@ class EToroAPIClient:
 
         Returns list of lightweight candidate dicts (no tradeinfo data).
         """
+        import asyncio
         page_size = 50
         pages_needed = (target // page_size) + 1
         discovered: Dict[str, Dict] = {}
