@@ -102,9 +102,12 @@ def _stage_hard_filter(
     candidates: List[Dict],
     progress_callback: Callable[[dict], None],
 ) -> List[Dict]:
-    """Remove weak candidates using only lightweight metadata.
+    """Remove weak candidates using only lightweight metadata from search API.
 
-    Filters on: risk, return range, weeks registered, missing data, drawdown hints.
+    The search API reliably returns userName and IsCopyable, but most
+    numeric fields (gain, risk, weeks) are often missing. Only filter
+    on fields that are actually present — don't assume missing data means
+    bad data. The real checks happen in Stage 3 after tradeinfo enrichment.
     """
     logger.info("Stage 2: Hard filtering — %d candidates in", len(candidates))
 
@@ -120,22 +123,20 @@ def _stage_hard_filter(
         ret = c.get("total_return_pct")
         weeks = c.get("weeks_since_registration")
 
-        # No meaningful data at all
-        if not risk and not ret:
+        has_any_field = any(x is not None for x in (risk, ret, weeks))
+        if not has_any_field:
             rejected_no_data += 1
             continue
 
-        # Risk too high
+        # Only apply filters if the search API actually returned the field
         if risk is not None and risk > CONSTRAINT_MAX_RISK:
             rejected_risk += 1
             continue
 
-        # Return too low / missing
-        if ret is None or ret <= 0:
+        if ret is not None and ret <= 0:
             rejected_return += 1
             continue
 
-        # Too new
         if weeks is not None and weeks < CONSTRAINT_MIN_WEEKS:
             rejected_weeks += 1
             continue
