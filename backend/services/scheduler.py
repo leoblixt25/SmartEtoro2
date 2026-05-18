@@ -166,27 +166,23 @@ class SchedulerService:
             logger.exception("Trader monitor job failed")
 
     async def _daily_discovery_job(self):
-        """Daily discovery report — find new eligible traders and send summary."""
-        from backend.database.connection import db_session
-        from backend.database.models import Portfolio
-        from backend.services.discovery_service import discover_eligible_traders
+        """Daily discovery report — 5-stage mass scan, send top results."""
         from backend.services.telegram_service import TelegramBot
+        from backend.services.screener_service import run_screener_and_wait
 
         try:
             bot = TelegramBot()
             if not bot.enabled:
                 return
 
-            with db_session() as db:
-                p = db.query(Portfolio).first()
-                if not p:
-                    logger.warning("Daily discovery: no portfolio found")
-                    return
+            logger.info("Daily discovery: starting 5-stage scan (target=10000)")
+            eligible, excluded, stats = await run_screener_and_wait(
+                scan_target=10000, top_n=10, max_concurrent=10,
+            )
 
-                eligible, excluded, stats = await discover_eligible_traders(db, p.id)
-
-                text = bot._build_discovery_message(eligible, stats)
-                await bot.send_message(text)
-                logger.info("Daily discovery report sent")
+            text = bot._build_discovery_message(eligible, stats)
+            await bot.send_message(text)
+            logger.info("Daily discovery report sent (scanned: %d, eligible: %d)",
+                        stats.get("discovered", 0), len(eligible))
         except Exception as e:
             logger.exception("Daily discovery job failed")

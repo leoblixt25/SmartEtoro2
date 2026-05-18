@@ -271,6 +271,53 @@ def _stage_final_selection(
 # ── Full pipeline ────────────────────────────────────────────────
 
 
+async def _run_pipeline(
+    scan_target: int,
+    top_n: int,
+    max_concurrent: int,
+    progress_callback: Callable[[dict], None],
+) -> Tuple[Optional[List[Dict]], Optional[List[Dict]], Optional[dict]]:
+    """Run stages 1-5 and return (top, excluded, stats) or (None, None, None) on failure."""
+    start_ts = time.time()
+    client = EToroAPIClient()
+
+    # Stage 1
+    candidates = await _stage_mass_discovery(client, scan_target, progress_callback)
+    if not candidates:
+        progress_callback(_make_progress(5, "Complete", 100, "No candidates found"))
+        return None, None, None
+
+    # Stage 2
+    filtered = _stage_hard_filter(candidates, progress_callback)
+    if not filtered:
+        progress_callback(_make_progress(5, "Complete", 100, "No traders passed filters"))
+        return None, None, None
+
+    # Stage 3
+    enriched, unavailable = await _stage_deep_analysis(client, filtered, progress_callback, max_concurrent)
+    if not enriched:
+        progress_callback(_make_progress(5, "Complete", 100, "No traders could be enriched"))
+        return None, None, None
+
+    # Stage 4
+    qualified = _stage_scoring(enriched, progress_callback)
+
+    # Stage 5
+    top = _stage_final_selection(qualified, top_n, progress_callback)
+
+    elapsed = round(time.time() - start_ts, 1)
+    stats = {
+        "discovered": len(candidates),
+        "after_filter": len(filtered),
+        "enriched": len(enriched),
+        "unavailable": len(unavailable),
+        "qualified": len(qualified),
+        "final_count": len(top),
+        "duration_seconds": elapsed,
+    }
+    return top, unavailable, stats
+
+
 async def run_screener(
     portfolio_id: int,
     scan_target: int = 2000,
@@ -279,80 +326,60 @@ async def run_screener(
 ) -> Tuple[str, dict]:
     """Run the 5-stage screener pipeline in a background task.
 
-    Returns (run_id, initial_progress).
+    Returns (run_id, initial_progress). Poll GET /api/screener/{run_id}
+    for completion.
     """
     run_id = _next_run_id()
-
     _screener_jobs[run_id] = _make_progress(0, "Starting", 0, "Initializing...")
-
-    async def _run():
-        start_ts = time.time()
-        try:
-            stage_errors = []
-            client = EToroAPIClient()
-
-            # Stage 1
-            candidates = await _stage_mass_discovery(client, scan_target, _update)
-            if not candidates:
-                _update(_make_progress(5, "Complete", 100, "No candidates found"))
-                return
-
-            # Stage 2
-            filtered = _stage_hard_filter(candidates, _update)
-            if not filtered:
-                _update(_make_progress(5, "Complete", 100, "No traders passed filters"))
-                return
-
-            # Stage 3
-            enriched, unavailable = await _stage_deep_analysis(
-                client, filtered, _update, max_concurrent,
-            )
-            if not enriched:
-                _update(_make_progress(5, "Complete", 100, "No traders could be enriched"))
-                return
-
-            # Stage 4
-            qualified = _stage_scoring(enriched, _update)
-
-            # Stage 5
-            top = _stage_final_selection(qualified, top_n, _update)
-
-            # Mark complete with results
-            elapsed = round(time.time() - start_ts, 1)
-            stats = {
-                "discovered": len(candidates),
-                "after_filter": len(filtered),
-                "enriched": len(enriched),
-                "unavailable": len(unavailable),
-                "qualified": len(qualified),
-                "final_count": len(top),
-                "duration_seconds": elapsed,
-            }
-            _screener_jobs[run_id] = {
-                "stage": 5,
-                "stage_name": "Complete",
-                "pct": 100,
-                "detail": f"Done in {elapsed}s — {len(top)} finalists",
-                "results": top,
-                "excluded": unavailable,
-                "stats": stats,
-            }
-            logger.info("Screener %s complete: %s", run_id, stats)
-
-        except Exception as e:
-            logger.exception("Screener %s failed: %s", run_id, e)
-            _screener_jobs[run_id] = {
-                "stage": -1,
-                "stage_name": "Error",
-                "pct": 0,
-                "detail": str(e),
-                "error": str(e),
-            }
 
     def _update(progress: dict) -> None:
         _screener_jobs[run_id] = progress
 
-    # Launch background task
-    asyncio.create_task(_run())
+    async def _run():
+        try:
+            top, unavailable, stats = await _run_pipeline(scan_target, top_n, max_concurrent, _update)
+            if top is None:
+                return
+            elapsed = stats["duration_seconds"]
+            _screener_jobs[run_id] = {
+                "stage": 5,
+                "stage_name": "Complete",
+                "pct": 100,
+                "detail": f"Done in {elapsed}s \u2014 {len(top)} finalists",
+                "results": top,
+                "excluded": unavailable or [],
+                "stats": stats,
+            }
+            logger.info("Screener %s complete: %s", run_id, stats)
+        except Exception as e:
+            logger.exception("Screener %s failed: %s", run_id, e)
+            _screener_jobs[run_id] = {
+                "stage": -1, "stage_name": "Error", "pct": 0,
+                "detail": str(e), "error": str(e),
+            }
 
+    asyncio.create_task(_run())
     return run_id, _screener_jobs[run_id]
+
+
+async def run_screener_and_wait(
+    scan_target: int = 10000,
+    top_n: int = DISCOVERY_TOP_N,
+    max_concurrent: int = 10,
+) -> Tuple[List[Dict], List[Dict], Dict]:
+    """Run the 5-stage pipeline synchronously (awaited) and return results.
+
+    Returns (top_candidates, excluded, stats) — same shape as
+    the legacy discover_eligible_traders() for backward compatibility.
+    """
+    progress = {"pct": 0}
+
+    def _update(p: dict) -> None:
+        progress.update(p)
+        if p.get("pct", 0) % 25 == 0 or p.get("stage_name") in ("Mass Discovery", "Deep Analysis"):
+            logger.info("Screener [%s]: %s \u2014 %s", p.get("stage_name", "?"), p.get("detail", ""), p.get("pct", 0))
+
+    top, unavailable, stats = await _run_pipeline(scan_target, top_n, max_concurrent, _update)
+    if top is None:
+        return [], [], stats or {"error": "No results", "duration_seconds": 0}
+    return top, unavailable or [], stats

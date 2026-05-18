@@ -361,8 +361,8 @@ class TelegramBot:
                 await self._reply(update, f"Error: {e}")
 
     def _build_discovery_message(self, eligible: list, stats: dict) -> str:
-        scanned = stats.get("total_scanned", 0)
-        eligible_count = stats.get("eligible", 0)
+        scanned = stats.get("total_scanned", stats.get("discovered", 0))
+        eligible_count = stats.get("eligible", stats.get("final_count", len(eligible)))
         now = datetime.now().strftime("%b %d, %H:%M UTC")
 
         lines = [
