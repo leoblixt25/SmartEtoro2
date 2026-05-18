@@ -43,4 +43,11 @@ export const alertsAPI = {
   markAllRead: (pid) => api.post(`/api/portfolios/${pid}/alerts/read-all`).then(r => r.data),
 }
 
+export const screenerAPI = {
+  start:  (pid, scanTarget=2000, topN=10) =>
+          api.post(`/api/portfolios/${pid}/screener?scan_target=${scanTarget}&top_n=${topN}`).then(r => r.data),
+  status: (runId) =>
+          api.get(`/api/screener/${runId}`).then(r => r.data),
+}
+
 export default api

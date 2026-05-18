@@ -35,11 +35,12 @@ logger = logging.getLogger(__name__)
 # ── Base weights (sum = 1.0) ──────────────────────────────────────
 
 BASE_WEIGHTS = {
-    "consistency": 0.25,
-    "drawdown": 0.25,
-    "return": 0.20,
-    "risk_adjusted": 0.20,
-    "trend": 0.10,
+    "return": 0.25,
+    "risk_adjusted": 0.25,
+    "consistency": 0.20,
+    "drawdown": 0.15,
+    "risk": 0.10,
+    "trend": 0.05,
 }
 
 
@@ -60,6 +61,7 @@ def _available_weights(profile: TraderProfile) -> dict:
         "risk_adjusted": lambda: (_has("return_12m") or _has("total_return_pct")) and _has("peak_to_valley"),
         "consistency": lambda: _has("profitable_months_pct"),
         "drawdown": lambda: _has("peak_to_valley"),
+        "risk": lambda: _has("risk_score") and getattr(profile, "raw_risk_score", None) not in (None, 0),
         "trend": lambda: _has("weeks_since_registration") or _has("volatility") or _has("win_ratio"),
     }
 
@@ -267,6 +269,9 @@ def _confidence_label(profile: TraderProfile) -> str:
 def calculate_score_from_profile(profile: TraderProfile) -> TraderProfile:
     """Score a trader across 6 weighted components (each 0-100).
 
+    Weights: Return 25%, Risk-Adjusted 25%, Consistency 20%,
+             Drawdown 15%, Risk 10%, Trend 5%.
+
     Missing-data weights are redistributed proportionally.
     """
     username = profile.username
@@ -305,15 +310,15 @@ def calculate_score_from_profile(profile: TraderProfile) -> TraderProfile:
     avg_monthly = profile.raw_avg_monthly_return
     trend_score = _trend_component(weeks, vol, win, avg_monthly)
 
-    # Backward-compat: compute standalone risk score (not used in weighted total)
     risk_score_val = _risk_component(risk) if risk is not None else 0.0
 
     # ── Weighted total with redistribution ───────────────────────
     component_scores = {
-        "consistency": cons_score,
-        "drawdown": dd_score,
         "return": ret_score,
         "risk_adjusted": ra_score,
+        "consistency": cons_score,
+        "drawdown": dd_score,
+        "risk": risk_score_val,
         "trend": trend_score,
     }
 
@@ -370,6 +375,7 @@ def calculate_score_from_profile(profile: TraderProfile) -> TraderProfile:
     profile.norm_risk = risk_score_val
     profile.norm_drawdown = dd_score
     profile.norm_consistency = cons_score
+    profile.norm_risk = risk_score_val
 
     return profile
 

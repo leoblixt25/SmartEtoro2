@@ -43,9 +43,23 @@ MIN_VERIFIED_FIELDS = 0
 MIN_FINAL_SCORE_FOR_RECOMMENDATION = 10.0
 
 # ── Discovery Scan Targets ──────────────────────────────────────────
-DISCOVERY_SCAN_TARGET = 500
+DISCOVERY_SCAN_TARGET = 10000
 DISCOVERY_MIN = 200
-DISCOVERY_MAX = 500
+DISCOVERY_MAX = 10000
+
+# Scan level presets (label → target traders)
+SCAN_PRESETS = {
+    "fast": 500,
+    "medium": 2000,
+    "deep": 5000,
+    "full": 10000,
+}
+ESTIMATED_TIMES = {
+    500: "~10 sec",
+    2000: "~30 sec",
+    5000: "~1\u20132 min",
+    10000: "~3\u20135 min",
+}
 
 # ── Fetch Layer ──────────────────────────────────────────────────────
 API_SEMAPHORE_MAX = 8

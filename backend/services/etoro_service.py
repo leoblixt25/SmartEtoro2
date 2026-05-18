@@ -1077,6 +1077,83 @@ class EToroAPIClient:
 
         return [u for u in unique if not self._is_fake_username(u)]
 
+    async def discover_bulk(self, target: int = 10000, max_concurrent: int = 10) -> List[Dict]:
+        """Mass discovery with concurrent pagination and lightweight metadata.
+
+        Fetches up to `target` traders from the eToro search API using
+        parallel page requests. Extracts lightweight metadata from each
+        result (risk, gain, copiers, weeks, country) for Stage 1 filtering.
+
+        Returns list of lightweight candidate dicts (no tradeinfo data).
+        """
+        page_size = 50
+        pages_needed = (target // page_size) + 1
+        discovered: Dict[str, Dict] = {}
+
+        async def _fetch_page(page: int) -> List[Dict]:
+            url = (
+                f"{self.BASE_URL}/api/v1/user-info/people/search"
+                f"?period=CurrYear&page={page}&pageSize={page_size}"
+            )
+            try:
+                data = await self._api_get_with_retry(url, timeout=15.0, browser_headers=False)
+                if data is None:
+                    return []
+                items = data.get("items", []) if isinstance(data, dict) else []
+                page_results = []
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    uname = item.get("userName")
+                    if not uname or not isinstance(uname, str) or not uname.strip():
+                        continue
+                    is_copyable = item.get("IsCopyable", item.get("isCopyable"))
+                    if is_copyable is False:
+                        continue
+                    page_results.append({
+                        "username": uname.strip(),
+                        "risk_score": item.get("RiskScore", item.get("riskScore")),
+                        "total_return_pct": item.get("GainPercentage", item.get("gainPerc")),
+                        "copiers": item.get("Copiers", item.get("copiers", item.get("NumberOfCopiers"))),
+                        "weeks_since_registration": item.get("WeeksSinceRegistration", item.get("weeks")),
+                        "country": item.get("Country", item.get("country")),
+                        "is_copyable": True,
+                        "source": "search_api",
+                        "confidence": 0.5,
+                        "available": True,
+                    })
+                return page_results
+            except Exception as e:
+                logger.warning("Bulk discovery page %d error: %s", page, e)
+                return []
+
+        sem = asyncio.Semaphore(max_concurrent)
+
+        async def _fetch_page_throttled(page: int) -> None:
+            async with sem:
+                results = await _fetch_page(page)
+                for r in results:
+                    discovered[r["username"]] = r
+
+        # Fetch pages in concurrent batches
+        batch_size = max_concurrent * 2
+        for start in range(1, pages_needed + 1, batch_size):
+            batch = range(start, min(start + batch_size, pages_needed + 1))
+            await asyncio.gather(*[_fetch_page_throttled(p) for p in batch])
+            if len(discovered) >= target * 1.5:
+                logger.info("Bulk discovery: reached %d candidates — stopping", len(discovered))
+                break
+
+        # Filter fake usernames and limit
+        all_candidates = [v for k, v in discovered.items() if not self._is_fake_username(k)]
+        limited = all_candidates[:target]
+
+        logger.info(
+            "Bulk discovery complete: %d raw, %d unique, %d after filter, returning %d",
+            pages_needed * page_size, len(discovered), len(all_candidates), len(limited),
+        )
+        return limited
+
     def _get_mock_account_summary(self) -> Dict:
         import random
         base_value = 15000 + random.uniform(-2000, 3000)

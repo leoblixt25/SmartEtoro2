@@ -30,6 +30,7 @@ from backend.services.scheduler import SchedulerService
 from backend.services.telegram_service import TelegramBot
 from backend.services.portfolio_service import get_portfolio_overview, get_active_traders
 from backend.services.discovery_service import discover_eligible_traders
+from backend.services.screener_service import run_screener, get_job
 from backend.services.alert_service import get_alerts, mark_alert_read, mark_all_read, get_alert_summary
 from backend.services.dashboard_service import build_dashboard_data
 
@@ -269,6 +270,26 @@ async def discovery(portfolio_id: int, db: Session = Depends(get_db)):
     _get_portfolio_or_404(db, portfolio_id)
     eligible, excluded, stats = await discover_eligible_traders(db, portfolio_id)
     return {"eligible": eligible, "excluded": excluded, "stats": stats}
+
+
+@app.post("/api/portfolios/{portfolio_id}/screener")
+async def start_screener(
+    portfolio_id: int,
+    scan_target: int = 2000,
+    top_n: int = 10,
+    db: Session = Depends(get_db),
+):
+    _get_portfolio_or_404(db, portfolio_id)
+    run_id, initial = await run_screener(portfolio_id, scan_target, top_n)
+    return {"run_id": run_id, "progress": initial}
+
+
+@app.get("/api/screener/{run_id}")
+async def screener_progress(run_id: str):
+    job = get_job(run_id)
+    if job is None:
+        return JSONResponse(status_code=404, content={"error": "Run not found"})
+    return {"run_id": run_id, "progress": job}
 
 
 @app.get("/api/portfolios/{portfolio_id}/dashboard")
