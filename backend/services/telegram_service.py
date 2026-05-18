@@ -309,9 +309,24 @@ class TelegramBot:
             await self._reply(update, f"Error: {e}")
 
     async def _cmd_discovery(self, update: Update, args: list[str]) -> None:
-        from backend.database.connection import db_session
-        from backend.database.models import Portfolio
-        from backend.services.discovery_service import discover_eligible_traders
+        from backend.services.screener_service import run_screener_and_wait
+        from backend.discovery.config import SCAN_PRESETS
+
+        # Parse optional scan level from args, e.g. /discovery 5000
+        scan_target = 10000
+        if args:
+            try:
+                parsed = int(args[0])
+                valid = set(SCAN_PRESETS.values())
+                if parsed in valid:
+                    scan_target = parsed
+                else:
+                    valid_str = ", ".join(str(v) for v in sorted(valid))
+                    await self._reply(update, f"Invalid scan level. Use one of: {valid_str}")
+                    return
+            except ValueError:
+                await self._reply(update, "Usage: /discovery [scan_level] where scan_level is 500, 2000, 5000, or 10000")
+                return
 
         # Lock to prevent concurrent discovery commands
         if not hasattr(self, "_discovery_lock"):
@@ -324,23 +339,13 @@ class TelegramBot:
             status_msg = None
             try:
                 status_msg = await update.message.reply_text(
-                    "\U0001f50d Scanning traders... please wait",
+                    f"\U0001f50d Scanning up to {scan_target:,} traders... please wait",
                     reply_markup=self._keyboard(),
                 )
-                with db_session() as db:
-                    p = db.query(Portfolio).first()
-                    if not p:
-                        text = "No portfolio found."
-                        if status_msg:
-                            try:
-                                await status_msg.edit_text(text, parse_mode="HTML")
-                            except Exception:
-                                await self._reply(update, text)
-                        else:
-                            await self._reply(update, text)
-                        return
 
-                    eligible, excluded, stats = await discover_eligible_traders(db, p.id)
+                eligible, excluded, stats = await run_screener_and_wait(
+                    scan_target=scan_target, top_n=10, max_concurrent=10,
+                )
 
                 text = self._build_discovery_message(eligible, stats)
                 if status_msg:
