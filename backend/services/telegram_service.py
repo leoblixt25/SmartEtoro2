@@ -584,7 +584,7 @@ class TelegramBot:
                     await self._reply(update, "Health analysis complete. No signals to report.")
                     return
 
-                summary = _build_health_summary(results)
+                summary = _build_health_summary(results, live=bool(live_usernames))
                 await self._reply(update, summary)
         except Exception as e:
             logger.error(f"/health error: {e}")
@@ -753,7 +753,7 @@ def _short_reason(r: dict) -> str:
     return "Limited data"
 
 
-def _build_health_summary(results: list[dict]) -> str:
+def _build_health_summary(results: list[dict], live: bool = False) -> str:
     """Build a compact /health summary string."""
     total = len(results)
 
@@ -768,7 +768,8 @@ def _build_health_summary(results: list[dict]) -> str:
     _or = "\U0001f7e0"
     _rd = "\U0001f534"
 
-    lines = [f"{_ic} 7Health Report"]
+    source_tag = "Live" if live else "Cached"
+    lines = [f"{_ic} 7Health Report ({source_tag})"]
     lines.append(f"Scanned: {total} traders")
     lines.append(f"{_gn} Strong: {len(buckets['Strong'])}")
     lines.append(f"{_bl} Good: {len(buckets['Good'])}")
@@ -808,11 +809,15 @@ def _build_health_summary(results: list[dict]) -> str:
         for risk in unique_risks[:3]:
             lines.append(risk)
 
+    STATUS_ICONS = {"Strong": _gn, "Good": _bl, "Watch": _yw, "Weak": _or, "Avoid": _rd}
+
     def trader_line(r: dict) -> str:
         score = r.get("health_score", 0)
         rec = r.get("recommendation", "KEEP")
         reason = _short_reason(r)
-        return f"- {r['trader']} | {score:.0f}/100 | {rec} | {reason}"
+        status = r.get("health_status", "Watch")
+        icon = STATUS_ICONS.get(status, "⚪")
+        return f"{icon} {r['trader']} | {score:.0f}/100 | {rec} | {reason}"
 
     best = buckets["Strong"] + buckets["Good"]
     watch = buckets["Watch"]
