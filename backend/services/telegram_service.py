@@ -567,26 +567,8 @@ class TelegramBot:
                     await self._reply(update, "Health analysis complete. No signals to report.")
                     return
 
-                MAX_CHARS = 3800
-                chunks = []
-                current = ["\U0001f4ca Trader Health Report\n"]
-
-                for r in results:
-                    trader_lines = _format_health_report(r)
-                    joined = "\n".join(trader_lines)
-                    candidate = "\n".join(current + [""] + trader_lines)
-
-                    if len(candidate) > MAX_CHARS:
-                        chunks.append("\n".join(current))
-                        current = ["\U0001f4ca Health Report (cont.)\n", joined]
-                    else:
-                        current.extend(trader_lines)
-
-                if current:
-                    chunks.append("\n".join(current))
-
-                for chunk in chunks:
-                    await self._reply(update, chunk)
+                summary = _build_health_summary(results)
+                await self._reply(update, summary)
         except Exception as e:
             logger.error(f"/health error: {e}")
             await self._reply(update, f"Health analysis failed: {e}")
@@ -710,57 +692,109 @@ class TelegramBot:
         return f"{base}{self.webhook_path()}"
 
 
-def _format_health_report(r: dict) -> list[str]:
-    """Format a single trader health result into display lines."""
-    lines = [""]
-    rec = r.get("recommendation", "KEEP")
-    score = r.get("health_score", 0)
-    status = r.get("health_status", "N/A")
-    perf = r.get("performance_summary", {})
-    risk_a = r.get("risk_analysis", {})
-    news_a = r.get("news_analysis", {})
-    conc = r.get("portfolio_concentration", {})
+def _short_reason(r: dict) -> str:
+    """One-line reason for a trader."""
     warns = r.get("warning_signs", [])
-    conf_lbl = r.get("confidence_label", "Medium")
-
-    lines.append(f"\U0001f464 {r['trader']}")
-
-    lines.append(f"\n\U0001f4c8 Performance")
-    d = perf.get("day", {})
-    w = perf.get("week", {})
-    m = perf.get("month", {})
-    d_ret = f"{d.get('return_pct', 'N/A'):+.2f}%" if isinstance(d.get('return_pct'), (int, float)) else "N/A"
-    w_ret = f"{w.get('return_pct', 'N/A'):+.2f}%" if isinstance(w.get('return_pct'), (int, float)) else "N/A"
-    m_ret = f"{m.get('return_pct', 'N/A'):+.2f}%" if isinstance(m.get('return_pct'), (int, float)) else "N/A"
-    lines.append(f"\u2022 Day: {d_ret} ({d.get('label', 'N/A')})")
-    lines.append(f"\u2022 Week: {w_ret} ({w.get('label', 'N/A')})")
-    lines.append(f"\u2022 Month: {m_ret} ({m.get('label', 'N/A')})")
-
-    lines.append(f"\n\u26a1 Risk Analysis")
-    lines.append(f"\u2022 Max Drawdown: {risk_a.get('max_drawdown', 0):.1f}%")
-    leverage = risk_a.get("leverage", 0)
-    lines.append(f"\u2022 Leverage: {leverage:.1f}x" if leverage else "\u2022 Leverage: N/A")
-    lines.append(f"\u2022 Stability: {risk_a.get('stability', 'N/A')}")
-
-    lines.append(f"\n\U0001f4f0 News Impact")
-    lines.append(f"\u2022 {news_a.get('impact', 'neutral').title()}")
-    pos = news_a.get("positive_symbols", [])
-    neg = news_a.get("negative_symbols", [])
-    if pos:
-        lines.append(f"\u2022 Positive: {', '.join(pos[:3])}")
-    if neg:
-        lines.append(f"\u2022 Negative: {', '.join(neg[:3])}")
-
-    lines.append(f"\n\U0001f4ca Concentration")
-    lines.append(f"\u2022 Top: {conc.get('top_holding', 'N/A')} at {conc.get('top_weight', 0):.0f}%")
-
     if warns:
-        lines.append(f"\n\u26a0\ufe0f Warning Signs")
-        for w_text in warns[:3]:
-            lines.append(f"\u2022 {w_text}")
+        return warns[0].rstrip(".")
+    perf = r.get("performance_summary", {})
+    m = perf.get("month", {})
+    ml = m.get("label", "N/A")
+    ov = perf.get("overall_return")
+    if ml != "N/A":
+        return f"Monthly: {ml}"
+    if ov is not None:
+        return f"Return: {ov:+.1f}%"
+    risk = r.get("risk_analysis", {})
+    rl = risk.get("risk_label", "N/A")
+    if rl != "Unknown":
+        return f"Risk: {rl}"
+    return "Limited data"
 
-    lines.append(f"\n\U0001f3c6 Final Verdict")
-    lines.append(f"\u2022 Score: {score:.0f}/100 ({status})")
-    lines.append(f"\u2022 Confidence: {conf_lbl}")
-    lines.append(f"\u2022 Action: {rec}")
-    return lines
+
+def _build_health_summary(results: list[dict]) -> str:
+    """Build a compact /health summary string."""
+    total = len(results)
+
+    buckets = {"Strong": [], "Good": [], "Watch": [], "Weak": [], "Avoid": []}
+    for r in results:
+        status = r.get("health_status", "Watch")
+        buckets.setdefault(status, []).append(r)
+
+    lines = ["\U0001f4ca 7Health Summary"]
+    lines.append(f"Scanned: {total} traders")
+    lines.append(f"  Strong: {len(buckets['Strong'])}")
+    lines.append(f"  Good: {len(buckets['Good'])}")
+    lines.append(f"  Watch: {len(buckets['Watch'])}")
+    lines.append(f"  Weak: {len(buckets['Weak'])}")
+    lines.append(f"  Avoid: {len(buckets['Avoid'])}")
+
+    all_warnings = []
+    for r in results:
+        for w in r.get("warning_signs", []):
+            all_warnings.append((r["trader"], w.rstrip(".")))
+    unique_risks = []
+    seen = set()
+    for trader, warn in all_warnings:
+        key = warn.lower()
+        if key not in seen:
+            seen.add(key)
+            unique_risks.append(f"- {trader} | {warn}")
+
+    if unique_risks:
+        lines.append(f"\n\U0001f6a8 Top Risks")
+        for risk in unique_risks[:3]:
+            lines.append(risk)
+
+    def trader_line(r: dict) -> str:
+        score = r.get("health_score", 0)
+        rec = r.get("recommendation", "KEEP")
+        reason = _short_reason(r)
+        return f"- {r['trader']} | {score:.0f}/100 | {rec} | {reason}"
+
+    best = buckets["Strong"] + buckets["Good"]
+    review = buckets["Watch"]
+    avoid = buckets["Weak"] + buckets["Avoid"]
+
+    if best:
+        lines.append(f"\n\u2705 Best Traders")
+        for r in best:
+            lines.append(trader_line(r))
+
+    if review:
+        lines.append(f"\n\u26a0\ufe0f Traders to Review")
+        for r in review:
+            lines.append(trader_line(r))
+
+    if avoid:
+        lines.append(f"\n\u274c Traders to Avoid or Reduce")
+        for r in avoid:
+            lines.append(trader_line(r))
+
+    has_neg_news = any(
+        r.get("news_analysis", {}).get("impact") == "negative" for r in results
+    )
+    has_pos_news = any(
+        r.get("news_analysis", {}).get("impact") == "positive" for r in results
+    )
+    if has_neg_news or has_pos_news:
+        lines.append(f"\n\U0001f4f0 News Impact")
+        if has_neg_news:
+            lines.append("- Negative news affecting some holdings - monitor positions")
+        if has_pos_news:
+            lines.append("- Positive news on some holdings")
+
+    avg_score = round(sum(r.get("health_score", 0) for r in results) / total, 0) if total else 0
+    strong_pct = len(buckets["Strong"]) + len(buckets["Good"])
+    weak_pct = len(buckets["Weak"]) + len(buckets["Avoid"])
+    if strong_pct > weak_pct and avg_score >= 65:
+        advice = "Portfolio is healthy - keep copying with normal monitoring"
+    elif weak_pct > strong_pct and avg_score < 55:
+        advice = "Multiple traders flagged - consider pausing new copies until data improves"
+    else:
+        advice = "Mixed signals - monitor closely and review Watch/Weak traders"
+
+    lines.append(f"\n\U0001f3af Final Advice")
+    lines.append(f"- {advice}")
+
+    return "\n".join(lines)

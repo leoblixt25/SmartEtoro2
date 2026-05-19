@@ -64,12 +64,18 @@ def _score_performance(trader: Dict) -> Tuple[float, Dict]:
     ret_1d = trader.get("return_1d")
     ret_1w = trader.get("return_1w")
     ret_1m = trader.get("return_1m")
-    ret_12m = float(trader.get("total_return_pct", 0) or 0)
-    win_rate = float(trader.get("win_rate", 0) or 0)
+    ret_12m_raw = trader.get("total_return_pct")
+    if ret_12m_raw is None:
+        ret_12m_raw = trader.get("return_12m")
+    ret_12m = float(ret_12m_raw) if ret_12m_raw is not None else 0.0
+    win_rate_raw = trader.get("win_rate")
+    win_rate = float(win_rate_raw) if win_rate_raw is not None else None
 
     score = 0.0
+    has_any_perf = False
 
     if ret_1d is not None:
+        has_any_perf = True
         d = float(ret_1d)
         if d > 2:
             day_label = "up"
@@ -84,9 +90,9 @@ def _score_performance(trader: Dict) -> Tuple[float, Dict]:
             score += 3
     else:
         day_label = "N/A"
-        score += 5
 
     if ret_1w is not None:
+        has_any_perf = True
         w = float(ret_1w)
         if w > 5:
             week_label = "up"
@@ -101,9 +107,9 @@ def _score_performance(trader: Dict) -> Tuple[float, Dict]:
             score += 3
     else:
         week_label = "N/A"
-        score += 5
 
     if ret_1m is not None:
+        has_any_perf = True
         m = float(ret_1m)
         if m > 10:
             month_label = "up"
@@ -118,7 +124,25 @@ def _score_performance(trader: Dict) -> Tuple[float, Dict]:
             score += 3
     else:
         month_label = "N/A"
-        score += 5
+
+    if not has_any_perf and ret_12m_raw is not None:
+        fallback_label = "up" if ret_12m > 5 else ("down" if ret_12m < -5 else "flat")
+        if ret_12m > 50:
+            score = 22
+        elif ret_12m > 20:
+            score = 18
+        elif ret_12m > 5:
+            score = 14
+        elif ret_12m > 0:
+            score = 10
+        elif ret_12m > -20:
+            score = 6
+        else:
+            score = 2
+        month_label = f"est.{fallback_label}"
+    elif not has_any_perf:
+        score = 6
+        month_label = "insufficient"
 
     score = min(score, PERFORMANCE_MAX)
 
@@ -126,61 +150,78 @@ def _score_performance(trader: Dict) -> Tuple[float, Dict]:
         "day": {"return_pct": float(ret_1d) if ret_1d is not None else None, "label": day_label},
         "week": {"return_pct": float(ret_1w) if ret_1w is not None else None, "label": week_label},
         "month": {"return_pct": float(ret_1m) if ret_1m is not None else None, "label": month_label},
-        "overall_return": round(ret_12m, 2),
-        "win_rate": round(win_rate, 1),
+        "overall_return": round(ret_12m, 2) if ret_12m_raw is not None else None,
+        "win_rate": round(win_rate, 1) if win_rate is not None else None,
     }
     return score, details
 
 
 def _score_risk(trader: Dict) -> Tuple[float, Dict]:
-    risk = float(trader.get("risk_score", 5.0) or 5.0)
-    dd = float(trader.get("max_drawdown", 0.0) or 0.0)
+    risk_raw = trader.get("risk_score")
+    dd_raw = trader.get("max_drawdown")
     leverage = float(trader.get("leverage", 0) or 0)
-    consistency = float(trader.get("consistency_score", 50) or 50)
+    consistency_raw = trader.get("consistency_score")
 
     score = RISK_MAX
 
-    if dd > DRAWDOWN_HIGH:
-        score -= 10
-        dd_label = "High"
-    elif dd > DRAWDOWN_ELEVATED:
-        score -= 5
-        dd_label = "Moderate"
+    if dd_raw is not None:
+        dd = float(dd_raw)
+        if dd > DRAWDOWN_HIGH:
+            score -= 10
+            dd_label = "High"
+        elif dd > DRAWDOWN_ELEVATED:
+            score -= 5
+            dd_label = "Moderate"
+        else:
+            dd_label = "Low"
     else:
-        dd_label = "Low"
+        dd = None
+        dd_label = "Unknown"
+        score -= 2
 
-    if risk > RISK_HIGH:
-        score -= 8
-        risk_label = "High"
-    elif risk > RISK_ACCEPTABLE:
-        score -= 4
-        risk_label = "Moderate"
+    if risk_raw is not None:
+        risk = float(risk_raw)
+        if risk > RISK_HIGH:
+            score -= 8
+            risk_label = "High"
+        elif risk > RISK_ACCEPTABLE:
+            score -= 4
+            risk_label = "Moderate"
+        else:
+            risk_label = "Low"
     else:
-        risk_label = "Low"
+        risk = None
+        risk_label = "Unknown"
+        score -= 3
 
     if leverage > LEVERAGE_HIGH:
         score -= 5
     elif leverage > 2:
         score -= 2
 
-    if consistency >= CONSISTENCY_STABLE:
-        stability = "Stable"
-    elif consistency >= CONSISTENCY_MODERATE:
-        stability = "Moderate"
+    if consistency_raw is not None:
+        consistency = float(consistency_raw)
+        if consistency >= CONSISTENCY_STABLE:
+            stability = "Stable"
+        elif consistency >= CONSISTENCY_MODERATE:
+            stability = "Moderate"
+        else:
+            stability = "Volatile"
+            score -= 2
     else:
-        stability = "Volatile"
-        score -= 2
+        consistency = None
+        stability = "Unknown"
 
     score = max(0, score)
 
     details = {
-        "max_drawdown": round(dd, 1),
+        "max_drawdown": round(dd, 1) if dd is not None else None,
         "drawdown_label": dd_label,
-        "risk_score": round(risk, 1),
+        "risk_score": round(risk, 1) if risk is not None else None,
         "risk_label": risk_label,
         "leverage": round(leverage, 1),
         "stability": stability,
-        "consistency_score": round(consistency, 1),
+        "consistency_score": round(consistency, 1) if consistency is not None else None,
     }
     return score, details
 
@@ -260,7 +301,10 @@ def _score_concentration(holdings: List[Dict]) -> Tuple[float, Dict, List[str]]:
 
 
 def _score_consistency(trader: Dict) -> float:
-    consistency = float(trader.get("consistency_score", 50) or 50)
+    consistency_raw = trader.get("consistency_score")
+    if consistency_raw is None:
+        return 4.0
+    consistency = float(consistency_raw)
     if consistency >= CONSISTENCY_STABLE:
         return 10.0
     elif consistency >= CONSISTENCY_MODERATE:
@@ -305,18 +349,30 @@ def _collect_warnings(
     news_details: Dict,
 ) -> List[str]:
     warnings = list(conc_warnings)
-    if risk_details.get("drawdown_label") == "High":
-        warnings.append(f"Max drawdown is high ({risk_details['max_drawdown']:.0f}%)")
+    if risk_details.get("drawdown_label") in ("High",):
+        dd_v = risk_details.get("max_drawdown")
+        if dd_v is not None:
+            warnings.append(f"Max drawdown is high ({dd_v:.0f}%)")
+        else:
+            warnings.append("Max drawdown is high")
+    if risk_details.get("drawdown_label") == "Unknown":
+        warnings.append("Max drawdown unknown - reduced confidence")
     if risk_details.get("risk_label") == "High":
-        warnings.append(f"Risk score is high ({risk_details['risk_score']:.1f})")
+        r_v = risk_details.get("risk_score")
+        if r_v is not None:
+            warnings.append(f"Risk score is high ({r_v:.1f})")
+    if risk_details.get("risk_label") == "Unknown":
+        warnings.append("Risk score unknown - reduced confidence")
     if risk_details.get("stability") == "Volatile":
         warnings.append("Returns are volatile with low consistency")
+    if risk_details.get("stability") == "Unknown":
+        warnings.append("Consistency unknown - reduced confidence")
     if risk_details.get("leverage", 0) > LEVERAGE_HIGH:
         warnings.append(f"Leverage is high ({risk_details['leverage']:.1f}x)")
     if not holdings:
         warnings.append("No holdings data - reduced confidence")
     if news_details.get("impact") == "negative":
-        warnings.append(f"Negative news affecting holdings")
+        warnings.append("Negative news affecting holdings")
     return warnings[:5]
 
 
@@ -328,10 +384,13 @@ def _build_reasons(
     recommendation: str,
     health_score: float,
 ) -> List[str]:
+    rl = risk_details.get("risk_label", "N/A")
+    rs = risk_details.get("risk_score")
+    risk_str = f"Risk: {rl}" + (f" ({rs:.1f})" if rs is not None else "")
     reasons = [
         f"Health score: {health_score:.0f}/100 ({status})",
         f"Performance: {perf_score:.0f}/{PERFORMANCE_MAX}",
-        f"Risk: {risk_details.get('risk_label', 'N/A')} (score {risk_details.get('risk_score', 0):.1f})",
+        risk_str,
     ]
     ri = news_details.get("impact", "neutral")
     if ri == "negative":
