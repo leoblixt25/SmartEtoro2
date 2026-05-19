@@ -54,8 +54,9 @@ NEGATIVE_NEWS_RATIO = 0.3
 
 RECOMMENDATION_TO_SIGNAL = {
     "KEEP": "increase",
-    "REDUCE COPY AMOUNT": "reduce",
+    "REDUCE": "reduce",
     "PAUSE": "watch",
+    "REVIEW": "watch",
     "UNCOPY": "avoid",
 }
 
@@ -324,22 +325,46 @@ def _health_status(score: float) -> str:
     return "Avoid"
 
 
-def _get_recommendation(score: float, status: str) -> str:
+def _assess_data_quality(trader: Dict, holdings: List[Dict]) -> Tuple[str, Dict]:
+    flags = {}
+    has_perf = (
+        trader.get("return_1d") is not None
+        or trader.get("return_1w") is not None
+        or trader.get("return_1m") is not None
+        or trader.get("total_return_pct") is not None
+        or trader.get("return_12m") is not None
+    )
+    flags["performance"] = has_perf
+    flags["risk"] = trader.get("risk_score") is not None or trader.get("max_drawdown") is not None
+    flags["holdings"] = len(holdings) > 0
+    flags["consistency"] = trader.get("consistency_score") is not None
+
+    available = sum(1 for v in flags.values() if v)
+    if available <= 1:
+        level = "insufficient" if available == 0 else "low"
+    elif available == 2:
+        level = "medium"
+    else:
+        level = "high"
+    return level, flags
+
+
+def _get_recommendation(score: float, status: str, data_quality: str) -> str:
+    if data_quality == "insufficient":
+        return "REVIEW"
     if status in ("Strong", "Good"):
         return "KEEP"
-    elif status == "Watch":
-        return "REDUCE COPY AMOUNT"
-    elif status == "Weak":
+    if data_quality == "low":
+        return "REVIEW" if status in ("Watch", "Weak", "Avoid") else "KEEP"
+    if status == "Watch":
+        return "REDUCE"
+    if status == "Weak":
         return "PAUSE"
-    return "UNCOPY"
+    return "UNCOPY" if data_quality in ("high", "medium") else "REVIEW"
 
 
-def _confidence_label(score: float) -> str:
-    if score >= SCORE_GOOD:
-        return "High"
-    elif score >= SCORE_WATCH:
-        return "Medium"
-    return "Low"
+def _confidence_label(data_quality: str) -> str:
+    return {"high": "High", "medium": "Medium", "low": "Low"}.get(data_quality, "INSUFFICIENT")
 
 
 def _collect_warnings(
@@ -417,10 +442,11 @@ def analyze_trader_health(
     health_score = perf_score + risk_score_val + news_score + conc_score + cons_score
     health_score = max(0, min(100, health_score))
 
+    data_quality, data_flags = _assess_data_quality(trader, holdings)
     status = _health_status(health_score)
-    recommendation = _get_recommendation(health_score, status)
+    recommendation = _get_recommendation(health_score, status, data_quality)
     signal = RECOMMENDATION_TO_SIGNAL.get(recommendation, "watch")
-    conf_label = _confidence_label(health_score)
+    conf_label = _confidence_label(data_quality)
     confidence_float = round(health_score / 100, 2)
 
     warning_signs = _collect_warnings(risk_details, conc_warnings, holdings, news_details)
@@ -433,6 +459,8 @@ def analyze_trader_health(
         "health_status": status,
         "recommendation": recommendation,
         "confidence_label": conf_label,
+        "data_quality": data_quality,
+        "data_flags": data_flags,
         "performance_summary": perf_details,
         "risk_analysis": risk_details,
         "news_analysis": news_details,

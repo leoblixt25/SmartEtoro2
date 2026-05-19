@@ -697,17 +697,41 @@ def _short_reason(r: dict) -> str:
     warns = r.get("warning_signs", [])
     if warns:
         return warns[0].rstrip(".")
+    dq = r.get("data_quality", "medium")
     perf = r.get("performance_summary", {})
+    risk = r.get("risk_analysis", {})
     m = perf.get("month", {})
     ml = m.get("label", "N/A")
     ov = perf.get("overall_return")
-    if ml != "N/A":
+    rl = risk.get("risk_label", "N/A")
+    dd = risk.get("drawdown_label", "N/A")
+    st = risk.get("stability", "N/A")
+
+    if dq in ("insufficient", "low"):
+        missing = []
+        flags = r.get("data_flags", {})
+        if not flags.get("performance"):
+            missing.append("perf data")
+        if not flags.get("risk"):
+            missing.append("risk data")
+        if not flags.get("holdings"):
+            missing.append("holdings")
+        if not flags.get("consistency"):
+            missing.append("consistency")
+        return f"Missing: {', '.join(missing[:2])}" if missing else "Low confidence"
+    if rl == "High":
+        return "High risk"
+    if dd == "High":
+        return "High drawdown"
+    if st == "Volatile":
+        return "Unstable returns"
+    if st == "Unknown":
+        return "Stability unknown"
+    if ml not in ("N/A", "insufficient"):
         return f"Monthly: {ml}"
     if ov is not None:
         return f"Return: {ov:+.1f}%"
-    risk = r.get("risk_analysis", {})
-    rl = risk.get("risk_label", "N/A")
-    if rl != "Unknown":
+    if rl not in ("Unknown", "N/A"):
         return f"Risk: {rl}"
     return "Limited data"
 
@@ -718,31 +742,52 @@ def _build_health_summary(results: list[dict]) -> str:
 
     buckets = {"Strong": [], "Good": [], "Watch": [], "Weak": [], "Avoid": []}
     for r in results:
-        status = r.get("health_status", "Watch")
-        buckets.setdefault(status, []).append(r)
+        buckets.setdefault(r.get("health_status", "Watch"), []).append(r)
 
-    lines = ["\U0001f4ca 7Health Summary"]
+    _ic = "\U0001f4ca"
+    _gn = "\U0001f7e2"
+    _bl = "\U0001f535"
+    _yw = "\U0001f7e1"
+    _or = "\U0001f7e0"
+    _rd = "\U0001f534"
+
+    lines = [f"{_ic} 7Health Report"]
     lines.append(f"Scanned: {total} traders")
-    lines.append(f"  Strong: {len(buckets['Strong'])}")
-    lines.append(f"  Good: {len(buckets['Good'])}")
-    lines.append(f"  Watch: {len(buckets['Watch'])}")
-    lines.append(f"  Weak: {len(buckets['Weak'])}")
-    lines.append(f"  Avoid: {len(buckets['Avoid'])}")
+    lines.append(f"{_gn} Strong: {len(buckets['Strong'])}")
+    lines.append(f"{_bl} Good: {len(buckets['Good'])}")
+    lines.append(f"{_yw} Watch: {len(buckets['Watch'])}")
+    lines.append(f"{_or} Weak: {len(buckets['Weak'])}")
+    lines.append(f"{_rd} Avoid: {len(buckets['Avoid'])}")
+
+    dq_counts = {"high": 0, "medium": 0, "low": 0, "insufficient": 0}
+    for r in results:
+        dq = r.get("data_quality", "medium")
+        dq_counts[dq] = dq_counts.get(dq, 0) + 1
+    lines.append(f"\n\U0001f4de Data Quality")
+    lines.append(f"  High: {dq_counts['high']}")
+    lines.append(f"  Medium: {dq_counts['medium']}")
+    lines.append(f"  Low: {dq_counts['low']}")
+    lines.append(f"  Incomplete: {dq_counts['insufficient']}")
 
     all_warnings = []
     for r in results:
+        dq = r.get("data_quality", "medium")
         for w in r.get("warning_signs", []):
-            all_warnings.append((r["trader"], w.rstrip(".")))
+            text = w.rstrip(".")
+            if dq in ("low", "insufficient") and "unknown" in text.lower():
+                continue
+            all_warnings.append((r["trader"], text))
     unique_risks = []
     seen = set()
     for trader, warn in all_warnings:
         key = warn.lower()
-        if key not in seen:
-            seen.add(key)
-            unique_risks.append(f"- {trader} | {warn}")
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_risks.append(f"- {trader} | {warn}")
 
     if unique_risks:
-        lines.append(f"\n\U0001f6a8 Top Risks")
+        lines.append(f"\n\U0001f6a8 Main Risks")
         for risk in unique_risks[:3]:
             lines.append(risk)
 
@@ -753,48 +798,48 @@ def _build_health_summary(results: list[dict]) -> str:
         return f"- {r['trader']} | {score:.0f}/100 | {rec} | {reason}"
 
     best = buckets["Strong"] + buckets["Good"]
-    review = buckets["Watch"]
-    avoid = buckets["Weak"] + buckets["Avoid"]
+    watch = buckets["Watch"]
+    reduce_or_review = buckets["Weak"] + buckets["Avoid"]
 
     if best:
-        lines.append(f"\n\u2705 Best Traders")
+        lines.append(f"\n\U0001f3c6 Best Traders")
         for r in best:
             lines.append(trader_line(r))
 
-    if review:
-        lines.append(f"\n\u26a0\ufe0f Traders to Review")
-        for r in review:
+    if watch:
+        lines.append(f"\n\u26a0\ufe0f Traders to Watch")
+        for r in watch:
             lines.append(trader_line(r))
 
-    if avoid:
-        lines.append(f"\n\u274c Traders to Avoid or Reduce")
-        for r in avoid:
+    if reduce_or_review:
+        lines.append(f"\n\u274c Traders to Reduce or Review")
+        for r in reduce_or_review:
             lines.append(trader_line(r))
 
-    has_neg_news = any(
-        r.get("news_analysis", {}).get("impact") == "negative" for r in results
-    )
-    has_pos_news = any(
-        r.get("news_analysis", {}).get("impact") == "positive" for r in results
-    )
+    has_neg_news = any(r.get("news_analysis", {}).get("impact") == "negative" for r in results)
+    has_pos_news = any(r.get("news_analysis", {}).get("impact") == "positive" for r in results)
     if has_neg_news or has_pos_news:
         lines.append(f"\n\U0001f4f0 News Impact")
         if has_neg_news:
-            lines.append("- Negative news affecting some holdings - monitor positions")
+            lines.append("- Negative news risks on some holdings - monitor positions closely")
         if has_pos_news:
-            lines.append("- Positive news on some holdings")
+            lines.append("- Positive news on select holdings adds tailwinds")
 
-    avg_score = round(sum(r.get("health_score", 0) for r in results) / total, 0) if total else 0
-    strong_pct = len(buckets["Strong"]) + len(buckets["Good"])
-    weak_pct = len(buckets["Weak"]) + len(buckets["Avoid"])
-    if strong_pct > weak_pct and avg_score >= 65:
-        advice = "Portfolio is healthy - keep copying with normal monitoring"
-    elif weak_pct > strong_pct and avg_score < 55:
-        advice = "Multiple traders flagged - consider pausing new copies until data improves"
+    low_conf = dq_counts.get("low", 0) + dq_counts.get("insufficient", 0)
+    high_conf = dq_counts.get("high", 0) + dq_counts.get("medium", 0)
+    good_count = len(buckets["Strong"]) + len(buckets["Good"])
+    bad_count = len(buckets["Weak"]) + len(buckets["Avoid"])
+
+    if low_conf > high_conf:
+        advice = "Most traders have incomplete data - focus on improving data quality before major decisions"
+    elif good_count > bad_count and good_count >= total / 2:
+        advice = "Portfolio is broadly healthy - continue copying with routine monitoring"
+    elif bad_count > good_count:
+        advice = "Multiple weak traders flagged - review before adding new positions"
     else:
-        advice = "Mixed signals - monitor closely and review Watch/Weak traders"
+        advice = "Mixed signals - monitor closely and follow per-trader actions"
 
-    lines.append(f"\n\U0001f3af Final Advice")
+    lines.append(f"\n\U0001f3af Final Recommendation")
     lines.append(f"- {advice}")
 
     return "\n".join(lines)
