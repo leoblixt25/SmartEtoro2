@@ -47,15 +47,25 @@ RECOMMENDATION_TO_SIGNAL = {
 }
 
 
+def _is_real(val) -> bool:
+    """Check if a value is actually populated (not None, not 0.0 default)."""
+    if val is None:
+        return False
+    try:
+        return float(val) != 0.0
+    except (ValueError, TypeError):
+        return True
+
+
 def _check_data_flags(trader: Dict, holdings: List[Dict]) -> Dict:
     return {
-        "return_1d": trader.get("return_1d") is not None,
-        "return_1w": trader.get("return_1w") is not None,
-        "return_1m": trader.get("return_1m") is not None,
-        "total_return": trader.get("total_return_pct") is not None or trader.get("return_12m") is not None,
-        "risk_score": trader.get("risk_score") is not None,
-        "max_drawdown": trader.get("max_drawdown") is not None,
-        "consistency": trader.get("consistency_score") is not None,
+        "return_1d": _is_real(trader.get("return_1d")),
+        "return_1w": _is_real(trader.get("return_1w")),
+        "return_1m": _is_real(trader.get("return_1m")),
+        "total_return": _is_real(trader.get("total_return_pct")) or _is_real(trader.get("return_12m")),
+        "risk_score": _is_real(trader.get("risk_score")),
+        "max_drawdown": _is_real(trader.get("max_drawdown")),
+        "consistency": _is_real(trader.get("consistency_score")),
         "holdings": len(holdings) > 0,
     }
 
@@ -63,6 +73,10 @@ def _check_data_flags(trader: Dict, holdings: List[Dict]) -> Dict:
 def _assess_data_quality(flags: Dict) -> str:
     has_any_perf = flags["return_1d"] or flags["return_1w"] or flags["return_1m"]
     if not has_any_perf and not flags["total_return"]:
+        return "insufficient"
+    # If only total_return exists without any supporting data, mark insufficient
+    has_supporting = flags["risk_score"] or flags["max_drawdown"] or flags["holdings"] or flags["consistency"]
+    if not has_any_perf and not has_supporting:
         return "insufficient"
     present = sum(1 for v in flags.values() if v)
     if present <= 2:
@@ -80,9 +94,9 @@ def _score_performance(trader: Dict) -> Tuple[float, Dict]:
     if total_ret_raw is None:
         total_ret_raw = trader.get("return_12m")
 
-    has_1d = ret_1d is not None
-    has_1w = ret_1w is not None
-    has_1m = ret_1m is not None
+    has_1d = _is_real(ret_1d)
+    has_1w = _is_real(ret_1w)
+    has_1m = _is_real(ret_1m)
     score = 0.0
     details = {}
 
@@ -155,7 +169,7 @@ def _score_risk(trader: Dict) -> Tuple[float, Dict]:
     has_any = False
     details = {}
 
-    if dd_raw is not None:
+    if _is_real(dd_raw):
         has_any = True
         dd = float(dd_raw)
         if dd > DRAWDOWN_HIGH:
@@ -167,7 +181,7 @@ def _score_risk(trader: Dict) -> Tuple[float, Dict]:
         else:
             details["drawdown"] = {"value": round(dd, 1), "level": "Low"}
 
-    if risk_raw is not None:
+    if _is_real(risk_raw):
         has_any = True
         risk = float(risk_raw)
         if risk > RISK_HIGH:
@@ -179,7 +193,7 @@ def _score_risk(trader: Dict) -> Tuple[float, Dict]:
         else:
             details["risk_score"] = {"value": round(risk, 1), "level": "Low"}
 
-    if vol_raw is not None:
+    if _is_real(vol_raw):
         has_any = True
         vol = float(vol_raw)
         if vol > 50:
@@ -189,7 +203,7 @@ def _score_risk(trader: Dict) -> Tuple[float, Dict]:
             score -= 2
             details["volatility"] = round(vol, 1)
 
-    if sharpe_raw is not None:
+    if _is_real(sharpe_raw):
         has_any = True
         s = float(sharpe_raw)
         if s < 0:
@@ -199,6 +213,7 @@ def _score_risk(trader: Dict) -> Tuple[float, Dict]:
         details["sharpe"] = round(s, 2)
 
     if not has_any:
+        score = float(RISK_MAX * 0.6)
         details["note"] = "No risk data available"
 
     score = max(0, score)
@@ -273,7 +288,7 @@ def _score_concentration(holdings: List[Dict]) -> Tuple[float, Dict]:
 
 def _score_consistency(trader: Dict) -> float:
     c = trader.get("consistency_score")
-    if c is None:
+    if not _is_real(c):
         return float(CONSISTENCY_MAX * 0.4)
     c = float(c)
     if c >= CONSISTENCY_STABLE:
@@ -284,8 +299,9 @@ def _score_consistency(trader: Dict) -> float:
 
 
 def _determine_confidence(flags: Dict) -> str:
-    has_any_perf = flags["return_1d"] or flags["return_1w"] or flags["return_1m"] or flags["total_return"]
-    key_present = sum([has_any_perf, flags["risk_score"] or flags["max_drawdown"], flags["holdings"], flags["consistency"]])
+    has_perf = flags["return_1d"] or flags["return_1w"] or flags["return_1m"] or flags["total_return"]
+    has_risk = flags["risk_score"] or flags["max_drawdown"]
+    key_present = sum([has_perf, has_risk, flags["holdings"], flags["consistency"]])
     if key_present <= 1:
         return "INCOMPLETE"
     elif key_present == 2:
@@ -309,6 +325,10 @@ def _health_status(score: float, confidence: str) -> str:
     return "Avoid"
 
 
+def _has_real_risk_data(trader: Dict) -> bool:
+    return _is_real(trader.get("risk_score")) or _is_real(trader.get("max_drawdown"))
+
+
 def _get_action(total: float, status: str, confidence: str, risk_detail: Dict, flags: Dict) -> str:
     if confidence == "INCOMPLETE":
         return "REVIEW"
@@ -317,12 +337,13 @@ def _get_action(total: float, status: str, confidence: str, risk_detail: Dict, f
     if status == "Watch":
         return "REDUCE"
     if status == "Weak":
-        has_real_risk = flags["risk_score"] or flags["max_drawdown"]
-        if not has_real_risk:
+        flags_risk = flags["risk_score"] or flags["max_drawdown"]
+        if not flags_risk:
             return "REVIEW"
         return "PAUSE"
-    has_real_risk = flags["risk_score"] or flags["max_drawdown"]
-    if not has_real_risk:
+    # Avoid status — UNCOPY only if real risk data exists
+    flags_risk = flags["risk_score"] or flags["max_drawdown"]
+    if not flags_risk:
         return "REVIEW"
     return "UNCOPY"
 
