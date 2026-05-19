@@ -178,7 +178,6 @@ def _score_risk(trader: Dict) -> Tuple[float, Dict]:
     else:
         dd = None
         dd_label = "Unknown"
-        score -= 2
 
     if risk_raw is not None:
         risk = float(risk_raw)
@@ -193,7 +192,6 @@ def _score_risk(trader: Dict) -> Tuple[float, Dict]:
     else:
         risk = None
         risk_label = "Unknown"
-        score -= 3
 
     if leverage > LEVERAGE_HIGH:
         score -= 5
@@ -349,7 +347,9 @@ def _assess_data_quality(trader: Dict, holdings: List[Dict]) -> Tuple[str, Dict]
     return level, flags
 
 
-def _get_recommendation(score: float, status: str, data_quality: str) -> str:
+def _get_recommendation(score: float, status: str, data_quality: str, risk_details: Dict = None) -> str:
+    if risk_details is None:
+        risk_details = {}
     if data_quality == "insufficient":
         return "REVIEW"
     if status in ("Strong", "Good"):
@@ -360,7 +360,11 @@ def _get_recommendation(score: float, status: str, data_quality: str) -> str:
         return "REDUCE"
     if status == "Weak":
         return "PAUSE"
-    return "UNCOPY" if data_quality in ("high", "medium") else "REVIEW"
+    if data_quality == "low":
+        return "REVIEW"
+    if risk_details.get("risk_label") == "Unknown" or risk_details.get("drawdown_label") == "Unknown":
+        return "REVIEW"
+    return "UNCOPY"
 
 
 def _confidence_label(data_quality: str) -> str:
@@ -444,7 +448,7 @@ def analyze_trader_health(
 
     data_quality, data_flags = _assess_data_quality(trader, holdings)
     status = _health_status(health_score)
-    recommendation = _get_recommendation(health_score, status, data_quality)
+    recommendation = _get_recommendation(health_score, status, data_quality, risk_details)
     signal = RECOMMENDATION_TO_SIGNAL.get(recommendation, "watch")
     conf_label = _confidence_label(data_quality)
     confidence_float = round(health_score / 100, 2)
