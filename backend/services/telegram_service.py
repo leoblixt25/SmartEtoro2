@@ -524,15 +524,32 @@ class TelegramBot:
                     await self._reply(update, "No portfolio found.")
                     return
 
-                traders = (
-                    db.query(CopiedTrader)
-                    .filter(
-                        CopiedTrader.portfolio_id == p.id,
-                        CopiedTrader.is_active.is_(True),
-                        CopiedTrader.is_paused.is_(False),
+                live_usernames = set()
+                if etoro_client and etoro_client.enabled:
+                    port_data = await etoro_client.get_portfolio_data()
+                    if port_data:
+                        mirrors = port_data.get("clientPortfolio", {}).get("mirrors", [])
+                        live_usernames = {m.get("parentUsername") for m in mirrors if m.get("parentUsername")}
+
+                if live_usernames:
+                    traders = (
+                        db.query(CopiedTrader)
+                        .filter(
+                            CopiedTrader.portfolio_id == p.id,
+                            CopiedTrader.trader_username.in_(live_usernames),
+                        )
+                        .all()
                     )
-                    .all()
-                )
+                else:
+                    traders = (
+                        db.query(CopiedTrader)
+                        .filter(
+                            CopiedTrader.portfolio_id == p.id,
+                            CopiedTrader.is_active.is_(True),
+                            CopiedTrader.is_paused.is_(False),
+                        )
+                        .all()
+                    )
 
                 if not traders:
                     await self._reply(update, "No active traders to analyse.")
