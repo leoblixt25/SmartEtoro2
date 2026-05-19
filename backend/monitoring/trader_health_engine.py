@@ -1,189 +1,345 @@
 """
-Trader Health Engine — combines performance, risk, and news into a recommendation.
+Trader Health Engine — combines performance, risk, and news into a health score and recommendation.
 
-Signal mapping:
-  - increase: strong performance + favorable news
-  - hold: stable performance + mixed/neutral news
-  - reduce: weakening performance + negative news
-  - avoid: critical risk or major negative events
-  - watch: insufficient data
+Health Score (0-100):
+  - Performance (0-30): day/week/month returns
+  - Risk (0-25): drawdown, risk score, leverage, stability
+  - News Impact (0-20): sentiment analysis of holdings news
+  - Portfolio Concentration (0-15): top holding weight, diversification
+  - Consistency (0-10): stability of returns
 
-Rules:
-  - Never recommend based on news alone
-  - Never recommend based on performance alone
-  - Both dimensions must agree for increase/reduce
-  - Unknown holdings data reduces confidence
+Score → Status → Recommendation:
+  80-100  Strong  → KEEP
+  70-79   Good    → KEEP
+  60-69   Watch   → REDUCE COPY AMOUNT
+  50-59   Weak    → PAUSE
+  0-49    Avoid   → UNCOPY
+
+Backward-compat fields kept for monitoring pipeline:
+  - `signal` → maps recommendation to old values (increase/reduce/avoid/watch)
+  - `confidence` → 0-1 float derived from health_score
+  - `holdings_health` → mirrors health_score
+  - `performance_score` → performance component score
+  - `reasons` → generated reasons
+  - `top_negative/positive_holdings` → from news analysis
 """
 
 import logging
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
-from backend.ai.scoring_engine import calculate_growth_score
 from backend.monitoring.news_service import aggregate_sentiment
 
 logger = logging.getLogger(__name__)
 
-# ── Thresholds ──────────────────────────────────────────────────────
+SCORE_STRONG = 80
+SCORE_GOOD = 70
+SCORE_WATCH = 60
+SCORE_WEAK = 50
 
-PERFORMANCE_STRONG = 70.0
-PERFORMANCE_STABLE = 40.0
-PERFORMANCE_WEAK = 20.0
+PERFORMANCE_MAX = 30
+RISK_MAX = 25
+NEWS_MAX = 20
+CONCENTRATION_MAX = 15
+CONSISTENCY_MAX = 10
 
-RISK_ACCEPTABLE = 6.0
 RISK_HIGH = 8.0
+RISK_ACCEPTABLE = 6.0
+DRAWDOWN_HIGH = 25.0
+DRAWDOWN_ELEVATED = 15.0
+LEVERAGE_HIGH = 3.0
+CONCENTRATION_HIGH = 40.0
+CONSISTENCY_STABLE = 70.0
+CONSISTENCY_MODERATE = 40.0
+NEGATIVE_NEWS_RATIO = 0.3
 
-CONCENTRATION_THRESHOLD = 40.0  # single holding weight %
-NEGATIVE_NEWS_THRESHOLD = 0.3   # fraction of holdings with negative news
+RECOMMENDATION_TO_SIGNAL = {
+    "KEEP": "increase",
+    "REDUCE COPY AMOUNT": "reduce",
+    "PAUSE": "watch",
+    "UNCOPY": "avoid",
+}
 
 
-def _score_performance(trader: Dict) -> Tuple[float, str]:
-    """Score trader performance using the existing scoring engine.
+def _score_performance(trader: Dict) -> Tuple[float, Dict]:
+    ret_1d = trader.get("return_1d")
+    ret_1w = trader.get("return_1w")
+    ret_1m = trader.get("return_1m")
+    ret_12m = float(trader.get("total_return_pct", 0) or 0)
+    win_rate = float(trader.get("win_rate", 0) or 0)
 
-    Returns (score, label).
-    """
-    scored = calculate_growth_score(trader)
-    score = scored.get("score", 0)
+    score = 0.0
 
-    if score >= PERFORMANCE_STRONG:
-        label = "strong"
-    elif score >= PERFORMANCE_STABLE:
-        label = "stable"
-    elif score >= PERFORMANCE_WEAK:
-        label = "weak"
+    if ret_1d is not None:
+        d = float(ret_1d)
+        if d > 2:
+            day_label = "up"
+            score += 10
+        elif d > 0:
+            day_label = "up"
+            score += 6
+        elif d < -2:
+            day_label = "down"
+        else:
+            day_label = "flat"
+            score += 3
     else:
-        label = "critical"
+        day_label = "N/A"
+        score += 5
 
-    return score, label
+    if ret_1w is not None:
+        w = float(ret_1w)
+        if w > 5:
+            week_label = "up"
+            score += 10
+        elif w > 0:
+            week_label = "up"
+            score += 7
+        elif w < -5:
+            week_label = "down"
+        else:
+            week_label = "flat"
+            score += 3
+    else:
+        week_label = "N/A"
+        score += 5
+
+    if ret_1m is not None:
+        m = float(ret_1m)
+        if m > 10:
+            month_label = "up"
+            score += 10
+        elif m > 0:
+            month_label = "up"
+            score += 7
+        elif m < -10:
+            month_label = "down"
+        else:
+            month_label = "flat"
+            score += 3
+    else:
+        month_label = "N/A"
+        score += 5
+
+    score = min(score, PERFORMANCE_MAX)
+
+    details = {
+        "day": {"return_pct": float(ret_1d) if ret_1d is not None else None, "label": day_label},
+        "week": {"return_pct": float(ret_1w) if ret_1w is not None else None, "label": week_label},
+        "month": {"return_pct": float(ret_1m) if ret_1m is not None else None, "label": month_label},
+        "overall_return": round(ret_12m, 2),
+        "win_rate": round(win_rate, 1),
+    }
+    return score, details
 
 
-def _score_risk(trader: Dict) -> Tuple[float, str]:
-    """Score risk level.
-
-    Returns (risk_value, label).
-    """
-    risk_raw = trader.get("risk_score")
-    risk = float(risk_raw) if risk_raw is not None else 0.0
+def _score_risk(trader: Dict) -> Tuple[float, Dict]:
+    risk = float(trader.get("risk_score", 5.0) or 5.0)
     dd = float(trader.get("max_drawdown", 0.0) or 0.0)
+    leverage = float(trader.get("leverage", 0) or 0)
+    consistency = float(trader.get("consistency_score", 50) or 50)
 
-    if risk > RISK_HIGH or dd > 25:
-        label = "critical"
-    elif risk > RISK_ACCEPTABLE or dd > 15:
-        label = "elevated"
+    score = RISK_MAX
+
+    if dd > DRAWDOWN_HIGH:
+        score -= 10
+        dd_label = "High"
+    elif dd > DRAWDOWN_ELEVATED:
+        score -= 5
+        dd_label = "Moderate"
     else:
-        label = "acceptable"
+        dd_label = "Low"
 
-    return risk, label
+    if risk > RISK_HIGH:
+        score -= 8
+        risk_label = "High"
+    elif risk > RISK_ACCEPTABLE:
+        score -= 4
+        risk_label = "Moderate"
+    else:
+        risk_label = "Low"
+
+    if leverage > LEVERAGE_HIGH:
+        score -= 5
+    elif leverage > 2:
+        score -= 2
+
+    if consistency >= CONSISTENCY_STABLE:
+        stability = "Stable"
+    elif consistency >= CONSISTENCY_MODERATE:
+        stability = "Moderate"
+    else:
+        stability = "Volatile"
+        score -= 2
+
+    score = max(0, score)
+
+    details = {
+        "max_drawdown": round(dd, 1),
+        "drawdown_label": dd_label,
+        "risk_score": round(risk, 1),
+        "risk_label": risk_label,
+        "leverage": round(leverage, 1),
+        "stability": stability,
+        "consistency_score": round(consistency, 1),
+    }
+    return score, details
 
 
-def _score_holdings_health(
-    holdings: List[Dict],
-    news_by_symbol: Dict[str, List[Dict]],
-) -> Tuple[float, List[str], List[str], List[str]]:
-    """Score the health of a trader's holdings based on news.
+def _score_news(holdings: List[Dict], news_by_symbol: Dict[str, List[Dict]]) -> Tuple[float, Dict]:
+    has_news = any(bool(v) for v in news_by_symbol.values())
 
-    Returns:
-        (health_score 0-100, negative_symbols, positive_symbols, warnings)
-    """
-    if not holdings:
-        return 50.0, [], [], ["No holdings data — reduced confidence"]
+    if not holdings or not has_news:
+        return 10.0, {"impact": "neutral", "details": "No recent news data available"}
 
-    # Get aggregate sentiment
     sent = aggregate_sentiment(news_by_symbol)
     neg_symbols = sent.get("negative_symbols", [])
     pos_symbols = sent.get("positive_symbols", [])
 
-    # Holdings affected by negative news
-    total_syms = len(set(
-        h["symbol"] for h in holdings if h.get("symbol")
-    ))
-    affected = sum(1 for h in holdings if h.get("symbol", "").upper() in neg_symbols)
-    neg_ratio = affected / max(total_syms, 1)
+    total_syms = len(set(h["symbol"] for h in holdings if h.get("symbol"))) or 1
+    affected_neg = sum(1 for h in holdings if h.get("symbol", "").upper() in neg_symbols)
+    affected_pos = sum(1 for h in holdings if h.get("symbol", "").upper() in pos_symbols)
+    neg_ratio = affected_neg / total_syms
+    pos_ratio = affected_pos / total_syms
 
+    score = NEWS_MAX
+
+    if neg_ratio > NEGATIVE_NEWS_RATIO:
+        penalty = min(neg_ratio * 15, 15)
+        score -= penalty
+        impact = "negative"
+    elif pos_ratio > 0.4:
+        score = min(NEWS_MAX, score + 3)
+        impact = "positive"
+    elif pos_ratio > 0 and neg_ratio > 0:
+        impact = "mixed"
+    elif pos_ratio > 0:
+        impact = "positive"
+    else:
+        impact = "neutral"
+
+    score = max(0, min(NEWS_MAX, score))
+
+    details = {
+        "impact": impact,
+        "positive_symbols": pos_symbols[:5],
+        "negative_symbols": neg_symbols[:5],
+        "details": f"{len(pos_symbols)} positive, {len(neg_symbols)} negative symbols",
+    }
+    return score, details
+
+
+def _score_concentration(holdings: List[Dict]) -> Tuple[float, Dict, List[str]]:
     warnings = []
+    if not holdings:
+        return 7.5, {"top_holding": "N/A", "top_weight": 0, "warning": "No holdings data"}, warnings
 
-    # Check concentration
     max_weight = max((h.get("weight", 0) for h in holdings), default=0)
-    if max_weight > CONCENTRATION_THRESHOLD:
-        top = max(holdings, key=lambda h: h.get("weight", 0))
-        warnings.append(
-            f"High concentration in {top['symbol']} ({top['weight']:.0f}%)"
-        )
+    top = max(holdings, key=lambda h: h.get("weight", 0)) if holdings else {}
 
-    # Check negative news impact
-    if neg_ratio > NEGATIVE_NEWS_THRESHOLD:
-        warnings.append(
-            f"{affected}/{total_syms} holdings affected by negative news"
-        )
+    score = CONCENTRATION_MAX
 
-    # Compute health score: start at 100, penalize
-    health = 100.0
-    health -= neg_ratio * 60  # up to -60 for negative news
-    if max_weight > CONCENTRATION_THRESHOLD:
-        health -= 15  # concentration penalty
-    if not news_by_symbol or all(not v for v in news_by_symbol.values()):
-        health -= 10  # no news data
+    if max_weight > CONCENTRATION_HIGH:
+        score -= 10
+        warnings.append(f"High concentration in {top.get('symbol', '?')} ({max_weight:.0f}%)")
+    elif max_weight > 25:
+        score -= 4
+        warnings.append(f"Moderate concentration in {top.get('symbol', '?')} ({max_weight:.0f}%)")
 
-    health = max(0, min(100, health))
+    if len(holdings) <= 1:
+        score -= 3
+        warnings.append(f"Only {len(holdings)} holding - low diversification")
 
-    return health, neg_symbols, pos_symbols, warnings
+    score = max(0, score)
+
+    details = {
+        "top_holding": top.get("symbol", "N/A"),
+        "top_weight": round(max_weight, 1),
+        "warning": warnings[0] if warnings else "Well diversified",
+    }
+    return score, details, warnings
 
 
-def _determine_signal(
-    perf_label: str,
-    risk_label: str,
-    holdings_health: float,
-    neg_symbols: List[str],
-    holdings_source: str,
-    has_news_data: bool,
-) -> Tuple[str, float]:
-    """Determine the final signal and confidence.
+def _score_consistency(trader: Dict) -> float:
+    consistency = float(trader.get("consistency_score", 50) or 50)
+    if consistency >= CONSISTENCY_STABLE:
+        return 10.0
+    elif consistency >= CONSISTENCY_MODERATE:
+        return 6.0
+    return 2.0
 
-    Returns (signal, confidence).
-    """
-    confidence = 0.5
 
-    # Both dimensions must agree for strong signals
-    if holdings_source == "unknown":
-        confidence = 0.3
+def _health_status(score: float) -> str:
+    if score >= SCORE_STRONG:
+        return "Strong"
+    elif score >= SCORE_GOOD:
+        return "Good"
+    elif score >= SCORE_WATCH:
+        return "Watch"
+    elif score >= SCORE_WEAK:
+        return "Weak"
+    return "Avoid"
 
-    if perf_label == "strong" and risk_label in ("acceptable", "elevated"):
-        if not neg_symbols:
-            confidence = 0.85
-            return "increase", confidence
-        elif holdings_health >= 60:
-            confidence = 0.7
-            return "increase", confidence
-        else:
-            confidence = 0.5
-            return "hold", confidence
 
-    if perf_label == "stable":
-        if risk_label == "critical" or holdings_health < 40:
-            confidence = 0.6
-            return "reduce", confidence
-        if not has_news_data:
-            confidence = 0.4
-            return "watch", confidence
-        if neg_symbols:
-            confidence = 0.5
-            return "reduce", confidence
-        confidence = 0.7
-        return "hold", confidence
+def _get_recommendation(score: float, status: str) -> str:
+    if status in ("Strong", "Good"):
+        return "KEEP"
+    elif status == "Watch":
+        return "REDUCE COPY AMOUNT"
+    elif status == "Weak":
+        return "PAUSE"
+    return "UNCOPY"
 
-    if perf_label == "weak":
-        if risk_label == "critical" or holdings_health < 30:
-            confidence = 0.8
-            return "avoid", confidence
-        confidence = 0.65
-        return "reduce", confidence
 
-    if perf_label == "critical":
-        confidence = 0.9
-        return "avoid", confidence
+def _confidence_label(score: float) -> str:
+    if score >= SCORE_GOOD:
+        return "High"
+    elif score >= SCORE_WATCH:
+        return "Medium"
+    return "Low"
 
-    # Default: watch
-    confidence = 0.3
-    return "watch", confidence
+
+def _collect_warnings(
+    risk_details: Dict,
+    conc_warnings: List[str],
+    holdings: List[Dict],
+    news_details: Dict,
+) -> List[str]:
+    warnings = list(conc_warnings)
+    if risk_details.get("drawdown_label") == "High":
+        warnings.append(f"Max drawdown is high ({risk_details['max_drawdown']:.0f}%)")
+    if risk_details.get("risk_label") == "High":
+        warnings.append(f"Risk score is high ({risk_details['risk_score']:.1f})")
+    if risk_details.get("stability") == "Volatile":
+        warnings.append("Returns are volatile with low consistency")
+    if risk_details.get("leverage", 0) > LEVERAGE_HIGH:
+        warnings.append(f"Leverage is high ({risk_details['leverage']:.1f}x)")
+    if not holdings:
+        warnings.append("No holdings data - reduced confidence")
+    if news_details.get("impact") == "negative":
+        warnings.append(f"Negative news affecting holdings")
+    return warnings[:5]
+
+
+def _build_reasons(
+    status: str,
+    perf_score: float,
+    risk_details: Dict,
+    news_details: Dict,
+    recommendation: str,
+    health_score: float,
+) -> List[str]:
+    reasons = [
+        f"Health score: {health_score:.0f}/100 ({status})",
+        f"Performance: {perf_score:.0f}/{PERFORMANCE_MAX}",
+        f"Risk: {risk_details.get('risk_label', 'N/A')} (score {risk_details.get('risk_score', 0):.1f})",
+    ]
+    ri = news_details.get("impact", "neutral")
+    if ri == "negative":
+        reasons.append("Negative news impact on holdings")
+    elif ri == "positive":
+        reasons.append("Positive news impact on holdings")
+    reasons.append(f"Action: {recommendation}")
+    return reasons
 
 
 def analyze_trader_health(
@@ -191,85 +347,47 @@ def analyze_trader_health(
     holdings: List[Dict],
     news_by_symbol: Dict[str, List[Dict]],
 ) -> Dict:
-    """Run full health analysis for a single trader.
-
-    Args:
-        trader: Trader data dict (from get_current_holdings or similar).
-        holdings: Parsed holdings list (from holding_parser).
-        news_by_symbol: Dict mapping symbol → list of news items (from news_service).
-
-    Returns:
-        Dict with signal, confidence, scores, reasons, and flagged holdings.
-    """
     username = trader.get("username", "?")
 
-    # Step 1: Performance
-    perf_score, perf_label = _score_performance(trader)
-    logger.info("HEALTH %s: performance=%.1f (%s)", username, perf_score, perf_label)
+    perf_score, perf_details = _score_performance(trader)
+    risk_score_val, risk_details = _score_risk(trader)
+    news_score, news_details = _score_news(holdings, news_by_symbol)
+    conc_score, conc_details, conc_warnings = _score_concentration(holdings)
+    cons_score = _score_consistency(trader)
 
-    # Step 2: Risk
-    risk_value, risk_label = _score_risk(trader)
-    logger.info("HEALTH %s: risk=%.1f (%s)", username, risk_value, risk_label)
+    health_score = perf_score + risk_score_val + news_score + conc_score + cons_score
+    health_score = max(0, min(100, health_score))
 
-    # Step 3: Holdings health
-    news_exists = any(bool(v) for v in news_by_symbol.values())
-    holdings_health, neg_symbols, pos_symbols, warnings = _score_holdings_health(
-        holdings, news_by_symbol,
-    )
+    status = _health_status(health_score)
+    recommendation = _get_recommendation(health_score, status)
+    signal = RECOMMENDATION_TO_SIGNAL.get(recommendation, "watch")
+    conf_label = _confidence_label(health_score)
+    confidence_float = round(health_score / 100, 2)
+
+    warning_signs = _collect_warnings(risk_details, conc_warnings, holdings, news_details)
+    reasons = _build_reasons(status, perf_score, risk_details, news_details, recommendation, health_score)
     holdings_source = trader.get("_holdings_source", "unknown")
-    logger.info(
-        "HEALTH %s: holdings_health=%.1f, neg=%d, pos=%d, warnings=%s",
-        username, holdings_health, len(neg_symbols), len(pos_symbols), warnings,
-    )
-
-    # Step 4: Determine signal
-    signal, confidence = _determine_signal(
-        perf_label, risk_label, holdings_health,
-        neg_symbols, holdings_source, news_exists,
-    )
-    logger.info(
-        "HEALTH %s: signal=%s (conf=%.2f)",
-        username, signal, confidence,
-    )
-
-    # Step 5: Build reasons
-    reasons = []
-    if perf_label == "strong":
-        reasons.append(f"Strong recent performance ({perf_score:.0f}/100)")
-    elif perf_label == "stable":
-        reasons.append(f"Stable performance ({perf_score:.0f}/100)")
-    elif perf_label == "weak":
-        reasons.append(f"Weakening performance ({perf_score:.0f}/100)")
-    else:
-        reasons.append(f"Critical performance ({perf_score:.0f}/100)")
-
-    if risk_label == "acceptable":
-        reasons.append("Risk is acceptable")
-    elif risk_label == "elevated":
-        reasons.append(f"Risk is elevated ({risk_value:.1f})")
-    else:
-        reasons.append(f"Risk is critical ({risk_value:.1f})")
-
-    if pos_symbols:
-        reasons.append(f"Holdings with positive news: {', '.join(pos_symbols[:3])}")
-    if neg_symbols:
-        reasons.append(f"Holdings with negative news: {', '.join(neg_symbols[:3])}")
-    if not news_exists:
-        reasons.append("No recent news data for holdings")
-    reasons.extend(warnings[:2])
 
     return {
         "trader": username,
+        "health_score": round(health_score, 1),
+        "health_status": status,
+        "recommendation": recommendation,
+        "confidence_label": conf_label,
+        "performance_summary": perf_details,
+        "risk_analysis": risk_details,
+        "news_analysis": news_details,
+        "portfolio_concentration": conc_details,
+        "warning_signs": warning_signs,
         "signal": signal,
-        "confidence": round(confidence, 2),
-        "performance_score": round(perf_score, 1),
-        "risk_score": round(risk_value, 1),
-        "risk_label": risk_label,
-        "holdings_health": round(holdings_health, 1),
-        "news_exists": news_exists,
+        "confidence": confidence_float,
+        "holdings_health": round(health_score, 1),
         "holdings_source": holdings_source,
-        "reasons": reasons,
-        "top_negative_holdings": neg_symbols[:5],
-        "top_positive_holdings": pos_symbols[:5],
         "holdings_count": len(holdings),
+        "risk_score": risk_details.get("risk_score", 0),
+        "performance_score": round(perf_score, 1),
+        "reasons": reasons,
+        "top_negative_holdings": news_details.get("negative_symbols", []),
+        "top_positive_holdings": news_details.get("positive_symbols", []),
+        "news_exists": any(bool(v) for v in news_by_symbol.values()),
     }

@@ -259,8 +259,9 @@ class TestTraderHealthEngine:
         }
         trader["_holdings_source"] = "api_mirror"
         result = analyze_trader_health(trader, holdings, news_by_symbol)
-        assert result["signal"] in ("increase", "hold")
-        assert result["confidence"] >= 0.5
+        assert result["signal"] == "increase"
+        assert result["health_score"] >= 60
+        assert result["recommendation"] == "KEEP"
         assert len(result["reasons"]) >= 2
 
     def test_analyze_trader_with_negative_news(self):
@@ -288,6 +289,7 @@ class TestTraderHealthEngine:
         result = analyze_trader_health(trader, holdings, news_by_symbol)
         assert result["signal"] in ("reduce", "avoid")
         assert len(result["top_negative_holdings"]) >= 1
+        assert result["news_analysis"]["impact"] == "negative"
 
     def test_analyze_trader_no_news_data(self):
         from backend.monitoring.trader_health_engine import analyze_trader_health
@@ -314,12 +316,12 @@ class TestTraderHealthEngine:
             "confidence": 1.0,
             "return_12m": 10.0,
             "risk_score": 5.0,
-            "max_drawdown": 10.0,  # Provide drawdown so performance score stays "stable"
-            "copiers": 1,  # 4th verified field to pass data quality gate (no bonus at 1)
+            "max_drawdown": 10.0,
+            "copiers": 1,
         }
         trader["_holdings_source"] = "unknown"
         result = analyze_trader_health(trader, [], {})
-        assert result["signal"] == "avoid"
+        assert result["signal"] == "reduce"
         assert result["holdings_count"] == 0
 
     def test_analyze_trader_critical_risk(self):
@@ -335,25 +337,8 @@ class TestTraderHealthEngine:
         trader["_holdings_source"] = "unknown"
         result = analyze_trader_health(trader, [], {})
         assert result["signal"] == "avoid"
-
-    def test_score_performance_strong(self):
-        from backend.monitoring.trader_health_engine import _score_performance
-        trader = {"source": "tradeinfo", "confidence": 1.0,
-                  "total_return_pct": 200.0,
-                  "risk_score": 3.0,
-                  "copiers": 500,
-                  "positions_count": 50,
-                  "max_drawdown": 5.0}
-        score, label = _score_performance(trader)
-        assert label == "strong"
-        assert score >= 70
-
-    def test_score_performance_weak(self):
-        from backend.monitoring.trader_health_engine import _score_performance
-        trader = {"source": "tradeinfo", "confidence": 1.0,
-                  "return_12m": 2.0, "risk_score": 5.0}
-        score, label = _score_performance(trader)
-        assert label == "weak" or label == "critical"
+        assert result["recommendation"] == "UNCOPY"
+        assert result["health_status"] == "Avoid"
 
 
 # ── WatchlistSummary ───────────────────────────────────────────────
@@ -374,13 +359,13 @@ class TestWatchlistSummary:
              "reasons": ["good"]},
             {"trader": "b", "signal": "reduce", "confidence": 0.7, "performance_score": 30,
              "reasons": ["bad"]},
-            {"trader": "c", "signal": "hold", "confidence": 0.6, "performance_score": 55,
+            {"trader": "c", "signal": "watch", "confidence": 0.6, "performance_score": 55,
              "reasons": ["ok"]},
         ]
         summary = build_watchlist_summary(results)
         assert len(summary["increase"]) == 1
         assert len(summary["reduce"]) == 1
-        assert len(summary["hold"]) == 1
+        assert len(summary["watch"]) == 1
         assert summary["increase"][0]["trader"] == "a"
         assert summary["debug"]["by_signal"]["increase"] == 1
         assert summary["debug"]["by_signal"]["reduce"] == 1
@@ -410,9 +395,9 @@ class TestWatchlistSummary:
     def test_avg_performance(self):
         from backend.monitoring.watchlist_summary import build_watchlist_summary
         results = [
-            {"trader": "a", "signal": "hold", "confidence": 0.5, "performance_score": 80,
+            {"trader": "a", "signal": "increase", "confidence": 0.5, "performance_score": 80,
              "reasons": []},
-            {"trader": "b", "signal": "hold", "confidence": 0.5, "performance_score": 60,
+            {"trader": "b", "signal": "increase", "confidence": 0.5, "performance_score": 60,
              "reasons": []},
         ]
         summary = build_watchlist_summary(results)

@@ -165,20 +165,22 @@ def _build_display(results: List[Dict], summary: Dict) -> str:
 
     for r in results:
         sig = r["signal"]
+        rec = r.get("recommendation", "")
         if sig == "increase":
             icon = "🟢"
-        elif sig == "hold":
-            icon = "🟡"
         elif sig == "reduce":
             icon = "🔴"
         elif sig == "avoid":
             icon = "🚨"
+        elif sig == "watch":
+            icon = "🟡"
         else:
             icon = "⚪"
 
+        display_sig = rec if rec else sig.upper()
         lines.append(
-            f"{icon} **{r['trader']}** — {sig.upper()} "
-            f"(conf={r['confidence']:.2f})"
+            f"{icon} **{r['trader']}** — {display_sig} "
+            f"(score={r.get('health_score', 0):.0f}/100)"
         )
         for reason in r.get("reasons", [])[:3]:
             lines.append(f"  • {reason}")

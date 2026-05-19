@@ -538,12 +538,13 @@ class TelegramBot:
                     await self._reply(update, "No active traders to analyse.")
                     return
 
+                results = []
                 for t in traders:
                     trader_data = {
                         "username": t.trader_username,
                         "source": "tradeinfo" if t.trader_id else "unknown",
                         "confidence": 1.0,
-                        "return_12m": t.total_return_pct,
+                        "total_return_pct": t.total_return_pct,
                         "risk_score": t.risk_score,
                         "max_drawdown": t.max_drawdown,
                         "consistency_score": t.consistency_score,
@@ -557,40 +558,68 @@ class TelegramBot:
                     news_by_symbol = await fetch_news_for_symbols(symbols)
 
                     result = analyze_trader_health(trader_data, holdings, news_by_symbol)
+                    results.append(result)
 
-                    # Wait 0.5s between traders to avoid rate limits
                     import asyncio
                     await asyncio.sleep(0.5)
 
-                # Get the latest monitoring results for all traders
-                from backend.monitoring.orchestrator import run_monitoring_pipeline
-                monitor_result = await run_monitoring_pipeline(
-                    db, p.id, etoro_client=etoro_client,
-                )
-
-                results = monitor_result.get("results", [])
                 if not results:
                     await self._reply(update, "Health analysis complete. No signals to report.")
                     return
 
-                lines = [f"Trader Health Analysis\n"]
+                lines = ["\U0001f4ca Trader Health Report\n"]
                 for r in results:
-                    signal_icon = {
-                        "increase": "+",
-                        "hold": "\u25b6",
-                        "reduce": "\u25bc",
-                        "avoid": "x",
-                        "watch": "\u25cb",
-                    }.get(r.get("signal", "watch"), "?")
-                    lines.append(
-                        f"{signal_icon} {r['trader']} \u2014 {r['signal']} "
-                        f"(conf: {r['confidence']:.2f})"
-                    )
-                    if r.get("holdings_count", 0) > 0:
-                        lines.append(f"   Holdings: {r['holdings_count']}  "
-                                     f"Health: {r.get('holdings_health', 0):.0f}/100")
-                    for reason in r.get("reasons", [])[:2]:
-                        lines.append(f"   {reason}")
+                    rec = r.get("recommendation", "KEEP")
+                    score = r.get("health_score", 0)
+                    status = r.get("health_status", "N/A")
+                    perf = r.get("performance_summary", {})
+                    risk_a = r.get("risk_analysis", {})
+                    news_a = r.get("news_analysis", {})
+                    conc = r.get("portfolio_concentration", {})
+                    warns = r.get("warning_signs", [])
+                    conf_lbl = r.get("confidence_label", "Medium")
+
+                    lines.append(f"\U0001f464 {r['trader']}")
+
+                    lines.append(f"\n\U0001f4c8 Performance")
+                    d = perf.get("day", {})
+                    w = perf.get("week", {})
+                    m = perf.get("month", {})
+                    d_ret = f"{d.get('return_pct', 'N/A'):+.2f}%" if isinstance(d.get('return_pct'), (int, float)) else "N/A"
+                    w_ret = f"{w.get('return_pct', 'N/A'):+.2f}%" if isinstance(w.get('return_pct'), (int, float)) else "N/A"
+                    m_ret = f"{m.get('return_pct', 'N/A'):+.2f}%" if isinstance(m.get('return_pct'), (int, float)) else "N/A"
+                    lines.append(f"\u2022 Day: {d_ret} ({d.get('label', 'N/A')})")
+                    lines.append(f"\u2022 Week: {w_ret} ({w.get('label', 'N/A')})")
+                    lines.append(f"\u2022 Month: {m_ret} ({m.get('label', 'N/A')})")
+
+                    lines.append(f"\n\u26a1 Risk Analysis")
+                    lines.append(f"\u2022 Max Drawdown: {risk_a.get('max_drawdown', 0):.1f}%")
+                    leverage = risk_a.get("leverage", 0)
+                    lines.append(f"\u2022 Leverage: {leverage:.1f}x" if leverage else "\u2022 Leverage: N/A")
+                    lines.append(f"\u2022 Stability: {risk_a.get('stability', 'N/A')}")
+
+                    lines.append(f"\n\U0001f4f0 News Impact")
+                    lines.append(f"\u2022 {news_a.get('impact', 'neutral').title()}")
+                    pos = news_a.get("positive_symbols", [])
+                    neg = news_a.get("negative_symbols", [])
+                    if pos:
+                        lines.append(f"\u2022 Positive: {', '.join(pos[:3])}")
+                    if neg:
+                        lines.append(f"\u2022 Negative: {', '.join(neg[:3])}")
+
+                    lines.append(f"\n\U0001f4ca Concentration")
+                    lines.append(f"\u2022 Top: {conc.get('top_holding', 'N/A')} at {conc.get('top_weight', 0):.0f}%")
+
+                    if warns:
+                        lines.append(f"\n\u26a0\ufe0f Warning Signs")
+                        for w_text in warns[:3]:
+                            lines.append(f"\u2022 {w_text}")
+
+                    lines.append(f"\n\U0001f3c6 Final Verdict")
+                    lines.append(f"\u2022 Score: {score:.0f}/100 ({status})")
+                    lines.append(f"\u2022 Confidence: {conf_lbl}")
+                    lines.append(f"\u2022 Action: {rec}")
+                    lines.append("")
 
                 await self._reply(update, "\n".join(lines))
         except Exception as e:
