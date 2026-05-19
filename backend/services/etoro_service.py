@@ -1542,5 +1542,27 @@ class EToroSyncService:
                 )
                 db.add(trader)
 
+        # Mark as inactive any trader in DB that's no longer in the API response
+        api_usernames = {info.get("username") for info in traders_data if info.get("username")}
+        if api_usernames:
+            stale = (
+                db.query(CopiedTrader)
+                .filter(
+                    CopiedTrader.portfolio_id == portfolio_id,
+                    CopiedTrader.is_active.is_(True),
+                    CopiedTrader.trader_username.isnot(None),
+                    ~CopiedTrader.trader_username.in_(api_usernames),
+                )
+                .all()
+            )
+            for s in stale:
+                s.is_active = False
+                s.last_updated = datetime.utcnow()
+            if stale:
+                logger.info(
+                    f"Marked {len(stale)} stale traders as inactive: "
+                    f"{[s.trader_username for s in stale]}"
+                )
+
         db.commit()
         logger.info(f"Synced {len(traders_data)} traders for portfolio {portfolio_id}")

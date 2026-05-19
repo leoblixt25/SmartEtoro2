@@ -277,8 +277,7 @@ class TelegramBot:
 
     async def _cmd_active(self, update: Update, args: list[str]) -> None:
         from backend.database.connection import db_session
-        from backend.database.models import Portfolio
-        from backend.services.portfolio_service import get_active_traders
+        from backend.database.models import CopiedTrader, Portfolio
 
         try:
             with db_session() as db:
@@ -286,7 +285,44 @@ class TelegramBot:
                 if not p:
                     await self._reply(update, "No portfolio found.")
                     return
-                traders = get_active_traders(db, p.id)
+
+                live_usernames = set()
+                try:
+                    from backend.services.sync_service import sync_service
+                    etoro_client = sync_service.client if sync_service.client.enabled else None
+                    if etoro_client:
+                        port_data = await etoro_client.get_portfolio_data()
+                        if port_data:
+                            mirrors = port_data.get("clientPortfolio", {}).get("mirrors", [])
+                            live_usernames = {m.get("parentUsername") for m in mirrors if m.get("parentUsername")}
+                except Exception:
+                    pass
+
+                if live_usernames:
+                    orm_traders = (
+                        db.query(CopiedTrader)
+                        .filter(
+                            CopiedTrader.portfolio_id == p.id,
+                            CopiedTrader.trader_username.in_(live_usernames),
+                        )
+                        .all()
+                    )
+                    traders = [
+                        {
+                            "username": t.trader_username,
+                            "allocation_pct": t.allocation_pct or 0,
+                            "total_return_pct": t.total_return_pct or 0,
+                            "risk_score": t.risk_score or 0,
+                            "max_drawdown": t.max_drawdown or 0,
+                            "is_paused": t.is_paused,
+                        }
+                        for t in orm_traders
+                    ]
+                    traders.sort(key=lambda x: x["allocation_pct"], reverse=True)
+                else:
+                    from backend.services.portfolio_service import get_active_traders
+                    traders = get_active_traders(db, p.id)
+
                 if not traders:
                     await self._reply(update, "No active copied traders.")
                     return
