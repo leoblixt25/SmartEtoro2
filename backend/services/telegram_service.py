@@ -544,6 +544,7 @@ class TelegramBot:
         from backend.database.connection import db_session
         from backend.database.models import Portfolio, CopiedTrader
         from backend.monitoring.trader_health_engine import analyze_trader_health
+        from backend.monitoring.ai_health_engine import ai_analyze_traders
         from backend.monitoring.holding_parser import get_trader_holdings, extract_symbols
         from backend.monitoring.news_service import fetch_news_for_symbols
         from backend.services.etoro_service import EToroSyncService
@@ -591,7 +592,8 @@ class TelegramBot:
                     await self._reply(update, "No active traders to analyse.")
                     return
 
-                results = []
+                # First pass: collect all data for each trader
+                enriched = []
                 for t in traders:
                     trader_data = {
                         "username": t.trader_username,
@@ -599,26 +601,79 @@ class TelegramBot:
                         "confidence": 1.0,
                         "total_return_pct": t.total_return_pct,
                         "return_1m": t.avg_monthly_return,
+                        "return_1w": getattr(t, 'return_1w', None),
+                        "return_1d": getattr(t, 'return_1d', None),
                         "risk_score": t.risk_score,
                         "max_drawdown": t.max_drawdown,
                         "consistency_score": t.consistency_score,
                         "volatility": t.volatility,
                         "sharpe_score": t.sharpe_score,
                         "diversification_score": t.diversification_score,
+                        "allocation_pct": t.allocation_pct,
                     }
 
                     holdings, holdings_source = await get_trader_holdings(
                         db, p.id, t.trader_username, etoro_client=etoro_client,
                     )
                     trader_data["_holdings_source"] = holdings_source
+                    trader_data["_holdings"] = holdings
                     symbols = extract_symbols(holdings)
                     news_by_symbol = await fetch_news_for_symbols(symbols)
-
-                    result = analyze_trader_health(trader_data, holdings, news_by_symbol)
-                    results.append(result)
+                    trader_data["_news_by_symbol"] = news_by_symbol
+                    news_summary = "N/A"
+                    if news_by_symbol:
+                        pos = sum(1 for v in news_by_symbol.values() if any(a.get("sentiment") == "positive" for a in v))
+                        neg = sum(1 for v in news_by_symbol.values() if any(a.get("sentiment") == "negative" for a in v))
+                        news_summary = f"{pos} pos, {neg} neg symbols"
+                    trader_data["_news_summary"] = news_summary
+                    enriched.append(trader_data)
 
                     import asyncio
                     await asyncio.sleep(0.5)
+
+                # Try AI analysis on the full batch
+                ai_results = await ai_analyze_traders(enriched)
+
+                results = []
+                if ai_results:
+                    # Map AI results back to enriched data
+                    ai_by_name = {r.get("name", "").lower(): r for r in ai_results}
+                    _STATUS_NORM = {"ELITE": "Strong", "STRONG": "Strong", "GOOD": "Good",
+                                    "WATCH": "Watch", "WEAK": "Weak", "AVOID": "Avoid",
+                                    "INCOMPLETE": "Incomplete"}
+                    for td in enriched:
+                        name = td["username"].lower()
+                        ai_r = ai_by_name.get(name, {})
+                        raw_status = (ai_r.get("status") or "INCOMPLETE").upper()
+                        norm_status = _STATUS_NORM.get(raw_status, "Incomplete")
+                        results.append({
+                            "name": td["username"],
+                            "trader": td["username"],
+                            "score": ai_r.get("score"),
+                            "health_score": ai_r.get("score"),
+                            "confidence": ai_r.get("confidence", "LOW"),
+                            "status": norm_status,
+                            "health_status": norm_status,
+                            "data_quality": "low" if ai_r.get("confidence") in ("LOW", "INCOMPLETE") else "medium",
+                            "action": ai_r.get("action", "REVIEW"),
+                            "recommendation": ai_r.get("action", "REVIEW"),
+                            "signal": "increase" if ai_r.get("action") == "KEEP" else ("reduce" if ai_r.get("action") == "REDUCE" else "watch"),
+                            "reason": ai_r.get("reason", "AI analysis"),
+                            "performance": ai_r.get("performance", {"day": None, "week": None, "month": None}),
+                            "risk": ai_r.get("risk", {"drawdown": None, "risk_score": None, "leverage": None, "concentration": None}),
+                            "risk_analysis": {},
+                            "news_exposure": {"level": ai_r.get("news_risk", "unknown"), "summary": ""},
+                            "news_analysis": {"impact": ai_r.get("news_risk", "unknown"), "details": td.get("_news_summary", "")},
+                            "holdings_count": len(td.get("_holdings", [])),
+                            "holdings_source": td.get("_holdings_source", "unknown"),
+                            "data_flags": {},
+                            "portfolio_concentration": {"warning": "Well diversified"},
+                        })
+                else:
+                    # Fall back to rule-based engine
+                    for td in enriched:
+                        result = analyze_trader_health(td, td.get("_holdings", []), td.get("_news_by_symbol", {}))
+                        results.append(result)
 
                 if not results:
                     await self._reply(update, "Health analysis complete. No signals to report.")
