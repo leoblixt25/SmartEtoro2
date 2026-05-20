@@ -229,15 +229,19 @@ class TelegramBot:
                 fresh, ts, label = await self._force_sync_before(db, p)
                 overview = get_portfolio_overview(db, p.id)
                 s = self._sym(overview.get("currency", "USD"))
+                ret = overview['total_return_pct']
+                ret_icon = "\U0001f4c8" if ret >= 0 else "\U0001f4c9"
+                health = overview['health_score']
+                health_icon = "\U0001f7e2" if health >= 70 else ("\U0001f7e1" if health >= 40 else "\U0001f534")
                 text = (
-                    f"Portfolio Status\n\n"
-                    f"Value: {s}{overview['total_value']:,.2f}\n"
-                    f"Cash: {s}{overview['available_cash']:,.2f}\n"
-                    f"Return: {overview['total_return_pct']:+.2f}%\n"
-                    f"Active traders: {overview['active_traders']}\n"
-                    f"Health: {overview['health_score']:.0f}/100\n"
-                    f"Sentiment: {overview['sentiment']}\n"
-                    f"Data: {ts} ({label})"
+                    f"\U0001f4ca <b>Portfolio Status</b>\n"
+                    f"{s}<b>{overview['total_value']:,.2f}</b>  "
+                    f"\U0001f4b0 {s}{overview['available_cash']:,.2f}\n"
+                    f"{ret_icon} <b>{ret:+.2f}%</b>  "
+                    f"{health_icon} Health <b>{health:.0f}/100</b>\n"
+                    f"\U0001f465 <b>{overview['active_traders']}</b> traders  "
+                    f"\U0001f4a1 {overview['sentiment']}\n"
+                    f"\U0001f4c5 {ts} ({label})"
                 )
                 await self._reply(update, text)
         except Exception as e:
@@ -259,37 +263,44 @@ class TelegramBot:
                 overview = get_portfolio_overview(db, p.id)
                 traders = get_active_traders(db, p.id)
                 s = self._sym(overview.get("currency", "USD"))
+                ret = overview['total_return_pct']
+                ret_icon = "\U0001f4c8" if ret >= 0 else "\U0001f4c9"
+                health = overview['health_score']
+                health_icon = "\U0001f7e2" if health >= 70 else ("\U0001f7e1" if health >= 40 else "\U0001f534")
 
-                lines = [f"Portfolio Summary\n"]
+                lines = [f"\U0001f4ca <b>Portfolio Summary</b>\n"]
                 lines.append(
-                    f"Value: {s}{overview['total_value']:,.2f}  "
-                    f"Cash: {s}{overview['available_cash']:,.2f}"
+                    f"\U0001f4b0 <b>{s}{overview['total_value']:,.2f}</b>  "
+                    f"\U0001f4b5 Cash {s}{overview['available_cash']:,.2f}"
                 )
                 lines.append(
-                    f"Return: {overview['total_return_pct']:+.2f}%  "
-                    f"Health: {overview['health_score']:.0f}/100"
+                    f"{ret_icon} <b>{ret:+.2f}%</b>  "
+                    f"{health_icon} Health <b>{health:.0f}/100</b>"
                 )
                 lines.append(
-                    f"Active: {overview['active_traders']} traders  "
-                    f"Sentiment: {overview['sentiment']}"
+                    f"\U0001f465 <b>{overview['active_traders']}</b> traders  "
+                    f"\U0001f4a1 {overview['sentiment']}"
                 )
                 if overview.get("concentration_risk"):
-                    lines.append("Concentration risk detected")
+                    lines.append("\u26a0\ufe0f Concentration risk detected")
 
                 if traders:
-                    lines.append(f"\nActive Traders ({len(traders)}):")
+                    lines.append(f"\n\u2501" * 12)
+                    lines.append(f"\U0001f465 <b>Active Traders ({len(traders)})</b>")
                     for t in traders[:5]:
                         ret = t["total_return_pct"]
-                        icon = "+" if ret >= 0 else ""
-                        paused = " (paused)" if t.get("is_paused") else ""
+                        pnl_icon = "\U0001f7e2" if ret >= 0 else "\U0001f534"
+                        ret_str = f"+{ret:.2f}%" if ret >= 0 else f"{ret:.2f}%"
+                        paused = " \u23f8\ufe0f paused" if t.get("is_paused") else ""
                         lines.append(
-                            f"  {t['username']}{paused} \u2014 "
-                            f"{t['allocation_pct']:.1f}%  "
-                            f"{icon}{ret:+.2f}%  "
-                            f"risk {t['risk_score']:.1f}"
+                            f"{pnl_icon} <b>{t['username']}</b>{paused}\n"
+                            f"    \U0001f4ca {t['allocation_pct']:.1f}%  "
+                            f"\U0001f4c8 {ret_str}  "
+                            f"\u26a0\ufe0f {t['risk_score']:.1f}"
                         )
 
-                lines.append(f"\nData: {ts} ({label})")
+                lines.append(f"\n\u2501" * 12)
+                lines.append(f"\U0001f4c5 {ts} ({label})")
 
                 await self._reply(update, "\n".join(lines))
         except Exception as e:
@@ -314,19 +325,22 @@ class TelegramBot:
                     await self._reply(update, "No active copied traders.")
                     return
 
-                lines = [f"Active Traders ({len(traders)})\n"]
+                lines = [f"\U0001f465 <b>Active Traders ({len(traders)})</b>\n"]
                 for t in traders:
                     ret = t["total_return_pct"]
-                    ret_icon = "+" if ret >= 0 else ""
-                    paused = " (paused)" if t.get("is_paused") else ""
+                    pnl_icon = "\U0001f7e2" if ret >= 0 else "\U0001f534"
+                    ret_str = f"+{ret:.2f}%" if ret >= 0 else f"{ret:.2f}%"
+                    paused = " \u23f8\ufe0f paused" if t.get("is_paused") else ""
+                    dd = t.get("max_drawdown", 0)
+                    dd_icon = "\U0001f7e2" if dd < 10 else ("\U0001f7e1" if dd < 18 else "\U0001f534")
                     lines.append(
-                        f"{t['username']}{paused}\n"
-                        f"  Alloc: {t['allocation_pct']:.1f}%  "
-                        f"Return: {ret_icon}{ret:+.2f}%\n"
-                        f"  Risk: {t['risk_score']:.1f}/10  "
-                        f"DD: {t['max_drawdown']:.1f}%"
+                        f"{pnl_icon} <b>{t['username']}</b>{paused}\n"
+                        f"    \U0001f4ca <b>{t['allocation_pct']:.1f}%</b>  "
+                        f"\U0001f4c8 <b>{ret_str}</b>\n"
+                        f"    \u26a0\ufe0f Risk {t['risk_score']:.1f}/10  "
+                        f"{dd_icon} DD {dd:.1f}%"
                     )
-                lines.append(f"\nData: {ts} ({label})")
+                lines.append(f"\n\U0001f4c5 {ts} ({label})")
                 await self._reply(update, "\n".join(lines))
         except Exception as e:
             logger.error(f"/active error: {e}")
@@ -681,19 +695,18 @@ class TelegramBot:
                 fresh, ts, label = await self._force_sync_before(db, p)
                 alerts = get_alerts(db, p.id, unread_only=True, limit=5)
                 if not alerts:
-                    await self._reply(update, "No unread alerts.")
+                    await self._reply(update, "\u2705 No unread alerts.")
                     return
 
-                lines = [f"Recent Alerts ({len(alerts)})\n"]
+                severity_icons = {"critical": "\U0001f534", "warning": "\u26a0\ufe0f", "info": "\U0001f7e1"}
+                lines = [f"\U0001f514 <b>Recent Alerts ({len(alerts)})</b>\n"]
                 for a in alerts:
-                    icon = {"critical": "!", "warning": "\u26a0", "info": "i"}.get(
-                        a["severity"], "?"
-                    )
+                    icon = severity_icons.get(a["severity"], "\u2753")
                     lines.append(
-                        f"{icon} {a['title']}\n"
-                        f"  {a['message'][:150]}"
+                        f"{icon} <b>{a['title']}</b>\n"
+                        f"  {a['message'][:200]}"
                     )
-                lines.append(f"\nData: {ts} ({label})")
+                lines.append(f"\n\U0001f4c5 {ts} ({label})")
                 await self._reply(update, "\n".join(lines))
         except Exception as e:
             logger.error(f"/alerts error: {e}")
@@ -706,7 +719,7 @@ class TelegramBot:
         from backend.services.etoro_service import EToroSyncService
 
         try:
-            await self._reply(update, "Fetching watchlist...")
+            await self._reply(update, "\U0001f50d Fetching watchlist...")
 
             sync_service = EToroSyncService()
             etoro_client = sync_service.client if sync_service.client.enabled else None
@@ -727,26 +740,28 @@ class TelegramBot:
                 results = result.get("results", [])
 
                 if not results:
-                    await self._reply(update, "Watchlist is empty.")
+                    await self._reply(update, "\U0001f4ed Watchlist is empty.")
                     return
 
                 by_signal = summary.get("by_signal", {})
-                lines = [f"Monitored Traders\n"]
-                lines.append(
-                    f"Increase: {by_signal.get('increase', 0)}  "
-                    f"Hold: {by_signal.get('hold', 0)}  "
-                    f"Reduce: {by_signal.get('reduce', 0)}  "
-                    f"Watch: {by_signal.get('watch', 0)}\n"
-                )
+                signal_icons = {"increase": "\U0001f7e2", "hold": "\U0001f7e1", "reduce": "\U0001f534", "watch": "\U0001f50d"}
+                lines = [f"\U0001f6e1\ufe0f <b>Monitored Traders</b>\n"]
+                signal_parts = []
+                for sig, count in by_signal.items():
+                    icon = signal_icons.get(sig, "\u2753")
+                    signal_parts.append(f"{icon} {sig} <b>{count}</b>")
+                lines.append("  ".join(signal_parts))
 
                 for r in results:
+                    sig = r.get("signal", "watch")
+                    sig_icon = signal_icons.get(sig, "\U0001f50d")
+                    score = r.get("performance_score", 0)
                     lines.append(
-                        f"{r['trader']} \u2014 {r['signal']} "
-                        f"(score: {r.get('performance_score', 0):.0f})"
+                        f"\n{sig_icon} <b>{r['trader']}</b> \u2014 {sig} "
+                        f"(\U0001f4ca {score:.0f})"
                     )
 
-                overall = summary.get("sentiment", "neutral")
-                lines.append(f"\nData: {ts} ({label})")
+                lines.append(f"\n\U0001f4c5 {ts} ({label})")
 
                 await self._reply(update, "\n".join(lines))
         except Exception as e:
@@ -765,17 +780,21 @@ class TelegramBot:
                     return
 
                 fresh, ts, label = await self._force_sync_before(db, p)
+                mode_icon = "\U0001f6e1\ufe0f" if not p.is_simulation else "\U0001f6f0\ufe0f"
+                active = len([t for t in (p.copied_traders or []) if t.is_active and not t.is_paused])
+                health = p.health_score or 0
+                health_icon = "\U0001f7e2" if health >= 70 else ("\U0001f7e1" if health >= 40 else "\U0001f534")
 
                 text = (
-                    f"Current Settings\n\n"
-                    f"Portfolio ID: {p.id}\n"
-                    f"Currency: {p.currency or 'USD'}\n"
-                    f"Mode: {'Simulation' if p.is_simulation else 'Live'}\n"
-                    f"Total Value: ${p.total_value:,.2f}\n"
-                    f"Available Cash: ${p.available_cash:,.2f}\n\n"
-                    f"Health Score: {p.health_score:.0f}/100\n"
-                    f"Active Traders: {len([t for t in (p.copied_traders or []) if t.is_active and not t.is_paused])}\n\n"
-                    f"Data: {ts} ({label})"
+                    f"\u2699\ufe0f <b>Settings</b>\n"
+                    f"\U0001f3e6 Portfolio <b>#{p.id}</b>  "
+                    f"\U0001f4b1 {p.currency or 'USD'}  "
+                    f"{mode_icon} {'Sim' if p.is_simulation else 'Live'}\n"
+                    f"\U0001f4b0 <b>${p.total_value:,.2f}</b>  "
+                    f"\U0001f4b5 ${p.available_cash:,.2f}\n"
+                    f"{health_icon} Health <b>{health:.0f}/100</b>  "
+                    f"\U0001f465 <b>{active}</b> active\n"
+                    f"\U0001f4c5 {ts} ({label})"
                 )
                 await self._reply(update, text)
         except Exception as e:
@@ -814,7 +833,6 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
     def ret_str(v):
         return f"{v:+.1f}%" if v else "0.0%"
 
-    # Classify each trader
     uncopy = []
     keep = []
     watch = []
@@ -824,64 +842,69 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
         name = r.get("trader", "?")
         entry = (name, ret, alloc, r)
         if ret < -1.0 and alloc > 5:
-            uncopy.append(entry)  # meaningful loss + meaningful allocation
+            uncopy.append(entry)
         elif ret < -3.0:
-            uncopy.append(entry)  # large loss regardless
+            uncopy.append(entry)
         elif ret > 0.5:
-            keep.append(entry)    # clearly making money
+            keep.append(entry)
         else:
-            watch.append(entry)   # everything else
+            watch.append(entry)
 
-    # Sort UNCOPY by impact (alloc * loss), worst first
     uncopy.sort(key=lambda x: -(x[2] * abs(x[1])))
-    # Sort KEEP by return, best first
     keep.sort(key=lambda x: -x[1])
-    # Sort WATCH by return, best first
     watch.sort(key=lambda x: -x[1])
 
     total = len(results)
     source_tag = source_label if source_label else ("Live" if live else "Cached")
-
-    lines = [f"\U0001f4ca Health \u2014 {total} traders ({source_tag})"]
-
     pos = len(keep)
     neg = sum(1 for r in results if ret_val(r) < 0)
     flat = total - pos - neg
+
+    lines = [f"\U0001f4ca <b>Health \u2014 {total} traders</b> ({source_tag})"]
     lines.append(f"\u2705 {pos} good  \u274c {neg} bad  \u26aa {flat} flat\n")
 
     if uncopy:
-        lines.append(f"\u274c UNCOPY \u2014 losing money on big positions")
+        lines.append(f"\u274c <b>UNCOPY</b> \u2014 losing on big positions")
         for name, ret, alloc, _ in uncopy:
-            lines.append(f"  {name}  {ret_str(ret)}  {alloc:.0f}% alloc")
+            lines.append(
+                f"\U0001f534 <b>{name}</b>  "
+                f"\U0001f4c9 <b>{ret_str(ret)}</b>  "
+                f"\U0001f4ca {alloc:.0f}% alloc"
+            )
         lines.append("")
 
     if keep:
-        lines.append(f"\u2705 KEEP \u2014 making money")
+        lines.append(f"\u2705 <b>KEEP</b> \u2014 making money")
         for name, ret, alloc, _ in keep:
-            pct = f"  {alloc:.0f}% alloc" if alloc else ""
-            lines.append(f"  {name}  {ret_str(ret)}{pct}")
+            pct = f"  \U0001f4ca {alloc:.0f}%" if alloc else ""
+            lines.append(
+                f"\U0001f7e2 <b>{name}</b>  "
+                f"\U0001f4c8 <b>{ret_str(ret)}</b>{pct}"
+            )
         lines.append("")
 
     if watch:
-        watch_show = watch[:5]  # max 5 in WATCH
+        watch_show = watch[:5]
         watch_hidden = len(watch) - len(watch_show)
-        lines.append(f"\U0001f50d WATCH \u2014 flat or tiny positions")
+        lines.append(f"\U0001f50d <b>WATCH</b> \u2014 flat or tiny positions")
         for name, ret, alloc, _ in watch_show:
-            pct = f"  {alloc:.0f}% alloc" if alloc else ""
-            lines.append(f"  {name}  {ret_str(ret)}{pct}")
+            pct = f"  \U0001f4ca {alloc:.0f}%" if alloc else ""
+            lines.append(
+                f"\U0001f7e1 <b>{name}</b>  "
+                f"{ret_str(ret)}{pct}"
+            )
         if watch_hidden > 0:
-            lines.append(f"  ... and {watch_hidden} more")
+            lines.append(f"  \u2026 and {watch_hidden} more")
 
-    # Bottom line
     if uncopy:
-        lines.append(f"\n\U0001f6a8 Action: UNCOPY {uncopy[0][0]} first ({uncopy[0][1]:+.1f}% at {uncopy[0][2]:.0f}% alloc)")
+        lines.append(f"\n\U0001f6a8 <b>Action:</b> UNCOPY <b>{uncopy[0][0]}</b> first ({uncopy[0][1]:+.1f}% at {uncopy[0][2]:.0f}% alloc)")
     elif not keep:
-        lines.append(f"\n\U0001f6a8 No traders making money \u2014 review entire portfolio")
+        lines.append(f"\n\U0001f6a8 <b>No traders making money</b> \u2014 review entire portfolio")
     elif len(keep) >= total * 0.6:
-        lines.append(f"\n\U0001f535 Portfolio healthy \u2014 {pos}/{total} profitable")
+        lines.append(f"\n\U0001f535 <b>Portfolio healthy</b> \u2014 {pos}/{total} profitable")
 
     if ts:
-        lines.append(f"\nData: {ts} ({source_tag})")
+        lines.append(f"\n\U0001f4c5 {ts} ({source_tag})")
 
     return "\n".join(lines)
 
