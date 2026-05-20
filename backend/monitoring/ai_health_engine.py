@@ -1,5 +1,5 @@
 """
-AI-Powered Trader Health Engine — uses OpenAI/OpenRouter GPT to analyze traders.
+AI-Powered Trader Health Engine — uses OpenAI/OpenRouter/Groq to analyze traders.
 Falls back to rule-based engine if AI is unavailable.
 """
 import json
@@ -10,7 +10,13 @@ from typing import Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 AI_AVAILABLE = False
-OPENROUTER_BASE = "https://openrouter.ai/api/v1"
+
+# Provider configs
+PROVIDERS = {
+    "openai": {"base_url": None, "key_prefix": "sk-proj-"},
+    "openrouter": {"base_url": "https://openrouter.ai/api/v1", "key_prefix": "sk-or-"},
+    "groq": {"base_url": "https://api.groq.com/openai/v1", "key_prefix": "gsk_"},
+}
 
 try:
     from openai import OpenAI
@@ -21,36 +27,43 @@ except ImportError:
 
 SYSTEM_PROMPT = """You are an elite copy-trading portfolio analyst specializing in eToro Popular Investors.
 
-Your job: analyze copied traders and return structured JSON. Be conservative and honest.
+Your job: analyze copied traders and return structured JSON. Be honest and pragmatic.
 
 RULES:
-- Never invent missing values
-- Never treat missing data as proof a trader is bad
-- Missing data lowers confidence, not score
-- If day/week/month return all missing and no total_return_pct exists → incomplete
-- use UNCOPY only with real negative evidence (high risk, high drawdown, consistent losses)
-- If evidence is weak, recommend REVIEW instead
+- Never invent missing values, but DO use what IS available
+- total_return_pct + allocation_pct are SUFFICIENT to make a call
+- Negative returns on big allocations = UNCOPY (real losses)
+- Positive returns = KEEP (even if small)
+- Near-zero returns with tiny allocations = REVIEW (no action needed)
+- UNCOPY only for clear negative evidence (losses on >5% allocation or >3% loss)
+- Be decisive — "REVIEW" means "do nothing for now" not "wait for more data"
+- A -0.1% return on 1% allocation is NOTHING — call it REVIEW
 
 SCORING (out of 100):
 85-100 = Elite | 75-84 = Strong | 65-74 = Good | 55-64 = Watch
 40-54 = Weak | Below 40 = Avoid | null = Cannot evaluate
 
 CONFIDENCE:
-HIGH = most fields present | MEDIUM = some gaps | LOW = limited data | INCOMPLETE = insufficient
+HIGH = has return + allocation + some risk data
+MEDIUM = has return + allocation only
+LOW = only return or only allocation
+INCOMPLETE = neither
 
 ACTIONS:
-KEEP = stable & acceptable | REDUCE = good but risk rising | PAUSE = elevated uncertainty
-REVIEW = too little data | UNCOPY = clear negative evidence only
+KEEP = positive return or strong fundamentals
+REDUCE = negative return, moderate allocation (5-15%)
+UNCOPY = negative return on >5% allocation, or any >3% loss
+REVIEW = everything else (tiny positions, near-zero returns)
 
 NEWS RISK: low | medium | high | unknown
 
-Return ONLY valid JSON — an array of objects (one per trader), each matching this schema:
+Return ONLY valid JSON — a JSON object with a "traders" key containing an array of objects (one per trader), each matching this schema:
 {
   "name": "username",
   "score": number or null,
   "confidence": "HIGH|MEDIUM|LOW|INCOMPLETE",
   "status": "ELITE|STRONG|GOOD|WATCH|WEAK|AVOID|INCOMPLETE",
-  "action": "KEEP|REDUCE|PAUSE|REVIEW|UNCOPY",
+  "action": "KEEP|REDUCE|UNCOPY|REVIEW",
   "reason": "short specific reason under 120 chars",
   "news_risk": "low|medium|high|unknown",
   "performance": {"day": null, "week": null, "month": null},
@@ -110,40 +123,62 @@ def _parse_ai_response(text: str) -> Optional[List[Dict]]:
 
 
 async def ai_analyze_traders(traders_data: List[Dict]) -> Optional[List[Dict]]:
-    """Analyze all traders via OpenAI/OpenRouter. Returns list of result dicts or None on failure."""
+    """Analyze all traders via OpenAI/OpenRouter/Groq. Returns list of result dicts or None on failure."""
     if not AI_AVAILABLE:
         logger.info("AI engine unavailable (no API key)")
         return None
 
     api_key = os.environ["OPENAI_API_KEY"]
-    is_openrouter = api_key.startswith("sk-or-")
-    client_kwargs = {"api_key": api_key}
-    if is_openrouter:
-        client_kwargs["base_url"] = OPENROUTER_BASE
-        logger.info("Using OpenRouter API")
 
-    client = OpenAI(**client_kwargs)
-    trader_text = _build_trader_text(traders_data)
-    model = "openai/gpt-4o-mini" if is_openrouter else "gpt-4o-mini"
+    # Detect provider by key prefix
+    provider = "openai"
+    for name, cfg in PROVIDERS.items():
+        if api_key.startswith(cfg["key_prefix"]):
+            provider = name
+            break
 
     extra_headers = {}
-    if is_openrouter:
+    if provider == "groq":
+        base_url = PROVIDERS["groq"]["base_url"]
+        model = "llama-3.3-70b-versatile"
+        logger.info("Using Groq API (free)")
+    elif provider == "openrouter":
+        base_url = PROVIDERS["openrouter"]["base_url"]
+        model = "openai/gpt-4o-mini"
         extra_headers = {
             "HTTP-Referer": "https://github.com/leoblixt25/SmartEtoro2",
             "X-Title": "SmartEtoro2",
         }
+        logger.info("Using OpenRouter API")
+    else:
+        base_url = None  # default OpenAI
+        model = "gpt-4o-mini"
+        logger.info("Using OpenAI API")
+
+    client_kwargs = {"api_key": api_key}
+    if base_url:
+        client_kwargs["base_url"] = base_url
+    client = OpenAI(**client_kwargs)
+
+    trader_text = _build_trader_text(traders_data)
+
+    # Groq supports JSON mode
+    kwargs = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": trader_text},
+        ],
+        "temperature": 0.1,
+        "max_tokens": 2000,
+    }
+    if extra_headers:
+        kwargs["extra_headers"] = extra_headers
+    if provider == "groq":
+        kwargs["response_format"] = {"type": "json_object"}
 
     try:
-        response = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": trader_text},
-            ],
-            temperature=0.1,
-            max_tokens=2000,
-            extra_headers=extra_headers if extra_headers else None,
-        )
+        response = client.chat.completions.create(**kwargs)
         raw = response.choices[0].message.content
         results = _parse_ai_response(raw)
         if not results:
