@@ -666,6 +666,7 @@ class TelegramBot:
                             "news_analysis": {"impact": ai_r.get("news_risk", "unknown"), "details": td.get("_news_summary", "")},
                             "holdings_count": len(td.get("_holdings", [])),
                             "total_return_pct": td.get("total_return_pct"),
+                            "allocation_pct": td.get("allocation_pct"),
                             "holdings_source": td.get("_holdings_source", "unknown"),
                             "data_flags": {},
                             "portfolio_concentration": {"warning": "Well diversified"},
@@ -812,18 +813,6 @@ def _build_health_summary(results: list[dict], live: bool = False) -> str:
     total = len(results)
     source_tag = "Live" if live else "Cached"
 
-    buckets = {}
-    for r in results:
-        s = r.get("health_status", "Watch")
-        buckets.setdefault(s, []).append(r)
-
-    inc_count = len(buckets.get("Incomplete", []))
-    strong = len(buckets.get("Strong", []))
-    good = len(buckets.get("Good", []))
-    watch_n = len(buckets.get("Watch", []))
-    weak = len(buckets.get("Weak", []))
-    avoid = len(buckets.get("Avoid", []))
-
     def ret_str(r):
         tr = r.get("total_return_pct")
         if tr is not None and tr != 0:
@@ -839,13 +828,25 @@ def _build_health_summary(results: list[dict], live: bool = False) -> str:
             return f"{ov:+.1f}%"
         return "?"
 
-    ACTION_ICON = {"UNCOPY": "\u274c", "REDUCE": "\u26a0\ufe0f", "PAUSE": "\u23f8\ufe0f", "REVIEW": "\U0001f50d", "KEEP": "\u2705"}
-    ACTION_ORDER = {"UNCOPY": 0, "REDUCE": 1, "PAUSE": 2, "REVIEW": 3, "KEEP": 4}
+    ICONS = {"UNCOPY": "\u274c", "REDUCE": "\u26a0\ufe0f", "PAUSE": "\u23f8\ufe0f", "REVIEW": "\U0001f50d", "KEEP": "\u2705"}
+    ORDER = {"UNCOPY": 0, "REDUCE": 1, "PAUSE": 2, "REVIEW": 3, "KEEP": 4}
 
     sorted_results = sorted(
         results,
-        key=lambda r: (ACTION_ORDER.get(r.get("recommendation", "KEEP"), 9), -(r.get("health_score") or 0)),
+        key=lambda r: (ORDER.get(r.get("recommendation", "KEEP"), 9), -(r.get("health_score") or 0)),
     )
+
+    buckets = {}
+    for r in results:
+        s = r.get("health_status", "Watch")
+        buckets.setdefault(s, []).append(r)
+
+    inc = len(buckets.get("Incomplete", []))
+    strong = len(buckets.get("Strong", []))
+    good = len(buckets.get("Good", []))
+    watch_n = len(buckets.get("Watch", []))
+    weak = len(buckets.get("Weak", []))
+    avoid = len(buckets.get("Avoid", []))
 
     lines = [f"\U0001f4ca Health \u2014 {total} traders ({source_tag})"]
     status_parts = []
@@ -859,35 +860,57 @@ def _build_health_summary(results: list[dict], live: bool = False) -> str:
         status_parts.append(f"\U0001f7e0{weak}")
     if avoid:
         status_parts.append(f"\U0001f534{avoid}")
-    if inc_count:
-        status_parts.append(f"\u26aa{inc_count}")
+    if inc:
+        status_parts.append(f"\u26aa{inc}")
     if status_parts:
         lines.append(" ".join(status_parts))
-    lines.append("")
+
+    # Show what data is actually available
+    has_risk = any(r.get("risk_analysis", {}).get("risk_score") for r in results)
+    has_dd = any(r.get("risk_analysis", {}).get("drawdown") for r in results)
+    has_holds = any(r.get("holdings_count", 0) > 0 for r in results)
+    has_cons = any(r.get("data_flags", {}).get("consistency") for r in results)
+    avail = []
+    avail.append("return")
+    if has_holds:
+        avail.append("holdings")
+    if has_risk:
+        avail.append("risk")
+    if has_dd:
+        avail.append("drawdown")
+    if has_cons:
+        avail.append("consistency")
+    lines.append(f"Data: {', '.join(avail)}\n")
+
+    section_line = " \u2014 ".join([
+        f'\u274c Worst ({weak + avoid})',
+        f'\u2705 Best ({strong + good})',
+        f'\U0001f50d Rest ({inc + watch_n})'
+    ])
+    lines.append(section_line + "\n")
 
     for r in sorted_results:
         name = r.get("trader", "?")
-        score = r.get("health_score")
-        score_str = f"{score}/100" if score is not None else "--/100"
         ret = ret_str(r)
+        alloc = r.get("allocation_pct")
+        alloc_str = f"{alloc:.0f}%" if alloc is not None else ""
         action = r.get("recommendation", "KEEP")
-        icon = ACTION_ICON.get(action, "\u2795")
-        reason = (r.get("reason") or "")[:60]
-        lines.append(f"{icon} {name}  {score_str}  {ret}  {action}  {reason}")
+        icon = ICONS.get(action, "\u2795")
+        reason = (r.get("reason") or "")[:50]
+        lines.append(f"{icon} {name}  {alloc_str}  {ret}  {reason}")
 
-    if strong + good + watch_n + weak + avoid == 0:
-        advice = "Poor data coverage \u2014 can't evaluate"
-    elif inc_count > total / 2:
-        advice = f"Most traders ({inc_count}/{total}) lack performance data"
-    elif weak + avoid > total / 2:
-        advice = "Majority show weakness \u2014 review positions"
-    elif strong + good >= total * 0.6:
-        advice = f"Portfolio broadly healthy \u2014 {strong + good}/{total} strong"
-    else:
-        advice = f"Mixed \u2014 {weak + avoid} with concerns, {strong + good} strong"
-
-    lines.append("")
-    lines.append(advice)
+    # Bottom line: actionable summary
+    neg_ret_traders = [(r.get("trader", "?"), r.get("total_return_pct"), r.get("allocation_pct"))
+                       for r in results
+                       if r.get("total_return_pct") is not None and r.get("total_return_pct") < 0]
+    if neg_ret_traders:
+        neg_ret_traders.sort(key=lambda x: (abs(x[1]) if x[1] else 0) * (x[2] or 0), reverse=True)
+        worst = neg_ret_traders[0]
+        worst_name, worst_ret, worst_alloc = worst
+        lines.append(f"\n\U0001f6a8 Most urgent: {worst_name} ({worst_alloc:.0f}% alloc at {worst_ret:+.1f}%)")
+    pos = sum(1 for r in results if r.get("total_return_pct") is not None and r.get("total_return_pct") > 0)
+    neg = sum(1 for r in results if r.get("total_return_pct") is not None and r.get("total_return_pct") < 0)
+    lines.append(f"{pos} positive, {neg} negative returns")
 
     return "\n".join(lines)
 

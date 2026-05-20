@@ -20,5 +20,8 @@ yfinance==0.2.54
 # Scheduling
 apscheduler==3.10.4
 
+# AI analysis
+openai>=1.0.0
+
 # Utilities
 python-dotenv==1.0.1

@@ -352,6 +352,8 @@ def _build_reason(status: str, action: str, perf_detail: Dict, risk_detail: Dict
                    if (k == "risk" and not (flags["risk_score"] or flags["max_drawdown"]))
                    or (k == "holdings" and not flags["holdings"])
                    or (k == "consistency" and not flags["consistency"])]
+        if len(missing) >= 2:
+            return "Limited data"
         return f"Missing: {', '.join(missing)}" if missing else "Limited data"
     if action == "PAUSE":
         parts = []
@@ -385,7 +387,7 @@ def _confidence_to_float(confidence: str) -> float:
     return {"HIGH": 0.9, "MEDIUM": 0.7, "LOW": 0.5, "INCOMPLETE": 0.3}.get(confidence, 0.5)
 
 
-def _insufficient_result(username: str, holdings: List[Dict], news_by_symbol: Dict) -> Dict:
+def _insufficient_result(username: str, holdings: List[Dict], news_by_symbol: Dict, trader: Optional[Dict] = None) -> Dict:
     has_news = any(bool(v) for v in news_by_symbol.values())
     return {
         "name": username,
@@ -405,6 +407,8 @@ def _insufficient_result(username: str, holdings: List[Dict], news_by_symbol: Di
         "risk_analysis": {"note": "No data"},
         "news_exposure": {"level": "unknown", "summary": ""},
         "news_analysis": {"impact": "unknown", "details": "No data"},
+        "total_return_pct": trader.get("total_return_pct") if trader else None,
+        "allocation_pct": trader.get("allocation_pct") if trader else None,
         "reason": "insufficient performance data",
         "reasons": ["Insufficient performance data"],
         "warning_signs": [],
@@ -428,7 +432,7 @@ def analyze_trader_health(trader: Dict, holdings: List[Dict], news_by_symbol: Di
         if _has_clear_negative_risk(trader):
             data_quality = "low"
         else:
-            return _insufficient_result(username, holdings, news_by_symbol)
+            return _insufficient_result(username, holdings, news_by_symbol, trader)
 
     perf_score, perf_detail = _score_performance(trader)
     risk_score_val, risk_detail = _score_risk(trader)
@@ -480,6 +484,7 @@ def analyze_trader_health(trader: Dict, holdings: List[Dict], news_by_symbol: Di
         "news_exposure": {"level": news_risk, "summary": news_detail.get("details", "")},
         "news_analysis": {"impact": news_detail.get("impact", "neutral"), "details": news_detail.get("details", "")},
         "total_return_pct": trader.get("total_return_pct"),
+        "allocation_pct": trader.get("allocation_pct"),
         "reason": reason,
         "reasons": reasons_list,
         "warning_signs": [],
