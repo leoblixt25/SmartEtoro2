@@ -74,14 +74,12 @@ def _assess_data_quality(flags: Dict) -> str:
     has_any_perf = flags["return_1d"] or flags["return_1w"] or flags["return_1m"]
     if not has_any_perf and not flags["total_return"]:
         return "insufficient"
-    # If only total_return exists without any supporting data, mark insufficient
-    has_supporting = flags["risk_score"] or flags["max_drawdown"] or flags["holdings"] or flags["consistency"]
-    if not has_any_perf and not has_supporting:
-        return "insufficient"
     present = sum(1 for v in flags.values() if v)
-    if present <= 2:
+    if present <= 1:
         return "low"
-    elif present <= 4:
+    elif present <= 3:
+        return "low"
+    elif present <= 5:
         return "medium"
     return "high"
 
@@ -298,13 +296,13 @@ def _score_consistency(trader: Dict) -> float:
     return 2.0
 
 
-def _determine_confidence(flags: Dict) -> str:
+def _determine_confidence(flags: Dict, data_quality: str) -> str:
+    if data_quality == "insufficient":
+        return "INCOMPLETE"
     has_perf = flags["return_1d"] or flags["return_1w"] or flags["return_1m"] or flags["total_return"]
     has_risk = flags["risk_score"] or flags["max_drawdown"]
     key_present = sum([has_perf, has_risk, flags["holdings"], flags["consistency"]])
-    if key_present <= 1:
-        return "INCOMPLETE"
-    elif key_present == 2:
+    if key_present <= 2:
         return "LOW"
     elif key_present == 3:
         return "MEDIUM"
@@ -441,7 +439,7 @@ def analyze_trader_health(trader: Dict, holdings: List[Dict], news_by_symbol: Di
     total = perf_score + risk_score_val + news_score + conc_score + cons_score
     total = max(0, min(100, total))
 
-    confidence = _determine_confidence(flags)
+    confidence = _determine_confidence(flags, data_quality)
     status = _health_status(total, confidence)
     action = _get_action(total, status, confidence, risk_detail, flags)
     signal = RECOMMENDATION_TO_SIGNAL.get(action, "watch")

@@ -765,7 +765,7 @@ def _build_health_summary(results: list[dict], live: bool = False) -> str:
     STATUS_ICONS = {"Strong": _gn, "Good": _bl, "Watch": _yw, "Weak": _or, "Avoid": _rd}
 
     source_tag = "Live" if live else "Cached"
-    lines = [f"{_ic} 7Health Report ({source_tag})"]
+    lines = [f"{_ic} Health Report ({source_tag})"]
     lines.append(f"Scanned: {total} traders")
 
     buckets = {"Strong": [], "Good": [], "Watch": [], "Weak": [], "Avoid": []}
@@ -865,6 +865,7 @@ def _collect_risks(results: list[dict]) -> list[str]:
     """Collect unique, meaningful portfolio-level risks."""
     risks = []
     seen = set()
+    limited_data_traders = []
 
     for r in results:
         ra = r.get("risk_analysis", {})
@@ -896,10 +897,15 @@ def _collect_risks(results: list[dict]) -> list[str]:
         action = r.get("recommendation")
         dq = r.get("data_quality")
         if action == "REVIEW" and dq in ("low", "insufficient"):
-            text = f"{r['trader']}: Weak signal but limited data \u2014 manual check needed"
-            key = f"{r['trader']}: manual check"
-            if key not in seen:
-                seen.add(key)
-                risks.append(text)
+            limited_data_traders.append(r['trader'])
+
+    if limited_data_traders:
+        if len(limited_data_traders) <= 3:
+            for name in limited_data_traders:
+                risks.append(f"{name}: Weak signal but limited data \u2014 manual check needed")
+        else:
+            risks.append(f"{len(limited_data_traders)} traders with limited data \u2014 manual checks needed")
+            for name in limited_data_traders[:3]:
+                risks.append(f"  {name}: check needed")
 
     return risks
