@@ -3,14 +3,101 @@ Alert Service — centralized alert access, filtering, and management.
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
-from backend.database.models import Alert
+from backend.database.models import Alert, AlertType
 
 logger = logging.getLogger(__name__)
+
+
+LOSS_THRESHOLD = -6.0
+PROFIT_MIN = 10.0
+PROFIT_MAX = 20.0
+DEDUP_HOURS = 24
+
+
+async def check_return_thresholds(db: Session, portfolio_id: int, bot=None) -> List[Dict]:
+    """Check active traders for return threshold breaches.
+
+    Alerts when a trader's total return:
+      - drops to -6% or worse (critical alert)
+      - reaches 10-20% profit range (info alert)
+
+    Deduplicates by checking if the same alert title was created in the last DEDUP_HOURS.
+    Sends Telegram notification if a bot instance is provided.
+    """
+    from backend.database.models import CopiedTrader
+
+    traders = (
+        db.query(CopiedTrader)
+        .filter(
+            CopiedTrader.portfolio_id == portfolio_id,
+            CopiedTrader.is_active.is_(True),
+            CopiedTrader.is_paused.is_(False),
+        )
+        .all()
+    )
+
+    cutoff = datetime.utcnow() - timedelta(hours=DEDUP_HOURS)
+    new_alerts = []
+
+    for t in traders:
+        ret = t.total_return_pct
+        if ret is None:
+            continue
+        username = t.trader_username
+
+        if ret <= LOSS_THRESHOLD:
+            title = f"\U0001f534 Loss Alert: {username}"
+            exists = db.query(Alert).filter(
+                Alert.portfolio_id == portfolio_id,
+                Alert.title == title,
+                Alert.created_at > cutoff,
+            ).first()
+            if not exists:
+                new_alerts.append({
+                    "title": title,
+                    "message": f"{username} has lost <b>{ret:.2f}%</b> \u2014 exceeds {abs(LOSS_THRESHOLD):.0f}% threshold (alloc: {t.allocation_pct:.1f}%)",
+                    "severity": "critical",
+                    "alert_type": AlertType.MONITORING,
+                })
+
+        elif PROFIT_MIN <= ret <= PROFIT_MAX:
+            title = f"\U0001f7e2 Profit Alert: {username}"
+            exists = db.query(Alert).filter(
+                Alert.portfolio_id == portfolio_id,
+                Alert.title == title,
+                Alert.created_at > cutoff,
+            ).first()
+            if not exists:
+                new_alerts.append({
+                    "title": title,
+                    "message": f"{username} is up <b>{ret:.2f}%</b> ({PROFIT_MIN:.0f}-{PROFIT_MAX:.0f}% range)",
+                    "severity": "info",
+                    "alert_type": AlertType.PROFIT_MILESTONE,
+                })
+
+    for a in new_alerts:
+        db.add(Alert(
+            portfolio_id=portfolio_id,
+            alert_type=a["alert_type"],
+            title=a["title"],
+            message=a["message"],
+            severity=a["severity"],
+        ))
+    if new_alerts:
+        db.commit()
+        if bot and bot.enabled:
+            for a in new_alerts:
+                await bot.send_message(
+                    f"{a['title']}\n{a['message']}\n\U0001f4c5 {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}",
+                    show_keyboard=False,
+                )
+
+    return new_alerts
 
 
 def get_alerts(

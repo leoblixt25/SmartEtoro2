@@ -99,8 +99,11 @@ class SchedulerService:
         from backend.database.connection import db_session
         from backend.database.models import Portfolio
         from backend.services.etoro_service import EToroSyncService
+        from backend.services.alert_service import check_return_thresholds
+        from backend.services.telegram_service import TelegramBot
 
         sync_service = EToroSyncService()
+        bot = TelegramBot()
         try:
             with db_session() as db:
                 portfolios = db.query(Portfolio).all()
@@ -108,6 +111,9 @@ class SchedulerService:
                     success = await sync_service.sync_portfolio_data(db, portfolio.id)
                     if success:
                         logger.info(f"eToro sync successful for portfolio {portfolio.id}")
+                        triggered = await check_return_thresholds(db, portfolio.id, bot=bot)
+                        if triggered:
+                            logger.info(f"Threshold alerts triggered: {[a['title'] for a in triggered]}")
                     else:
                         logger.debug(f"eToro sync skipped for portfolio {portfolio.id}")
         except Exception as e:

@@ -121,18 +121,17 @@ class TelegramBot:
     async def _force_sync_before(self, db, portfolio) -> Tuple[bool, str, str]:
         """Force a live eToro sync and return (fresh, timestamp, label).
 
-        Returns:
-            fresh: True if live API data was synced
-            timestamp: ISO-8601 string of the sync time
-            label: "Live" or "Cached" for display
+        Also checks return thresholds and triggers alerts after a successful sync.
         """
         from backend.services.etoro_service import EToroSyncService
+        from backend.services.alert_service import check_return_thresholds
         now = datetime.utcnow()
         timestamp = now.strftime("%Y-%m-%d %H:%M UTC")
         try:
             sync = EToroSyncService()
             ok = await sync.sync_portfolio_data(db, portfolio.id)
             if ok:
+                await check_return_thresholds(db, portfolio.id, bot=self)
                 return True, timestamp, "Live"
         except Exception as e:
             logger.error(f"Pre-command sync failed: {e}")
