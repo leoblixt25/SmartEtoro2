@@ -810,107 +810,89 @@ class TelegramBot:
 
 
 def _build_health_summary(results: list[dict], live: bool = False) -> str:
-    total = len(results)
-    source_tag = "Live" if live else "Cached"
-
-    def ret_str(r):
+    def ret_val(r):
         tr = r.get("total_return_pct")
         if tr is not None and tr != 0:
-            return f"{tr:+.1f}%"
+            return tr
         perf = r.get("performance", {})
         for k in ("month", "week", "day"):
             v = perf.get(k)
             if v is not None and v != 0:
-                return f"{v:+.1f}%"
+                return v
         ps = r.get("performance_summary", {})
         ov = ps.get("overall_return")
         if ov is not None and ov != 0:
-            return f"{ov:+.1f}%"
-        return "?"
+            return ov
+        return 0.0
 
-    ICONS = {"UNCOPY": "\u274c", "REDUCE": "\u26a0\ufe0f", "PAUSE": "\u23f8\ufe0f", "REVIEW": "\U0001f50d", "KEEP": "\u2705"}
-    ORDER = {"UNCOPY": 0, "REDUCE": 1, "PAUSE": 2, "REVIEW": 3, "KEEP": 4}
+    def ret_str(v):
+        return f"{v:+.1f}%" if v else "0.0%"
 
-    sorted_results = sorted(
-        results,
-        key=lambda r: (ORDER.get(r.get("recommendation", "KEEP"), 9), -(r.get("health_score") or 0)),
-    )
-
-    buckets = {}
+    # Classify each trader
+    uncopy = []
+    keep = []
+    watch = []
     for r in results:
-        s = r.get("health_status", "Watch")
-        buckets.setdefault(s, []).append(r)
+        ret = ret_val(r)
+        alloc = r.get("allocation_pct") or 0
+        name = r.get("trader", "?")
+        entry = (name, ret, alloc, r)
+        if ret < -1.0 and alloc > 5:
+            uncopy.append(entry)  # meaningful loss + meaningful allocation
+        elif ret < -3.0:
+            uncopy.append(entry)  # large loss regardless
+        elif ret > 0.5:
+            keep.append(entry)    # clearly making money
+        else:
+            watch.append(entry)   # everything else
 
-    inc = len(buckets.get("Incomplete", []))
-    strong = len(buckets.get("Strong", []))
-    good = len(buckets.get("Good", []))
-    watch_n = len(buckets.get("Watch", []))
-    weak = len(buckets.get("Weak", []))
-    avoid = len(buckets.get("Avoid", []))
+    # Sort UNCOPY by impact (alloc * loss), worst first
+    uncopy.sort(key=lambda x: -(x[2] * abs(x[1])))
+    # Sort KEEP by return, best first
+    keep.sort(key=lambda x: -x[1])
+    # Sort WATCH by return, best first
+    watch.sort(key=lambda x: -x[1])
+
+    total = len(results)
+    source_tag = "Live" if live else "Cached"
 
     lines = [f"\U0001f4ca Health \u2014 {total} traders ({source_tag})"]
-    status_parts = []
-    if strong:
-        status_parts.append(f"\U0001f7e2{strong}")
-    if good:
-        status_parts.append(f"\U0001f535{good}")
-    if watch_n:
-        status_parts.append(f"\U0001f7e1{watch_n}")
-    if weak:
-        status_parts.append(f"\U0001f7e0{weak}")
-    if avoid:
-        status_parts.append(f"\U0001f534{avoid}")
-    if inc:
-        status_parts.append(f"\u26aa{inc}")
-    if status_parts:
-        lines.append(" ".join(status_parts))
 
-    # Show what data is actually available
-    has_risk = any(r.get("risk_analysis", {}).get("risk_score") for r in results)
-    has_dd = any(r.get("risk_analysis", {}).get("drawdown") for r in results)
-    has_holds = any(r.get("holdings_count", 0) > 0 for r in results)
-    has_cons = any(r.get("data_flags", {}).get("consistency") for r in results)
-    avail = []
-    avail.append("return")
-    if has_holds:
-        avail.append("holdings")
-    if has_risk:
-        avail.append("risk")
-    if has_dd:
-        avail.append("drawdown")
-    if has_cons:
-        avail.append("consistency")
-    lines.append(f"Data: {', '.join(avail)}\n")
+    pos = len(keep)
+    neg = sum(1 for r in results if ret_val(r) < 0)
+    flat = total - pos - neg
+    lines.append(f"\u2705 {pos} good  \u274c {neg} bad  \u26aa {flat} flat\n")
 
-    section_line = " \u2014 ".join([
-        f'\u274c Worst ({weak + avoid})',
-        f'\u2705 Best ({strong + good})',
-        f'\U0001f50d Rest ({inc + watch_n})'
-    ])
-    lines.append(section_line + "\n")
+    if uncopy:
+        lines.append(f"\u274c UNCOPY \u2014 losing money on big positions")
+        for name, ret, alloc, _ in uncopy:
+            lines.append(f"  {name}  {ret_str(ret)}  {alloc:.0f}% alloc")
+        lines.append("")
 
-    for r in sorted_results:
-        name = r.get("trader", "?")
-        ret = ret_str(r)
-        alloc = r.get("allocation_pct")
-        alloc_str = f"{alloc:.0f}%" if alloc is not None else ""
-        action = r.get("recommendation", "KEEP")
-        icon = ICONS.get(action, "\u2795")
-        reason = (r.get("reason") or "")[:50]
-        lines.append(f"{icon} {name}  {alloc_str}  {ret}  {reason}")
+    if keep:
+        lines.append(f"\u2705 KEEP \u2014 making money")
+        for name, ret, alloc, _ in keep:
+            pct = f"  {alloc:.0f}% alloc" if alloc else ""
+            lines.append(f"  {name}  {ret_str(ret)}{pct}")
+        lines.append("")
 
-    # Bottom line: actionable summary
-    neg_ret_traders = [(r.get("trader", "?"), r.get("total_return_pct"), r.get("allocation_pct"))
-                       for r in results
-                       if r.get("total_return_pct") is not None and r.get("total_return_pct") < 0]
-    if neg_ret_traders:
-        neg_ret_traders.sort(key=lambda x: (abs(x[1]) if x[1] else 0) * (x[2] or 0), reverse=True)
-        worst = neg_ret_traders[0]
-        worst_name, worst_ret, worst_alloc = worst
-        lines.append(f"\n\U0001f6a8 Most urgent: {worst_name} ({worst_alloc:.0f}% alloc at {worst_ret:+.1f}%)")
-    pos = sum(1 for r in results if r.get("total_return_pct") is not None and r.get("total_return_pct") > 0)
-    neg = sum(1 for r in results if r.get("total_return_pct") is not None and r.get("total_return_pct") < 0)
-    lines.append(f"{pos} positive, {neg} negative returns")
+    if watch:
+        watch_show = watch[:5]  # max 5 in WATCH
+        watch_hidden = len(watch) - len(watch_show)
+        lines.append(f"\U0001f50d WATCH \u2014 flat or tiny positions")
+        for name, ret, alloc, _ in watch_show:
+            pct = f"  {alloc:.0f}% alloc" if alloc else ""
+            lines.append(f"  {name}  {ret_str(ret)}{pct}")
+        if watch_hidden > 0:
+            lines.append(f"  ... and {watch_hidden} more")
+
+    # Bottom line
+    if uncopy:
+        lines.append(f"\n\U0001f6a8 Action: UNCOPY {uncopy[0][0]} first ({uncopy[0][1]:+.1f}% at {uncopy[0][2]:.0f}% alloc)")
+    elif not keep:
+        lines.append(f"\n\U0001f6a8 No traders making money \u2014 review entire portfolio")
+    elif len(keep) >= total * 0.6:
+        lines.append(f"\n\U0001f535 Portfolio healthy \u2014 {pos}/{total} profitable")
 
     return "\n".join(lines)
 
