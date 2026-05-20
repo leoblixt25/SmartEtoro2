@@ -479,6 +479,7 @@ def analyze_trader_health(trader: Dict, holdings: List[Dict], news_by_symbol: Di
                  "leverage": None, "concentration": conc_detail.get("top_weight")},
         "news_exposure": {"level": news_risk, "summary": news_detail.get("details", "")},
         "news_analysis": {"impact": news_detail.get("impact", "neutral"), "details": news_detail.get("details", "")},
+        "total_return_pct": trader.get("total_return_pct"),
         "reason": reason,
         "reasons": reasons_list,
         "warning_signs": [],

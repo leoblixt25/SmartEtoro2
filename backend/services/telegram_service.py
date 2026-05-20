@@ -665,6 +665,7 @@ class TelegramBot:
                             "news_exposure": {"level": ai_r.get("news_risk", "unknown"), "summary": ""},
                             "news_analysis": {"impact": ai_r.get("news_risk", "unknown"), "details": td.get("_news_summary", "")},
                             "holdings_count": len(td.get("_holdings", [])),
+                            "total_return_pct": td.get("total_return_pct"),
                             "holdings_source": td.get("_holdings_source", "unknown"),
                             "data_flags": {},
                             "portfolio_concentration": {"warning": "Well diversified"},
@@ -809,10 +810,7 @@ class TelegramBot:
 
 def _build_health_summary(results: list[dict], live: bool = False) -> str:
     total = len(results)
-
     source_tag = "Live" if live else "Cached"
-    lines = [f"\U0001f4ca Health Report ({source_tag})"]
-    lines.append(f"Scanned: {total} traders\n")
 
     buckets = {}
     for r in results:
@@ -826,134 +824,70 @@ def _build_health_summary(results: list[dict], live: bool = False) -> str:
     weak = len(buckets.get("Weak", []))
     avoid = len(buckets.get("Avoid", []))
 
-    lines.append(f"\U0001f7e2 Strong: {strong}")
-    lines.append(f"\U0001f535 Good: {good}")
-    lines.append(f"\U0001f7e1 Watch: {watch_n}")
-    lines.append(f"\U0001f7e0 Weak: {weak}")
-    lines.append(f"\U0001f534 Avoid: {avoid}")
-    lines.append(f"\u26aa Incomplete: {inc_count}\n")
+    def ret_str(r):
+        tr = r.get("total_return_pct")
+        if tr is not None and tr != 0:
+            return f"{tr:+.1f}%"
+        perf = r.get("performance", {})
+        for k in ("month", "week", "day"):
+            v = perf.get(k)
+            if v is not None and v != 0:
+                return f"{v:+.1f}%"
+        ps = r.get("performance_summary", {})
+        ov = ps.get("overall_return")
+        if ov is not None and ov != 0:
+            return f"{ov:+.1f}%"
+        return "?"
 
-    dq_labels = {"high": "High", "medium": "Medium", "low": "Low", "insufficient": "Incomplete"}
-    dq_counts = {"high": 0, "medium": 0, "low": 0, "insufficient": 0}
-    for r in results:
-        dq = r.get("data_quality", "medium")
-        dq_counts[dq] = dq_counts.get(dq, 0) + 1
-    lines.append("\U0001f9fe Data Coverage")
-    for label in ["high", "medium", "low", "insufficient"]:
-        lines.append(f"- {dq_labels[label]}: {dq_counts.get(label, 0)}")
+    ACTION_ICON = {"UNCOPY": "\u274c", "REDUCE": "\u26a0\ufe0f", "PAUSE": "\u23f8\ufe0f", "REVIEW": "\U0001f50d", "KEEP": "\u2705"}
+    ACTION_ORDER = {"UNCOPY": 0, "REDUCE": 1, "PAUSE": 2, "REVIEW": 3, "KEEP": 4}
+
+    sorted_results = sorted(
+        results,
+        key=lambda r: (ACTION_ORDER.get(r.get("recommendation", "KEEP"), 9), -(r.get("health_score") or 0)),
+    )
+
+    lines = [f"\U0001f4ca Health \u2014 {total} traders ({source_tag})"]
+    status_parts = []
+    if strong:
+        status_parts.append(f"\U0001f7e2{strong}")
+    if good:
+        status_parts.append(f"\U0001f535{good}")
+    if watch_n:
+        status_parts.append(f"\U0001f7e1{watch_n}")
+    if weak:
+        status_parts.append(f"\U0001f7e0{weak}")
+    if avoid:
+        status_parts.append(f"\U0001f534{avoid}")
+    if inc_count:
+        status_parts.append(f"\u26aa{inc_count}")
+    if status_parts:
+        lines.append(" ".join(status_parts))
     lines.append("")
 
-    total_scored = strong + good + watch_n + weak + avoid
-    total_known = total_scored
-    if total_scored == 0:
-        quality_line = "Portfolio has poor data coverage \u2014 can't evaluate fairly"
-    elif inc_count > total / 2:
-        quality_line = f"Most traders ({inc_count}/{total}) lack performance data"
-    elif weak + avoid > total / 2:
-        quality_line = f"Majority of traders show weakness \u2014 review positions"
-    else:
-        quality_line = f"{strong + good} traders scoring well, {weak + avoid} with concerns"
-
-    if inc_count > 0:
-        coverage_line = f"{inc_count}/{total} traders have incomplete data"
-    else:
-        coverage_line = "Data coverage supports evaluation"
-
-    news_levels = [r.get("news_analysis", {}).get("impact", "unknown") for r in results if r.get("news_analysis")]
-    has_known = [l for l in news_levels if l != "unknown"]
-    if not has_known:
-        news_line = "News risk is unknown \u2014 no symbols tracked"
-    elif any(l == "negative" for l in has_known):
-        news_line = "News risk is elevated \u2014 some holdings under negative coverage"
-    else:
-        news_line = "News risk is low \u2014 no significant negative coverage"
-
-    lines.append("\U0001f6a8 Main Findings")
-    lines.append(f"- {quality_line}")
-    lines.append(f"- {coverage_line}")
-    lines.append(f"- {news_line}\n")
-
-    def trader_line(r: dict) -> str:
+    for r in sorted_results:
+        name = r.get("trader", "?")
         score = r.get("health_score")
-        rec = r.get("recommendation", "KEEP")
-        reason = r.get("reason", "") or ""
-        if score is None:
-            return f"- {r['trader']} | --/100 | {rec} | {reason}"
-        return f"- {r['trader']} | {score}/100 | {rec} | {reason}"
+        score_str = f"{score}/100" if score is not None else "--/100"
+        ret = ret_str(r)
+        action = r.get("recommendation", "KEEP")
+        icon = ACTION_ICON.get(action, "\u2795")
+        reason = (r.get("reason") or "")[:60]
+        lines.append(f"{icon} {name}  {score_str}  {ret}  {action}  {reason}")
 
-    best = buckets.get("Strong", []) + buckets.get("Good", [])
-    to_review = buckets.get("Incomplete", []) + buckets.get("Watch", [])
-    to_reduce = buckets.get("Weak", []) + buckets.get("Avoid", [])
-
-    if best:
-        lines.append("\u2705 Best Traders")
-        for r in best:
-            lines.append(trader_line(r))
-        lines.append("")
-
-    if to_review:
-        lines.append("\u26a0\ufe0f Traders to Review")
-        for r in to_review:
-            lines.append(trader_line(r))
-        lines.append("")
-
-    if to_reduce:
-        lines.append("\u274c Traders to Reduce or Avoid")
-        for r in to_reduce:
-            lines.append(trader_line(r))
-        lines.append("")
-
-    missing_counts = {"return_1d": 0, "return_1w": 0, "return_1m": 0, "risk_score": 0, "max_drawdown": 0, "consistency": 0}
-    for r in results:
-        flags = r.get("data_flags", {})
-        for k in missing_counts:
-            if not flags.get(k):
-                missing_counts[k] += 1
-    missing_sorted = sorted(missing_counts, key=missing_counts.get, reverse=True)
-    worst_missing = [k for k in missing_sorted if missing_counts[k] > total / 2]
-
-    lines.append("\U0001f4cc Data Gaps")
-    if worst_missing:
-        names = {"return_1d": "daily return", "return_1w": "weekly return", "return_1m": "monthly return",
-                 "risk_score": "risk score", "max_drawdown": "drawdown", "consistency": "consistency"}
-        most = names[worst_missing[0]]
-        gap_count = missing_counts[worst_missing[0]]
-        lines.append(f"- {most} is missing for {gap_count}/{total} traders")
-        if len(worst_missing) > 1:
-            lines.append(f"- This limits confidence in {len(worst_missing)} data categories")
-    else:
-        lines.append("- All key data points have good coverage")
-        lines.append("- Confidence is reliable")
-    lines.append("")
-
-    news_risks = set()
-    for r in results:
-        ne = r.get("news_exposure", {})
-        if ne.get("level"):
-            news_risks.add(ne.get("level"))
-    if "negative" in news_risks or "high" in news_risks:
-        news_summary = "News risk is elevated \u2014 monitor news-exposed traders"
-    elif "medium" in news_risks:
-        news_summary = "News risk is moderate \u2014 some holdings exposed"
-    elif "unknown" in news_risks or not news_risks:
-        news_summary = "News risk is unknown \u2014 no symbols tracked"
-    else:
-        news_summary = "News risk is low \u2014 no significant coverage"
-
-    lines.append("\U0001f4f0 News Impact")
-    lines.append(f"- {news_summary}\n")
-
-    if inc_count > total / 2:
-        advice = "Improve data collection \u2014 most traders can't be evaluated"
-    elif weak + avoid > strong + good:
-        advice = "Review weak traders \u2014 portfolio skews negative"
+    if strong + good + watch_n + weak + avoid == 0:
+        advice = "Poor data coverage \u2014 can't evaluate"
+    elif inc_count > total / 2:
+        advice = f"Most traders ({inc_count}/{total}) lack performance data"
+    elif weak + avoid > total / 2:
+        advice = "Majority show weakness \u2014 review positions"
     elif strong + good >= total * 0.6:
-        advice = "Portfolio is broadly healthy \u2014 maintain current positions"
+        advice = f"Portfolio broadly healthy \u2014 {strong + good}/{total} strong"
     else:
-        advice = "Mixed \u2014 follow per-trader actions"
+        advice = f"Mixed \u2014 {weak + avoid} with concerns, {strong + good} strong"
 
-    lines.append("\U0001f3af Final Recommendation")
-    lines.append(f"- {advice}")
+    lines.append("")
+    lines.append(advice)
 
     return "\n".join(lines)
 
