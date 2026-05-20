@@ -75,7 +75,7 @@ def _check_data_flags(trader: Dict, holdings: List[Dict]) -> Dict:
 
 
 def _assess_data_quality(flags: Dict) -> str:
-    has_any_perf = flags["return_1d"] or flags["return_1w"] or flags["return_1m"]
+    has_any_perf = flags["return_1d"] or flags["return_1w"] or flags["return_1m"] or flags["total_return"]
     if not has_any_perf:
         return "insufficient"
     present = sum(1 for v in flags.values() if v)
@@ -300,7 +300,7 @@ def _score_consistency(trader: Dict) -> float:
 def _determine_confidence(flags: Dict, data_quality: str) -> str:
     if data_quality == "insufficient":
         return "INCOMPLETE"
-    has_perf = flags["return_1d"] or flags["return_1w"] or flags["return_1m"]
+    has_perf = flags["return_1d"] or flags["return_1w"] or flags["return_1m"] or flags["total_return"]
     has_risk = flags["risk_score"] or flags["max_drawdown"]
     key_present = sum([has_perf, has_risk, flags["holdings"], flags["consistency"]])
     if key_present <= 1:
