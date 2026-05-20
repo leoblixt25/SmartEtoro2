@@ -1321,8 +1321,13 @@ class EToroSyncService:
         # Realized PnL = net profit from closed copy-trading positions
         realized_pnl = sum(m.get("closedPositionsNetProfit", 0.0) for m in mirrors)
 
-        # Available cash = account-level credit only
-        available_cash = cp.get("credit", 0.0)
+        # Available cash — try multiple field names the eToro API might use
+        available_cash = 0.0
+        for cash_field in ("availableCash", "cash", "nonInvested", "credit", "Cash", "AvailableCash", "freeCash"):
+            v = cp.get(cash_field)
+            if v is not None and float(v) >= 0:
+                available_cash = float(v)
+                break
 
         # ── Try multiple API equity field names ────────────────────────────
         api_equity = None

@@ -884,17 +884,13 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
         lines.append("")
 
     if watch:
-        watch_show = watch[:5]
-        watch_hidden = len(watch) - len(watch_show)
         lines.append(f"\U0001f50d <b>WATCH</b> \u2014 flat or tiny positions")
-        for name, ret, alloc, _ in watch_show:
+        for name, ret, alloc, _ in watch:
             pct = f"  \U0001f4ca {alloc:.0f}%" if alloc else ""
             lines.append(
                 f"\U0001f7e1 <b>{name}</b>  "
                 f"{ret_str(ret)}{pct}"
             )
-        if watch_hidden > 0:
-            lines.append(f"  \u2026 and {watch_hidden} more")
 
     if uncopy:
         lines.append(f"\n\U0001f6a8 <b>Action:</b> UNCOPY <b>{uncopy[0][0]}</b> first ({uncopy[0][1]:+.1f}% at {uncopy[0][2]:.0f}% alloc)")
