@@ -20,7 +20,7 @@ PROVIDERS = {
 
 try:
     from openai import OpenAI
-    key = os.environ.get("OPENAI_API_KEY", "")
+    key = os.environ.get("OPENAI_API_KEY") or os.environ.get("GROQ_API_KEY") or ""
     AI_AVAILABLE = bool(key)
 except ImportError:
     pass
@@ -128,7 +128,7 @@ async def ai_analyze_traders(traders_data: List[Dict]) -> Optional[List[Dict]]:
         logger.info("AI engine unavailable (no API key)")
         return None
 
-    api_key = os.environ["OPENAI_API_KEY"]
+    api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("GROQ_API_KEY") or ""
 
     # Detect provider by key prefix
     provider = "openai"
