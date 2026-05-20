@@ -285,22 +285,20 @@ class TelegramBot:
                     lines.append("\u26a0\ufe0f Concentration risk detected")
 
                 if traders:
-                    lines.append(f"\n\u2501" * 12)
-                    lines.append(f"\U0001f465 <b>Active Traders ({len(traders)})</b>")
-                    for t in traders[:5]:
+                    lines.append(f"\n\U0001f465 <b>Active Traders ({len(traders)})</b>")
+                    for t in traders:
                         ret = t["total_return_pct"]
                         pnl_icon = "\U0001f7e2" if ret >= 0 else "\U0001f534"
                         ret_str = f"+{ret:.2f}%" if ret >= 0 else f"{ret:.2f}%"
                         paused = " \u23f8\ufe0f paused" if t.get("is_paused") else ""
                         lines.append(
-                            f"{pnl_icon} <b>{t['username']}</b>{paused}\n"
-                            f"    \U0001f4ca {t['allocation_pct']:.1f}%  "
+                            f"{pnl_icon} <b>{t['username']}</b>{paused}  "
+                            f"\U0001f4ca {t['allocation_pct']:.1f}%  "
                             f"\U0001f4c8 {ret_str}  "
                             f"\u26a0\ufe0f {t['risk_score']:.1f}"
                         )
 
-                lines.append(f"\n\u2501" * 12)
-                lines.append(f"\U0001f4c5 {ts} ({label})")
+                lines.append(f"\n\U0001f4c5 {ts} ({label})")
 
                 await self._reply(update, "\n".join(lines))
         except Exception as e:
