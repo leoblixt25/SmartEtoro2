@@ -8,7 +8,7 @@ import asyncio
 import logging
 import os
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +118,26 @@ class TelegramBot:
         except Exception as e:
             logger.error(f"Failed to send Telegram message: {e}")
 
+    async def _force_sync_before(self, db, portfolio) -> Tuple[bool, str, str]:
+        """Force a live eToro sync and return (fresh, timestamp, label).
+
+        Returns:
+            fresh: True if live API data was synced
+            timestamp: ISO-8601 string of the sync time
+            label: "Live" or "Cached" for display
+        """
+        from backend.services.etoro_service import EToroSyncService
+        now = datetime.utcnow()
+        timestamp = now.strftime("%Y-%m-%d %H:%M UTC")
+        try:
+            sync = EToroSyncService()
+            ok = await sync.sync_portfolio_data(db, portfolio.id)
+            if ok:
+                return True, timestamp, "Live"
+        except Exception as e:
+            logger.error(f"Pre-command sync failed: {e}")
+        return False, timestamp, "Cached"
+
     async def _reply(self, update: Update, text: str, **kwargs) -> None:
         markup = self._keyboard()
         await update.message.reply_text(text, reply_markup=markup, parse_mode=ParseMode.HTML, **kwargs)
@@ -206,6 +226,7 @@ class TelegramBot:
                 if not p:
                     await self._reply(update, "No portfolio found.")
                     return
+                fresh, ts, label = await self._force_sync_before(db, p)
                 overview = get_portfolio_overview(db, p.id)
                 s = self._sym(overview.get("currency", "USD"))
                 text = (
@@ -216,7 +237,7 @@ class TelegramBot:
                     f"Active traders: {overview['active_traders']}\n"
                     f"Health: {overview['health_score']:.0f}/100\n"
                     f"Sentiment: {overview['sentiment']}\n"
-                    f"Updated: {overview.get('last_sync', '\u2014')[:16] if overview.get('last_sync') else '\u2014'}"
+                    f"Data: {ts} ({label})"
                 )
                 await self._reply(update, text)
         except Exception as e:
@@ -234,6 +255,7 @@ class TelegramBot:
                 if not p:
                     await self._reply(update, "No portfolio found.")
                     return
+                fresh, ts, label = await self._force_sync_before(db, p)
                 overview = get_portfolio_overview(db, p.id)
                 traders = get_active_traders(db, p.id)
                 s = self._sym(overview.get("currency", "USD"))
@@ -267,8 +289,7 @@ class TelegramBot:
                             f"risk {t['risk_score']:.1f}"
                         )
 
-                if overview.get("last_sync"):
-                    lines.append(f"\nLast sync: {overview['last_sync'][:16]}")
+                lines.append(f"\nData: {ts} ({label})")
 
                 await self._reply(update, "\n".join(lines))
         except Exception as e:
@@ -277,7 +298,8 @@ class TelegramBot:
 
     async def _cmd_active(self, update: Update, args: list[str]) -> None:
         from backend.database.connection import db_session
-        from backend.database.models import CopiedTrader, Portfolio
+        from backend.database.models import Portfolio
+        from backend.services.portfolio_service import get_active_traders
 
         try:
             with db_session() as db:
@@ -285,43 +307,8 @@ class TelegramBot:
                 if not p:
                     await self._reply(update, "No portfolio found.")
                     return
-
-                live_usernames = set()
-                try:
-                    from backend.services.sync_service import sync_service
-                    etoro_client = sync_service.client if sync_service.client.enabled else None
-                    if etoro_client:
-                        port_data = await etoro_client.get_portfolio_data()
-                        if port_data:
-                            mirrors = port_data.get("clientPortfolio", {}).get("mirrors", [])
-                            live_usernames = {m.get("parentUsername") for m in mirrors if m.get("parentUsername")}
-                except Exception:
-                    pass
-
-                if live_usernames:
-                    orm_traders = (
-                        db.query(CopiedTrader)
-                        .filter(
-                            CopiedTrader.portfolio_id == p.id,
-                            CopiedTrader.trader_username.in_(live_usernames),
-                        )
-                        .all()
-                    )
-                    traders = [
-                        {
-                            "username": t.trader_username,
-                            "allocation_pct": t.allocation_pct or 0,
-                            "total_return_pct": t.total_return_pct or 0,
-                            "risk_score": t.risk_score or 0,
-                            "max_drawdown": t.max_drawdown or 0,
-                            "is_paused": t.is_paused,
-                        }
-                        for t in orm_traders
-                    ]
-                    traders.sort(key=lambda x: x["allocation_pct"], reverse=True)
-                else:
-                    from backend.services.portfolio_service import get_active_traders
-                    traders = get_active_traders(db, p.id)
+                fresh, ts, label = await self._force_sync_before(db, p)
+                traders = get_active_traders(db, p.id)
 
                 if not traders:
                     await self._reply(update, "No active copied traders.")
@@ -339,12 +326,15 @@ class TelegramBot:
                         f"  Risk: {t['risk_score']:.1f}/10  "
                         f"DD: {t['max_drawdown']:.1f}%"
                     )
+                lines.append(f"\nData: {ts} ({label})")
                 await self._reply(update, "\n".join(lines))
         except Exception as e:
             logger.error(f"/active error: {e}")
             await self._reply(update, f"Error: {e}")
 
     async def _cmd_discovery(self, update: Update, args: list[str]) -> None:
+        from backend.database.connection import db_session
+        from backend.database.models import Portfolio
         from backend.services.screener_service import run_screener_and_wait
         from backend.discovery.config import SCAN_PRESETS
 
@@ -374,6 +364,11 @@ class TelegramBot:
         async with self._discovery_lock:
             status_msg = None
             try:
+                with db_session() as db:
+                    p = db.query(Portfolio).first()
+                    if p:
+                        await self._force_sync_before(db, p)
+
                 status_msg = await update.message.reply_text(
                     f"\U0001f50d Scanning up to {scan_target:,} traders... please wait",
                     reply_markup=self._keyboard(),
@@ -561,32 +556,17 @@ class TelegramBot:
                     await self._reply(update, "No portfolio found.")
                     return
 
-                live_usernames = set()
-                if etoro_client and etoro_client.enabled:
-                    port_data = await etoro_client.get_portfolio_data()
-                    if port_data:
-                        mirrors = port_data.get("clientPortfolio", {}).get("mirrors", [])
-                        live_usernames = {m.get("parentUsername") for m in mirrors if m.get("parentUsername")}
+                freshness, ts, label = await self._force_sync_before(db, p)
 
-                if live_usernames:
-                    traders = (
-                        db.query(CopiedTrader)
-                        .filter(
-                            CopiedTrader.portfolio_id == p.id,
-                            CopiedTrader.trader_username.in_(live_usernames),
-                        )
-                        .all()
+                traders = (
+                    db.query(CopiedTrader)
+                    .filter(
+                        CopiedTrader.portfolio_id == p.id,
+                        CopiedTrader.is_active.is_(True),
+                        CopiedTrader.is_paused.is_(False),
                     )
-                else:
-                    traders = (
-                        db.query(CopiedTrader)
-                        .filter(
-                            CopiedTrader.portfolio_id == p.id,
-                            CopiedTrader.is_active.is_(True),
-                            CopiedTrader.is_paused.is_(False),
-                        )
-                        .all()
-                    )
+                    .all()
+                )
 
                 if not traders:
                     await self._reply(update, "No active traders to analyse.")
@@ -681,7 +661,7 @@ class TelegramBot:
                     await self._reply(update, "Health analysis complete. No signals to report.")
                     return
 
-                summary = _build_health_summary(results, live=bool(live_usernames))
+                summary = _build_health_summary(results, live=freshness, source_label=label, ts=ts)
                 await self._reply(update, summary)
         except Exception as e:
             logger.error(f"/health error: {e}")
@@ -698,6 +678,7 @@ class TelegramBot:
                 if not p:
                     await self._reply(update, "No portfolio found.")
                     return
+                fresh, ts, label = await self._force_sync_before(db, p)
                 alerts = get_alerts(db, p.id, unread_only=True, limit=5)
                 if not alerts:
                     await self._reply(update, "No unread alerts.")
@@ -712,6 +693,7 @@ class TelegramBot:
                         f"{icon} {a['title']}\n"
                         f"  {a['message'][:150]}"
                     )
+                lines.append(f"\nData: {ts} ({label})")
                 await self._reply(update, "\n".join(lines))
         except Exception as e:
             logger.error(f"/alerts error: {e}")
@@ -734,6 +716,8 @@ class TelegramBot:
                 if not p:
                     await self._reply(update, "No portfolio found.")
                     return
+
+                fresh, ts, label = await self._force_sync_before(db, p)
 
                 result = await run_monitoring_pipeline(
                     db, p.id, etoro_client=etoro_client,
@@ -762,7 +746,7 @@ class TelegramBot:
                     )
 
                 overall = summary.get("sentiment", "neutral")
-                lines.append(f"\nOverall sentiment: {overall}")
+                lines.append(f"\nData: {ts} ({label})")
 
                 await self._reply(update, "\n".join(lines))
         except Exception as e:
@@ -780,6 +764,8 @@ class TelegramBot:
                     await self._reply(update, "No portfolio found.")
                     return
 
+                fresh, ts, label = await self._force_sync_before(db, p)
+
                 text = (
                     f"Current Settings\n\n"
                     f"Portfolio ID: {p.id}\n"
@@ -789,7 +775,7 @@ class TelegramBot:
                     f"Available Cash: ${p.available_cash:,.2f}\n\n"
                     f"Health Score: {p.health_score:.0f}/100\n"
                     f"Active Traders: {len([t for t in (p.copied_traders or []) if t.is_active and not t.is_paused])}\n\n"
-                    f"Settings can be changed via the web dashboard."
+                    f"Data: {ts} ({label})"
                 )
                 await self._reply(update, text)
         except Exception as e:
@@ -809,7 +795,7 @@ class TelegramBot:
 
 
 
-def _build_health_summary(results: list[dict], live: bool = False) -> str:
+def _build_health_summary(results: list[dict], live: bool = False, source_label: str = "Cached", ts: str = "") -> str:
     def ret_val(r):
         tr = r.get("total_return_pct")
         if tr is not None and tr != 0:
@@ -854,7 +840,7 @@ def _build_health_summary(results: list[dict], live: bool = False) -> str:
     watch.sort(key=lambda x: -x[1])
 
     total = len(results)
-    source_tag = "Live" if live else "Cached"
+    source_tag = source_label if source_label else ("Live" if live else "Cached")
 
     lines = [f"\U0001f4ca Health \u2014 {total} traders ({source_tag})"]
 
@@ -893,6 +879,9 @@ def _build_health_summary(results: list[dict], live: bool = False) -> str:
         lines.append(f"\n\U0001f6a8 No traders making money \u2014 review entire portfolio")
     elif len(keep) >= total * 0.6:
         lines.append(f"\n\U0001f535 Portfolio healthy \u2014 {pos}/{total} profitable")
+
+    if ts:
+        lines.append(f"\nData: {ts} ({source_tag})")
 
     return "\n".join(lines)
 
