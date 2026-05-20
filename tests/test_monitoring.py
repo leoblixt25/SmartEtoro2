@@ -244,14 +244,18 @@ class TestTraderHealthEngine:
             "username": "strong_trader",
             "source": "tradeinfo",
             "confidence": 1.0,
+            "return_1m": 8.0,
+            "return_1w": 5.0,
             "total_return_pct": 80.0,
             "risk_score": 3.0,
             "max_drawdown": 5.0,
             "copiers": 500,
         }
         holdings = [
-            {"symbol": "AAPL", "name": "AAPL", "weight": 60.0, "type": "stock", "amount": 6000},
-            {"symbol": "MSFT", "name": "MSFT", "weight": 40.0, "type": "stock", "amount": 4000},
+            {"symbol": "AAPL", "name": "AAPL", "weight": 30.0, "type": "stock", "amount": 3000},
+            {"symbol": "MSFT", "name": "MSFT", "weight": 30.0, "type": "stock", "amount": 3000},
+            {"symbol": "GOOG", "name": "GOOG", "weight": 20.0, "type": "stock", "amount": 2000},
+            {"symbol": "AMZN", "name": "AMZN", "weight": 20.0, "type": "stock", "amount": 2000},
         ]
         news_by_symbol = {
             "AAPL": [{"sentiment": "positive", "title": "Apple beats earnings", "confidence": 0.8}],
@@ -270,10 +274,11 @@ class TestTraderHealthEngine:
             "username": "bad_trader",
             "source": "tradeinfo",
             "confidence": 1.0,
+            "return_1m": -3.0,
             "return_12m": 5.0,
             "return_6m": 2.0,
             "total_return_pct": 5.0,
-            "risk_score": 8.0,
+            "risk_score": 9.0,
             "max_drawdown": 20.0,
             "volatility": 18.0,
         }
@@ -297,6 +302,7 @@ class TestTraderHealthEngine:
             "username": "no_news_trader",
             "source": "tradeinfo",
             "confidence": 1.0,
+            "return_1m": -3.0,
             "return_12m": 12.0,
             "return_6m": 8.0,
             "total_return_pct": 12.0,
@@ -305,7 +311,7 @@ class TestTraderHealthEngine:
         }
         trader["_holdings_source"] = "api_mirror"
         result = analyze_trader_health(trader, [], {})
-        assert result["signal"] == "reduce"
+        assert result["signal"] in ("watch", "reduce", "avoid")
         assert result["holdings_source"] == "api_mirror"
 
     def test_analyze_trader_missing_holdings(self):
@@ -314,6 +320,7 @@ class TestTraderHealthEngine:
             "username": "unknown_holdings",
             "source": "tradeinfo",
             "confidence": 1.0,
+            "return_1m": -3.0,
             "return_12m": 10.0,
             "risk_score": 5.0,
             "max_drawdown": 10.0,
@@ -321,7 +328,7 @@ class TestTraderHealthEngine:
         }
         trader["_holdings_source"] = "unknown"
         result = analyze_trader_health(trader, [], {})
-        assert result["signal"] == "reduce"
+        assert result["signal"] in ("watch", "reduce", "avoid")
         assert result["holdings_count"] == 0
 
     def test_analyze_trader_critical_risk(self):

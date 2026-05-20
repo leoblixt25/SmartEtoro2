@@ -1,15 +1,12 @@
 """
-Trader Health Engine — evaluates each trader on available data with honest confidence reporting.
+Trader Health Engine — evaluates each trader strictly on available data.
 
-Score components (only from real data, never invented):
-  - Performance (0-30): day/week/month returns or total_return_pct fallback
-  - Risk (0-25): drawdown, risk score, volatility, sharpe (only deducts for actual bad data)
-  - News Impact (0-20): sentiment analysis of holdings news
-  - Portfolio Concentration (0-15): top holding weight
-  - Consistency (0-10): consistency_score
-
-Missing data lowers confidence, NOT score.
-Numeric score is null when data is insufficient for fair evaluation.
+Rules:
+  - If day/week/month all missing → INCOMPLETE (null score, REVIEW)
+  - Missing risk/holdings/consistency → full marks, lower confidence
+  - No news symbols → "unknown" news risk
+  - Never assign a low score for missing data — only for real bad data
+  - Never put INCOMPLETE traders in Avoid
 """
 
 import logging
@@ -57,6 +54,13 @@ def _is_real(val) -> bool:
         return True
 
 
+def _has_clear_negative_risk(trader: Dict) -> bool:
+    """Extreme risk evidence that can override missing perf data."""
+    risk = trader.get("risk_score")
+    dd = trader.get("max_drawdown")
+    return _is_real(risk) and _is_real(dd) and float(risk) >= 8.0 and float(dd) >= 25.0
+
+
 def _check_data_flags(trader: Dict, holdings: List[Dict]) -> Dict:
     return {
         "return_1d": _is_real(trader.get("return_1d")),
@@ -72,14 +76,12 @@ def _check_data_flags(trader: Dict, holdings: List[Dict]) -> Dict:
 
 def _assess_data_quality(flags: Dict) -> str:
     has_any_perf = flags["return_1d"] or flags["return_1w"] or flags["return_1m"]
-    if not has_any_perf and not flags["total_return"]:
+    if not has_any_perf:
         return "insufficient"
     present = sum(1 for v in flags.values() if v)
-    if present <= 1:
+    if present <= 2:
         return "low"
-    elif present <= 3:
-        return "low"
-    elif present <= 5:
+    elif present <= 4:
         return "medium"
     return "high"
 
@@ -212,7 +214,6 @@ def _score_risk(trader: Dict) -> Tuple[float, Dict]:
 
     if not has_any:
         score = float(RISK_MAX * 0.6)
-        details["note"] = "No risk data available"
 
     score = max(0, score)
     return round(score, 1), details
@@ -222,7 +223,7 @@ def _score_news(holdings: List[Dict], news_by_symbol: Dict) -> Tuple[float, Dict
     has_news = any(bool(v) for v in news_by_symbol.values())
 
     if not holdings or not has_news:
-        return float(NEWS_MAX * 0.5), {"impact": "neutral", "details": "No recent news data"}
+        return float(NEWS_MAX * 0.5), {"impact": "unknown", "details": "No recent news data"}
 
     sent = aggregate_sentiment(news_by_symbol)
     neg = sent.get("negative_symbols", [])
@@ -299,19 +300,19 @@ def _score_consistency(trader: Dict) -> float:
 def _determine_confidence(flags: Dict, data_quality: str) -> str:
     if data_quality == "insufficient":
         return "INCOMPLETE"
-    has_perf = flags["return_1d"] or flags["return_1w"] or flags["return_1m"] or flags["total_return"]
+    has_perf = flags["return_1d"] or flags["return_1w"] or flags["return_1m"]
     has_risk = flags["risk_score"] or flags["max_drawdown"]
     key_present = sum([has_perf, has_risk, flags["holdings"], flags["consistency"]])
-    if key_present <= 2:
+    if key_present <= 1:
         return "LOW"
-    elif key_present == 3:
+    elif key_present <= 3:
         return "MEDIUM"
     return "HIGH"
 
 
 def _health_status(score: float, confidence: str) -> str:
     if confidence == "INCOMPLETE":
-        return "Watch"
+        return "Incomplete"
     if score >= SCORE_STRONG:
         return "Strong"
     elif score >= SCORE_GOOD:
@@ -335,52 +336,48 @@ def _get_action(total: float, status: str, confidence: str, risk_detail: Dict, f
     if status == "Watch":
         return "REDUCE"
     if status == "Weak":
-        flags_risk = flags["risk_score"] or flags["max_drawdown"]
-        if not flags_risk:
-            return "REVIEW"
         return "PAUSE"
-    # Avoid status — UNCOPY only if real risk data exists
-    flags_risk = flags["risk_score"] or flags["max_drawdown"]
-    if not flags_risk:
-        return "REVIEW"
-    return "UNCOPY"
+    # Avoid — UNCOPY only with clear negative evidence
+    dd = risk_detail.get("drawdown", {})
+    rs = risk_detail.get("risk_score", {})
+    has_negative = dd.get("level") in ("High",) or rs.get("level") in ("High", "Critical")
+    if has_negative:
+        return "UNCOPY"
+    return "REVIEW"
 
 
 def _build_reason(status: str, action: str, perf_detail: Dict, risk_detail: Dict, flags: Dict) -> str:
-    parts = []
-    if status in ("Strong", "Good"):
-        if perf_detail.get("month") is not None:
-            parts.append(f"Mth: {perf_detail['month']:+.1f}%")
-        elif perf_detail.get("overall") is not None:
-            parts.append(f"Ret: {perf_detail['overall']:+.1f}%")
-        else:
-            parts.append("Stable")
     if action == "REVIEW":
-        missing = [k for k in ["perf", "risk", "holdings", "consistency"]
-                   if (k == "perf" and not (flags["return_1m"] or flags["total_return"]))
-                   or (k == "risk" and not (flags["risk_score"] or flags["max_drawdown"]))
+        missing = [k for k in ["risk", "holdings", "consistency"]
+                   if (k == "risk" and not (flags["risk_score"] or flags["max_drawdown"]))
                    or (k == "holdings" and not flags["holdings"])
                    or (k == "consistency" and not flags["consistency"])]
-        if missing:
-            parts.append(f"Missing: {', '.join(missing)}")
+        return f"Missing: {', '.join(missing)}" if missing else "Limited data"
     if action == "PAUSE":
+        parts = []
         dd = risk_detail.get("drawdown")
         if dd and dd.get("level") in ("Elevated", "High"):
             parts.append(f"DD {dd['value']:.0f}%")
         rs = risk_detail.get("risk_score")
         if rs and rs.get("level") in ("High", "Critical"):
             parts.append(f"Risk {rs['value']:.1f}")
-    if action == "REDUCE" and perf_detail.get("month") is not None and perf_detail["month"] < 0:
-        parts.append("Neg monthly")
-    if not parts:
-        m = perf_detail.get("month")
-        if m is not None:
-            parts.append(f"Mth: {m:+.1f}%")
-        o = perf_detail.get("overall")
-        if o is not None:
-            parts.append(f"Ret: {o:+.1f}%")
         if not parts:
-            parts.append("Limited data")
+            m = perf_detail.get("month")
+            if m is not None:
+                parts.append(f"Mth: {m:+.1f}%")
+            o = perf_detail.get("overall")
+            if o is not None:
+                parts.append(f"Ret: {o:+.1f}%")
+        return " | ".join(parts) if parts else "Volatile"
+    parts = []
+    m = perf_detail.get("month")
+    if m is not None:
+        parts.append(f"Mth: {m:+.1f}%")
+    o = perf_detail.get("overall")
+    if o is not None:
+        parts.append(f"Ret: {o:+.1f}%")
+    if not parts:
+        return "Stable"
     return " | ".join(parts)
 
 
@@ -398,18 +395,18 @@ def _insufficient_result(username: str, holdings: List[Dict], news_by_symbol: Di
         "confidence": "INCOMPLETE",
         "confidence_label": "INSUFFICIENT",
         "data_quality": "insufficient",
-        "status": "Watch",
-        "health_status": "Watch",
+        "status": "Incomplete",
+        "health_status": "Incomplete",
         "action": "REVIEW",
         "recommendation": "REVIEW",
         "signal": "watch",
         "performance": {"day": None, "week": None, "month": None},
         "performance_summary": {"day": None, "week": None, "month": None, "overall_return": None},
         "risk_analysis": {"note": "No data"},
-        "news_exposure": {"level": "low", "summary": ""},
-        "news_analysis": {"impact": "neutral", "details": "No data"},
-        "reason": "Insufficient data — cannot evaluate",
-        "reasons": ["Insufficient data for evaluation"],
+        "news_exposure": {"level": "unknown", "summary": ""},
+        "news_analysis": {"impact": "unknown", "details": "No data"},
+        "reason": "insufficient performance data",
+        "reasons": ["Insufficient performance data"],
         "warning_signs": [],
         "holdings_health": None,
         "holdings_count": len(holdings),
@@ -428,7 +425,10 @@ def analyze_trader_health(trader: Dict, holdings: List[Dict], news_by_symbol: Di
     data_quality = _assess_data_quality(flags)
 
     if data_quality == "insufficient":
-        return _insufficient_result(username, holdings, news_by_symbol)
+        if _has_clear_negative_risk(trader):
+            data_quality = "low"
+        else:
+            return _insufficient_result(username, holdings, news_by_symbol)
 
     perf_score, perf_detail = _score_performance(trader)
     risk_score_val, risk_detail = _score_risk(trader)
@@ -445,7 +445,8 @@ def analyze_trader_health(trader: Dict, holdings: List[Dict], news_by_symbol: Di
     signal = RECOMMENDATION_TO_SIGNAL.get(action, "watch")
     reason = _build_reason(status, action, perf_detail, risk_detail, flags)
 
-    news_risk = "high" if news_detail.get("impact") == "negative" else ("medium" if news_detail.get("impact") == "mixed" else "low")
+    impact = news_detail.get("impact", "unknown")
+    news_risk = "high" if impact == "negative" else ("medium" if impact == "mixed" else ("unknown" if impact == "unknown" else "low"))
 
     has_news = any(bool(v) for v in news_by_symbol.values())
 
