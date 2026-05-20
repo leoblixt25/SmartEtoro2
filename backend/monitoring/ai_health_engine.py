@@ -1,5 +1,5 @@
 """
-AI-Powered Trader Health Engine — uses OpenAI GPT to analyze traders.
+AI-Powered Trader Health Engine — uses OpenAI/OpenRouter GPT to analyze traders.
 Falls back to rule-based engine if AI is unavailable.
 """
 import json
@@ -10,9 +10,12 @@ from typing import Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 AI_AVAILABLE = False
+OPENROUTER_BASE = "https://openrouter.ai/api/v1"
+
 try:
     from openai import OpenAI
-    AI_AVAILABLE = bool(os.environ.get("OPENAI_API_KEY"))
+    key = os.environ.get("OPENAI_API_KEY", "")
+    AI_AVAILABLE = bool(key)
 except ImportError:
     pass
 
@@ -41,7 +44,7 @@ REVIEW = too little data | UNCOPY = clear negative evidence only
 
 NEWS RISK: low | medium | high | unknown
 
-Return ONLY valid JSON matching this schema per trader:
+Return ONLY valid JSON — an array of objects (one per trader), each matching this schema:
 {
   "name": "username",
   "score": number or null,
@@ -81,44 +84,65 @@ def _build_trader_text(traders_data: List[Dict]) -> str:
 
 
 def _parse_ai_response(text: str) -> Optional[List[Dict]]:
-    """Extract JSON from AI response (handles markdown fences)."""
-    # Try direct JSON parse first
+    """Extract JSON from AI response (handles markdown fences, trailing text, single-object)."""
     text = text.strip()
+    # Extract JSON from markdown code block if present
     if text.startswith("```"):
-        # Remove markdown fences
-        text = text.split("```")[1]
+        parts = text.split("```")
+        text = parts[1] if len(parts) >= 2 else text
         if text.startswith("json"):
             text = text[4:]
         text = text.strip()
+    # Also strip any remaining closing fence
+    text = text.split("```")[0].strip()
     try:
         data = json.loads(text)
         if isinstance(data, list):
             return data
-        if isinstance(data, dict) and "traders" in data:
-            return data["traders"]
+        if isinstance(data, dict):
+            if "traders" in data:
+                return data["traders"]
+            if "name" in data:
+                return [data]
     except json.JSONDecodeError:
         pass
     return None
 
 
 async def ai_analyze_traders(traders_data: List[Dict]) -> Optional[List[Dict]]:
-    """Analyze all traders via OpenAI. Returns list of result dicts or None on failure."""
+    """Analyze all traders via OpenAI/OpenRouter. Returns list of result dicts or None on failure."""
     if not AI_AVAILABLE:
         logger.info("AI engine unavailable (no API key)")
         return None
 
-    client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+    api_key = os.environ["OPENAI_API_KEY"]
+    is_openrouter = api_key.startswith("sk-or-")
+    client_kwargs = {"api_key": api_key}
+    if is_openrouter:
+        client_kwargs["base_url"] = OPENROUTER_BASE
+        logger.info("Using OpenRouter API")
+
+    client = OpenAI(**client_kwargs)
     trader_text = _build_trader_text(traders_data)
+    model = "openai/gpt-4o-mini" if is_openrouter else "gpt-4o-mini"
+
+    extra_headers = {}
+    if is_openrouter:
+        extra_headers = {
+            "HTTP-Referer": "https://github.com/leoblixt25/SmartEtoro2",
+            "X-Title": "SmartEtoro2",
+        }
 
     try:
         response = client.chat.completions.create(
-            model="gpt-4o",
+            model=model,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": trader_text},
             ],
             temperature=0.1,
-            max_tokens=4000,
+            max_tokens=2000,
+            extra_headers=extra_headers if extra_headers else None,
         )
         raw = response.choices[0].message.content
         results = _parse_ai_response(raw)
