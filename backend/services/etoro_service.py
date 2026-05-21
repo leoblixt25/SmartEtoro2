@@ -1479,29 +1479,11 @@ class EToroSyncService:
             # Used by partial_profit_lock and reduce_on_drawdown to compute new amounts
             allocated_amount = mirror_equity
 
-            # Use API's direct return field if available, otherwise calculate
-            api_return = (
-                m.get("totalReturn")
-                or m.get("totalReturnPct")
-                or m.get("total_return_pct")
-                or m.get("TotalReturn")
-                or m.get("returnPct")
-                or m.get("return")
-                or m.get("Return")
-                or m.get("totalReturnPercent")
-                or m.get("performance")
-                or m.get("totalReturnPercentage")
-                or m.get("pnlPct")
-                or m.get("pnlPercent")
-                or m.get("PnlPct")
-            )
-            if api_return is not None:
-                try:
-                    total_return_pct = float(api_return)
-                except (ValueError, TypeError):
-                    total_return_pct = (total_pnl / max(initial_investment, 1.0)) * 100
-            else:
-                total_return_pct = (total_pnl / max(initial_investment, 1.0)) * 100
+            # eToro P/L % = P/L / Net Value * 100 (matches eToro UI column)
+            # Net Value = initialInvestment + unrealizedPnL = mirror_equity
+            # NOT P/L / initialInvestment which gives wrong results
+            net_value = mirror_equity if mirror_equity > 0 else initial_investment
+            total_return_pct = (total_pnl / max(net_value, 1.0)) * 100
 
             result.append({
                 "trader_id": str(mirror_id),
