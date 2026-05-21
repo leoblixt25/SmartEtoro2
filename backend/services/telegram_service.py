@@ -206,24 +206,67 @@ class TelegramBot:
         await self._reply(update, text)
 
     async def _cmd_news(self, update: Update, args: list[str]) -> None:
-        from backend.services.market_data import get_market_news
+        from backend.database.connection import db_session
+        from backend.database.models import Portfolio
+        from backend.monitoring.holding_parser import get_trader_holdings, extract_symbols
+        from backend.monitoring.news_service import fetch_news_for_symbols
 
         try:
-            await self._reply(update, "\U0001f4f0 Fetching latest market news...")
-            news = await get_market_news()
-            if not news:
-                await self._reply(update, "No news available right now.")
-                return
+            await self._reply(update, "\U0001f4f0 Fetching news for your portfolio...")
 
-            lines = [f"\U0001f4f0 <b>Market News ({len(news)})</b>\n"]
-            tbl = [f"{'Source':<16} {'Headline'}"]
-            tbl.append("\u2500" * 44)
-            for n in news:
-                title = n.get("title", "")[:42]
-                source = n.get("source", "?")[:14]
-                tbl.append(f"{source:<16} {title}")
-            lines.append(f"<code>{chr(10).join(tbl)}</code>")
-            await self._reply(update, "\n".join(lines))
+            with db_session() as db:
+                p = db.query(Portfolio).first()
+                if not p:
+                    await self._reply(update, "No portfolio found.")
+                    return
+
+                fresh, ts, label = await self._force_sync_before(db, p)
+
+                traders = [t for t in (p.copied_traders or []) if t.is_active and not t.is_paused]
+                if not traders:
+                    await self._reply(update, "No active traders with holdings to track.")
+                    return
+
+                all_symbols = set()
+                symbol_to_traders = {}
+                for t in traders:
+                    holdings, _ = await get_trader_holdings(db, p.id, t.trader_username)
+                    symbols = extract_symbols(holdings)
+                    for sym in symbols:
+                        all_symbols.add(sym)
+                        symbol_to_traders.setdefault(sym, []).append(t.trader_username)
+
+                if not all_symbols:
+                    await self._reply(update, "No symbols found in active trader holdings.")
+                    return
+
+                news_by_symbol = await fetch_news_for_symbols(list(all_symbols), max_per_symbol=2)
+
+                total_articles = sum(len(items) for items in news_by_symbol.values())
+                lines = [f"\U0001f4f0 <b>Portfolio News ({total_articles} articles)</b>\n"]
+
+                sent_icons = {"positive": "\U0001f7e2", "negative": "\U0001f534", "neutral": "\U0001f7e1"}
+                tbl = [f"{'Sym':<6} {'Sentiment':<10} {'Headline':<30}"]
+                tbl.append("\u2500" * 48)
+                for sym in sorted(all_symbols):
+                    items = news_by_symbol.get(sym, [])
+                    if not items:
+                        tbl.append(f"{sym:<6} {'no data':<10} {'-':<30}")
+                    for item in items:
+                        sent = item.get("sentiment", "neutral")
+                        icon = sent_icons.get(sent, "\u26aa")
+                        title = item.get("title", "")[:28]
+                        tbl.append(f"{sym:<6} {icon}{sent:<9} {title:<30}")
+                lines.append(f"<code>{chr(10).join(tbl)}</code>")
+
+                lines.append(f"\n\U0001f5e3\ufe0f <b>Who holds what</b>")
+                for sym in sorted(all_symbols):
+                    traders_list = symbol_to_traders.get(sym, [])
+                    if traders_list:
+                        lines.append(f"  {sym}: {', '.join(t[:10] for t in traders_list)}")
+
+                lines.append(f"\n\U0001f4c5 {ts} ({label})")
+                await self._reply(update, "\n".join(lines))
         except Exception as e:
             logger.error(f"/news error: {e}")
             await self._reply(update, f"News fetch failed: {e}")
