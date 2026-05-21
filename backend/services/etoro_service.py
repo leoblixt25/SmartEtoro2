@@ -1428,9 +1428,21 @@ class EToroSyncService:
         for m in mirrors:
             unrealized_pnl_mirror = sum(pos.get("unrealizedPnL", {}).get("pnL", 0.0) for pos in m.get("positions", []))
             total_pnl = m.get("closedPositionsNetProfit", 0.0) + unrealized_pnl_mirror
-            initial_investment = m.get("initialInvestment", 1.0)
-            
-            # Mirror equity = initialInvestment + unrealizedPnL (no closedPositionsNetProfit — already in cash)
+
+            # Use currentInvestment if available (reflects copy reductions), fall back to initialInvestment
+            initial_investment = (
+                m.get("currentInvestment")
+                or m.get("investedAmount")
+                or m.get("netInvestment")
+                or m.get("initialInvestment")
+                or 1.0
+            )
+            try:
+                initial_investment = float(initial_investment)
+            except (ValueError, TypeError):
+                initial_investment = 1.0
+
+            # Mirror equity = currentInvestment + unrealizedPnL
             mirror_equity = initial_investment + unrealized_pnl_mirror
             
             import json
@@ -1463,6 +1475,21 @@ class EToroSyncService:
             # Used by partial_profit_lock and reduce_on_drawdown to compute new amounts
             allocated_amount = mirror_equity
 
+            # Use API's direct return field if available, otherwise calculate
+            api_return = (
+                m.get("totalReturn")
+                or m.get("totalReturnPct")
+                or m.get("total_return_pct")
+                or m.get("TotalReturn")
+            )
+            if api_return is not None:
+                try:
+                    total_return_pct = float(api_return)
+                except (ValueError, TypeError):
+                    total_return_pct = (total_pnl / max(initial_investment, 1.0)) * 100
+            else:
+                total_return_pct = (total_pnl / max(initial_investment, 1.0)) * 100
+
             result.append({
                 "trader_id": str(mirror_id),
                 "username": username,
@@ -1472,7 +1499,7 @@ class EToroSyncService:
                 "max_drawdown": None,
                 "volatility": None,
                 "risk_score": None,
-                "total_return_pct": (total_pnl / max(initial_investment, 1.0)) * 100,
+                "total_return_pct": total_return_pct,
             })
         logger.info(f"Extracted {len(result)} valid traders from {len(mirrors)} mirrors")
         return result
