@@ -1522,6 +1522,10 @@ class EToroSyncService:
             net_value = mirror_equity if mirror_equity > 0 else initial_investment
             total_return_pct = (total_pnl / max(net_value, 1.0)) * 100
 
+            # Clamp to realistic range: eToro allows up to 2x leverage so max loss is ~200%.
+            # Stale API values for removed/pending-close positions can produce absurd numbers.
+            total_return_pct = max(min(total_return_pct, 1000.0), -200.0)
+
             result.append({
                 "trader_id": str(mirror_id),
                 "username": username,
