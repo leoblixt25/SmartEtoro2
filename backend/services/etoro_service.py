@@ -1233,6 +1233,10 @@ class EToroSyncService:
                         f"accountCurrencyId={cp.get('accountCurrencyId')}, "
                         f"mirrors={len(cp.get('mirrors', []))}, "
                         f"all_keys={list(cp.keys())}")
+            mirror_keys = set()
+            for m in cp.get("mirrors", []):
+                mirror_keys.update(m.keys())
+            logger.info(f"MIRROR ALL KEYS: {sorted(mirror_keys)}")
             for i, m in enumerate(cp.get("mirrors", [])):
                 logger.info(f"MIRROR {i} ({m.get('parentUsername')}): "
                             f"all_fields={ {k: v for k, v in m.items() if k != 'positions'} }")
@@ -1481,6 +1485,15 @@ class EToroSyncService:
                 or m.get("totalReturnPct")
                 or m.get("total_return_pct")
                 or m.get("TotalReturn")
+                or m.get("returnPct")
+                or m.get("return")
+                or m.get("Return")
+                or m.get("totalReturnPercent")
+                or m.get("performance")
+                or m.get("totalReturnPercentage")
+                or m.get("pnlPct")
+                or m.get("pnlPercent")
+                or m.get("PnlPct")
             )
             if api_return is not None:
                 try:
