@@ -1259,6 +1259,29 @@ class EToroSyncService:
             if traders:
                 self._sync_traders(db, portfolio_id, traders, portfolio.total_value)
 
+            # ── Calculate health score ──
+            # Based on: % profitable traders (50%), portfolio return (30%), diversification (20%)
+            from backend.database.models import CopiedTrader
+            active_traders = db.query(CopiedTrader).filter(
+                CopiedTrader.portfolio_id == portfolio_id,
+                CopiedTrader.is_active.is_(True),
+                CopiedTrader.is_paused.is_(False),
+            ).all()
+            if active_traders:
+                profitable = sum(1 for t in active_traders if (t.total_return_pct or 0) > 0)
+                profit_pct = (profitable / len(active_traders)) * 100
+                score = profit_pct * 0.50
+                total_ret = (portfolio.unrealized_pnl + portfolio.realized_pnl) / max(portfolio.invested_amount, 1) * 100
+                ret_score = max(0, min(100, 50 + total_ret * 5))
+                score += ret_score * 0.30
+                div_score = min(100, len(active_traders) * 10)
+                score += div_score * 0.20
+                portfolio.health_score = max(0, min(100, round(score, 1)))
+                db.commit()
+                logger.info(f"Health score calculated: {portfolio.health_score}/100 "
+                            f"(profitable={profitable}/{len(active_traders)}, "
+                            f"ret={total_ret:.2f}%, div={len(active_traders)} traders)")
+
             # ── Validation: compare API equity field vs computed total ──
             etoro_api_total = None
             etoro_field = None
