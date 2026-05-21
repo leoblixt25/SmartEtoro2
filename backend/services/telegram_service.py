@@ -16,6 +16,7 @@ try:
     import telegram
     from telegram import Bot, Update, BotCommand
     from telegram.constants import ParseMode
+    from telegram.request import HTTPXRequest
     TELEGRAM_AVAILABLE = True
 except ImportError:
     TELEGRAM_AVAILABLE = False
@@ -40,7 +41,8 @@ class TelegramBot:
             logger.warning("TELEGRAM_ALLOWED_USER_ID not set — Telegram disabled")
             self.enabled = False
         else:
-            self._bot = Bot(token=self.token)
+            request = HTTPXRequest(connection_pool_size=16, read_timeout=30.0, write_timeout=30.0, connect_timeout=15.0)
+            self._bot = Bot(token=self.token, request=request)
             self.enabled = True
 
     @property
@@ -556,8 +558,6 @@ class TelegramBot:
         from backend.services.etoro_service import EToroSyncService
 
         try:
-            await self._reply(update, "Analysing trader health...")
-
             sync_service = EToroSyncService()
             etoro_client = sync_service.client if sync_service.client.enabled else None
 
@@ -583,7 +583,6 @@ class TelegramBot:
                     await self._reply(update, "No active traders to analyse.")
                     return
 
-                # First pass: collect all data for each trader
                 enriched = []
                 for t in traders:
                     trader_data = {
@@ -619,8 +618,7 @@ class TelegramBot:
                     trader_data["_news_summary"] = news_summary
                     enriched.append(trader_data)
 
-                    import asyncio
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(0.1)
 
                 # Try AI analysis on the full batch
                 ai_results = await ai_analyze_traders(enriched)
@@ -831,16 +829,11 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
         return f"{v:+.1f}%" if v else "0.0%"
 
     def fmt_alloc(pct):
-        """Format allocation to 1 decimal, show 0.0% instead of 0%."""
         return f"{pct:.1f}%"
 
-    def fmt_amount(amount):
-        """Format dollar amount compactly."""
-        if amount is None:
-            return ""
-        if amount >= 1000:
-            return f"${amount:,.0f}"
-        return f"${amount:.0f}"
+    def fmt_row(icon, name, ret_s, alloc_s):
+        name_col = f"<b>{name}</b>".ljust(22)
+        return f"{icon} {name_col} {ret_s:>8}  {alloc_s:>7}"
 
     uncopy = []
     keep = []
@@ -877,38 +870,25 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
 
     lines = [f"\U0001f4ca <b>Health \u2014 {total} traders</b> ({source_tag})"]
     lines.append(f"\u2705 {pos} good  \u274c {neg} bad  \u26aa {flat} flat\n")
+    lines.append(f"<b>Name</b>                   <b>Return</b>  <b>Alloc</b>")
+    lines.append("\u2500" * 40)
 
     if uncopy:
         lines.append(f"\u274c <b>UNCOPY</b> \u2014 losing on big positions")
         for name, ret, alloc, risk, _ in uncopy:
-            lines.append(
-                f"\U0001f534 <b>{name}</b>  "
-                f"\U0001f4c9 <b>{ret_str(ret)}</b>  "
-                f"\U0001f4ca {fmt_alloc(alloc)}  "
-                f"\u26a0\ufe0f {risk:.1f}"
-            )
+            lines.append(fmt_row("\U0001f534", name, f"\U0001f4c9 {ret_str(ret)}", fmt_alloc(alloc)))
             logger.info(f"  UNCOPY {name}: ret={ret:.2f}%, alloc={alloc:.1f}%, risk={risk:.1f}")
 
     if keep:
         lines.append(f"\u2705 <b>KEEP</b> \u2014 making money")
         for name, ret, alloc, risk, r in keep:
-            lines.append(
-                f"\U0001f7e2 <b>{name}</b>  "
-                f"\U0001f4c8 <b>{ret_str(ret)}</b>  "
-                f"\U0001f4ca {fmt_alloc(alloc)}  "
-                f"\u26a0\ufe0f {risk:.1f}"
-            )
+            lines.append(fmt_row("\U0001f7e2", name, f"\U0001f4c8 {ret_str(ret)}", fmt_alloc(alloc)))
             logger.info(f"  KEEP {name}: ret={ret:.2f}%, alloc={alloc:.1f}%, risk={risk:.1f}")
 
     if watch:
         lines.append(f"\U0001f50d <b>WATCH</b> \u2014 flat or small positions")
         for name, ret, alloc, risk, r in watch:
-            lines.append(
-                f"\U0001f7e1 <b>{name}</b>  "
-                f"{ret_str(ret)}  "
-                f"\U0001f4ca {fmt_alloc(alloc)}  "
-                f"\u26a0\ufe0f {risk:.1f}"
-            )
+            lines.append(fmt_row("\U0001f7e1", name, ret_str(ret), fmt_alloc(alloc)))
             logger.info(f"  WATCH {name}: ret={ret:.2f}%, alloc={alloc:.1f}%, risk={risk:.1f}")
 
     if uncopy:
