@@ -327,7 +327,7 @@ class TelegramBot:
                 health = overview['health_score']
                 health_icon = "\U0001f7e2" if health >= 70 else ("\U0001f7e1" if health >= 40 else "\U0001f534")
 
-                def row(icon, name, ret_s, alloc_s):
+                def trow(icon, name, ret_s, alloc_s):
                     return f"{icon} {name:<14} {ret_s:>7}  {alloc_s:>6}"
 
                 lines = [f"\U0001f4ca <b>Portfolio Summary</b>\n"]
@@ -348,14 +348,13 @@ class TelegramBot:
 
                 if traders:
                     lines.append(f"\n\U0001f465 <b>Active Traders ({len(traders)})</b>")
-                    trows = [row("", "Name", "Return", "Alloc")]
+                    trows = [trow("", "Name", "Return", "Alloc")]
                     trows.append("\u2500" * 32)
                     for t in traders:
                         ret = t["total_return_pct"]
                         ret_s = f"{ret:+.1f}%" if ret >= 0 else f"{ret:.1f}%"
                         pnl_icon = "\U0001f7e2" if ret >= 0 else "\U0001f534"
-                        paused = " \u23f8" if t.get("is_paused") else ""
-                        trows.append(row(pnl_icon, t["username"][:14], ret_s, f"{t['allocation_pct']:.1f}%"))
+                        trows.append(trow(pnl_icon, t["username"][:14], ret_s, f"{t['allocation_pct']:.1f}%"))
                     lines.append(f"<code>{chr(10).join(trows)}</code>")
 
                 lines.append(f"\n\U0001f4c5 {ts} ({label})")
@@ -383,20 +382,17 @@ class TelegramBot:
                     await self._reply(update, "No active copied traders.")
                     return
 
-                def row(icon, name, ret_s, alloc_s, dd_s):
-                    return f"{icon} {name:<14} {ret_s:>7}  {alloc_s:>6}  {dd_s:>5}"
+                def trow(icon, name, ret_s, alloc_s):
+                    return f"{icon} {name:<14} {ret_s:>7}  {alloc_s:>6}"
 
                 lines = [f"\U0001f465 <b>Active Traders ({len(traders)})</b>\n"]
-                trows = [row("", "Name", "Return", "Alloc", "DD")]
-                trows.append("\u2500" * 38)
+                trows = [trow("", "Name", "Return", "Alloc")]
+                trows.append("\u2500" * 32)
                 for t in traders:
                     ret = t["total_return_pct"]
                     ret_s = f"{ret:+.1f}%" if ret >= 0 else f"{ret:.1f}%"
                     pnl_icon = "\U0001f7e2" if ret >= 0 else "\U0001f534"
-                    dd = t.get("max_drawdown", 0)
-                    dd_s = f"{dd:.1f}%"
-                    paused = " \u23f8" if t.get("is_paused") else ""
-                    trows.append(row(pnl_icon, t["username"][:14], ret_s, f"{t['allocation_pct']:.1f}%", dd_s))
+                    trows.append(trow(pnl_icon, t["username"][:14], ret_s, f"{t['allocation_pct']:.1f}%"))
                 lines.append(f"<code>{chr(10).join(trows)}</code>")
                 lines.append(f"\n\U0001f4c5 {ts} ({label})")
                 await self._reply(update, "\n".join(lines))
@@ -997,8 +993,23 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
     def fmt_alloc(pct):
         return f"{pct:.1f}%"
 
-    def row(icon, name, ret_s, alloc_s):
-        return f"{icon} {name:<14} {ret_s:>6}  {alloc_s:>5}"
+    _VERDICT_ICONS = {
+        "Strong": "\U0001f7e2",
+        "Good": "\U0001f7e2",
+        "Watch": "\U0001f7e1",
+        "Weak": "\U0001f534",
+        "Avoid": "\U0001f534",
+        "Incomplete": "\u26aa",
+    }
+
+    _CONFIDENCE_ICONS = {
+        "HIGH": "\U0001f512",
+        "MEDIUM": "\U0001f513",
+        "LOW": "\u2753",
+    }
+
+    def row(icon, name, ret_s, alloc_s, verdict_icon, conf_icon):
+        return f"{icon} {name:<12} {ret_s:>6}  {alloc_s:>5} {verdict_icon}{conf_icon}"
 
     uncopy = []
     keep = []
@@ -1008,7 +1019,8 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
         alloc = r.get("allocation_pct") or 0
         name = r.get("trader", "?")
         risk = r.get("risk_score") or 0
-        entry = (name, ret, alloc, risk, r)
+        status = (r.get("health_status") or r.get("status") or "Incomplete").title()
+        entry = (name, ret, alloc, risk, r, status)
         if ret < -1.0 and alloc > 5:
             uncopy.append(entry)
         elif ret < -3.0:
@@ -1036,28 +1048,47 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
     lines = [f"\U0001f4ca <b>Health \u2014 {total} traders</b> ({source_tag})"]
     lines.append(f"\u2705 {pos} good  \u274c {neg} bad  \u26aa {flat} flat\n")
 
-    tbl = [row("", "Name", "Return", "Alloc")]
-    tbl.append("\u2500" * 32)
+    tbl = [row("", "Name", "Return", "Alloc", "AI", "C")]
+    tbl.append("\u2500" * 38)
 
     if uncopy:
         tbl.append(f"\u274c <b>UNCOPY</b>")
-        for name, ret, alloc, risk, _ in uncopy:
-            tbl.append(row("\U0001f534", name, ret_str(ret), fmt_alloc(alloc)))
+        for name, ret, alloc, risk, r, status in uncopy:
+            vi = _VERDICT_ICONS.get(status, "\u26aa")
+            ci = _CONFIDENCE_ICONS.get((r.get("confidence") or "").upper(), "\u2753")
+            tbl.append(row("\U0001f534", name, ret_str(ret), fmt_alloc(alloc), vi, ci))
             logger.info(f"  UNCOPY {name}: ret={ret:.2f}%, alloc={alloc:.1f}%")
 
     if keep:
         tbl.append(f"\u2705 <b>KEEP</b>")
-        for name, ret, alloc, risk, r in keep:
-            tbl.append(row("\U0001f7e2", name, ret_str(ret), fmt_alloc(alloc)))
+        for name, ret, alloc, risk, r, status in keep:
+            vi = _VERDICT_ICONS.get(status, "\u26aa")
+            ci = _CONFIDENCE_ICONS.get((r.get("confidence") or "").upper(), "\u2753")
+            tbl.append(row("\U0001f7e2", name, ret_str(ret), fmt_alloc(alloc), vi, ci))
             logger.info(f"  KEEP {name}: ret={ret:.2f}%, alloc={alloc:.1f}%")
 
     if watch:
         tbl.append(f"\U0001f50d <b>WATCH</b>")
-        for name, ret, alloc, risk, r in watch:
-            tbl.append(row("\U0001f7e1", name, ret_str(ret), fmt_alloc(alloc)))
+        for name, ret, alloc, risk, r, status in watch:
+            vi = _VERDICT_ICONS.get(status, "\u26aa")
+            ci = _CONFIDENCE_ICONS.get((r.get("confidence") or "").upper(), "\u2753")
+            tbl.append(row("\U0001f7e1", name, ret_str(ret), fmt_alloc(alloc), vi, ci))
             logger.info(f"  WATCH {name}: ret={ret:.2f}%, alloc={alloc:.1f}%")
 
     lines.append(f"<code>{chr(10).join(tbl)}</code>")
+
+    ai_details = []
+    for r in results:
+        reason = r.get("reason") or r.get("recommendation", "")
+        if reason and reason not in ("AI analysis", "REVIEW"):
+            name = r.get("trader", "?")
+            status = r.get("health_status") or r.get("status", "Incomplete")
+            conf = r.get("confidence", "LOW")
+            ai_details.append(f"{_VERDICT_ICONS.get(status, '\u26aa')} <b>{name}</b> [{conf}]: {reason}")
+
+    if ai_details:
+        lines.append(f"\n\U0001f916 <b>AI Verdicts</b>")
+        lines.extend(ai_details)
 
     if uncopy:
         lines.append(f"\n\U0001f6a8 <b>Action:</b> UNCOPY <b>{uncopy[0][0]}</b> first ({uncopy[0][1]:+.1f}% at {uncopy[0][2]:.1f}%)")
