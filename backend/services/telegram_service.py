@@ -830,6 +830,18 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
     def ret_str(v):
         return f"{v:+.1f}%" if v else "0.0%"
 
+    def fmt_alloc(pct):
+        """Format allocation to 1 decimal, show 0.0% instead of 0%."""
+        return f"{pct:.1f}%"
+
+    def fmt_amount(amount):
+        """Format dollar amount compactly."""
+        if amount is None:
+            return ""
+        if amount >= 1000:
+            return f"${amount:,.0f}"
+        return f"${amount:.0f}"
+
     uncopy = []
     keep = []
     watch = []
@@ -837,7 +849,8 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
         ret = ret_val(r)
         alloc = r.get("allocation_pct") or 0
         name = r.get("trader", "?")
-        entry = (name, ret, alloc, r)
+        risk = r.get("risk_score") or 0
+        entry = (name, ret, alloc, risk, r)
         if ret < -1.0 and alloc > 5:
             uncopy.append(entry)
         elif ret < -3.0:
@@ -849,7 +862,7 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
 
     uncopy.sort(key=lambda x: -(x[2] * abs(x[1])))
     keep.sort(key=lambda x: -x[1])
-    watch.sort(key=lambda x: -x[1])
+    watch.sort(key=lambda x: (-x[3], x[1]))
 
     total = len(results)
     source_tag = source_label if source_label else ("Live" if live else "Cached")
@@ -857,40 +870,49 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
     neg = sum(1 for r in results if ret_val(r) < 0)
     flat = total - pos - neg
 
+    logger.info(
+        f"HEALTH REPORT: {total} traders ({source_tag}), "
+        f"{pos} keep, {neg} uncopy, {flat} watch"
+    )
+
     lines = [f"\U0001f4ca <b>Health \u2014 {total} traders</b> ({source_tag})"]
     lines.append(f"\u2705 {pos} good  \u274c {neg} bad  \u26aa {flat} flat\n")
 
     if uncopy:
         lines.append(f"\u274c <b>UNCOPY</b> \u2014 losing on big positions")
-        for name, ret, alloc, _ in uncopy:
+        for name, ret, alloc, risk, _ in uncopy:
             lines.append(
                 f"\U0001f534 <b>{name}</b>  "
                 f"\U0001f4c9 <b>{ret_str(ret)}</b>  "
-                f"\U0001f4ca {alloc:.0f}% alloc"
+                f"\U0001f4ca {fmt_alloc(alloc)}  "
+                f"\u26a0\ufe0f {risk:.1f}"
             )
-        lines.append("")
+            logger.info(f"  UNCOPY {name}: ret={ret:.2f}%, alloc={alloc:.1f}%, risk={risk:.1f}")
 
     if keep:
         lines.append(f"\u2705 <b>KEEP</b> \u2014 making money")
-        for name, ret, alloc, _ in keep:
-            pct = f"  \U0001f4ca {alloc:.0f}%" if alloc else ""
+        for name, ret, alloc, risk, r in keep:
             lines.append(
                 f"\U0001f7e2 <b>{name}</b>  "
-                f"\U0001f4c8 <b>{ret_str(ret)}</b>{pct}"
+                f"\U0001f4c8 <b>{ret_str(ret)}</b>  "
+                f"\U0001f4ca {fmt_alloc(alloc)}  "
+                f"\u26a0\ufe0f {risk:.1f}"
             )
-        lines.append("")
+            logger.info(f"  KEEP {name}: ret={ret:.2f}%, alloc={alloc:.1f}%, risk={risk:.1f}")
 
     if watch:
-        lines.append(f"\U0001f50d <b>WATCH</b> \u2014 flat or tiny positions")
-        for name, ret, alloc, _ in watch:
-            pct = f"  \U0001f4ca {alloc:.0f}%" if alloc else ""
+        lines.append(f"\U0001f50d <b>WATCH</b> \u2014 flat or small positions")
+        for name, ret, alloc, risk, r in watch:
             lines.append(
                 f"\U0001f7e1 <b>{name}</b>  "
-                f"{ret_str(ret)}{pct}"
+                f"{ret_str(ret)}  "
+                f"\U0001f4ca {fmt_alloc(alloc)}  "
+                f"\u26a0\ufe0f {risk:.1f}"
             )
+            logger.info(f"  WATCH {name}: ret={ret:.2f}%, alloc={alloc:.1f}%, risk={risk:.1f}")
 
     if uncopy:
-        lines.append(f"\n\U0001f6a8 <b>Action:</b> UNCOPY <b>{uncopy[0][0]}</b> first ({uncopy[0][1]:+.1f}% at {uncopy[0][2]:.0f}% alloc)")
+        lines.append(f"\n\U0001f6a8 <b>Action:</b> UNCOPY <b>{uncopy[0][0]}</b> first ({uncopy[0][1]:+.1f}% at {uncopy[0][2]:.1f}% alloc)")
     elif not keep:
         lines.append(f"\n\U0001f6a8 <b>No traders making money</b> \u2014 review entire portfolio")
     elif len(keep) >= total * 0.6:

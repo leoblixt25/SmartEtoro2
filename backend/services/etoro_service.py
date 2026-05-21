@@ -1227,18 +1227,21 @@ class EToroSyncService:
             total_equity = summary.get("equity", 0.0)
             traders = self._extract_traders(raw, total_equity)
             logger.info("Synced live data from eToro API")
-            logger.info(f"RAW clientPortfolio: equity={raw.get('clientPortfolio', {}).get('equity')}, "
-                        f"credit={raw.get('clientPortfolio', {}).get('credit')}, "
-                        f"accountCurrencyId={raw.get('clientPortfolio', {}).get('accountCurrencyId')}, "
-                        f"mirrors={len(raw.get('clientPortfolio', {}).get('mirrors', []))}")
-            for m in raw.get("clientPortfolio", {}).get("mirrors", []):
-                logger.info(f"MIRROR {m.get('mirrorId')}: user={m.get('parentUsername')}, "
-                            f"initInvest={m.get('initialInvestment')}, "
-                            f"available={m.get('availableAmount')}, "
-                            f"closedPnL={m.get('closedPositionsNetProfit')}, "
-                            f"positions={len(m.get('positions', []))}")
+            cp = raw.get("clientPortfolio", {})
+            logger.info(f"RAW clientPortfolio: equity={cp.get('equity')}, "
+                        f"credit={cp.get('credit')}, "
+                        f"accountCurrencyId={cp.get('accountCurrencyId')}, "
+                        f"mirrors={len(cp.get('mirrors', []))}, "
+                        f"all_keys={list(cp.keys())}")
+            for i, m in enumerate(cp.get("mirrors", [])):
+                logger.info(f"MIRROR {i} ({m.get('parentUsername')}): "
+                            f"all_fields={ {k: v for k, v in m.items() if k != 'positions'} }")
             logger.info(f"EXTRACTED summary: {summary}")
-            logger.info(f"EXTRACTED traders: {traders}")
+            for t in traders:
+                logger.info(f"TRADER {t['username']}: alloc_pct={t['allocation_pct']:.2f}%, "
+                            f"alloc_amount=${t['allocated_amount']:.2f}, "
+                            f"return={t['total_return_pct']:.2f}%, "
+                            f"mirror_equity={t.get('allocated_amount', 0):.2f}")
 
             portfolio.total_value = summary.get("equity", 0.0)
             portfolio.available_cash = summary.get("available_cash", 0.0)
