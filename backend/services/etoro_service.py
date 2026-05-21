@@ -1313,9 +1313,12 @@ class EToroSyncService:
         positions = cp.get("positions", [])
         mirrors = cp.get("mirrors", [])
 
-        # Invested = cost basis (initial investments in mirrors + direct stock positions)
+        # Invested = sum of actual position amounts (API initialInvestment is stale)
         positions_invested = sum(p.get("amount", 0.0) for p in positions)
-        mirrors_invested = sum(m.get("initialInvestment", 0.0) for m in mirrors)
+        mirrors_invested = sum(
+            sum(pos.get("amount", 0.0) for pos in m.get("positions", []))
+            for m in mirrors
+        )
         invested = positions_invested + mirrors_invested
 
         # Unrealized PnL from all open positions (direct + mirror)
@@ -1430,11 +1433,15 @@ class EToroSyncService:
 
         result = []
         for m in mirrors:
-            unrealized_pnl_mirror = sum(pos.get("unrealizedPnL", {}).get("pnL", 0.0) for pos in m.get("positions", []))
-            total_pnl = m.get("closedPositionsNetProfit", 0.0) + unrealized_pnl_mirror
+            positions = m.get("positions", [])
+            unrealized_pnl_mirror = sum(pos.get("unrealizedPnL", {}).get("pnL", 0.0) for pos in positions)
+            closed_pnl = m.get("closedPositionsNetProfit", 0.0)
+            total_pnl = closed_pnl + unrealized_pnl_mirror
 
-            # Use currentInvestment if available (reflects copy reductions), fall back to initialInvestment
-            initial_investment = (
+            # Calculate invested amount from actual position data (API initialInvestment is stale)
+            invested_from_positions = sum(pos.get("amount", 0.0) for pos in positions)
+            # Fallback to API field only if no positions (shouldn't happen for active mirrors)
+            initial_investment = invested_from_positions if invested_from_positions > 0 else (
                 m.get("currentInvestment")
                 or m.get("investedAmount")
                 or m.get("netInvestment")
@@ -1446,8 +1453,15 @@ class EToroSyncService:
             except (ValueError, TypeError):
                 initial_investment = 1.0
 
-            # Mirror equity = currentInvestment + unrealizedPnL
+            # Net Value = invested + unrealized PnL (matches eToro UI Net Value column)
             mirror_equity = initial_investment + unrealized_pnl_mirror
+
+            # eToro P/L % = P/L / (Net Value - P/L) * 100 = P/L / invested * 100
+            # This matches the eToro UI P/L(%) column exactly
+            if initial_investment > 0:
+                total_return_pct = (total_pnl / initial_investment) * 100
+            else:
+                total_return_pct = 0.0
             
             import json
             # eToro API mirrorId key can vary by account type (retail vs non-retail).

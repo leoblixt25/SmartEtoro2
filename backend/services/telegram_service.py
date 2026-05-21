@@ -64,6 +64,7 @@ class TelegramBot:
 
     COMMANDS = [
         BotCommand("start", "Welcome and main menu"),
+        BotCommand("sync", "Force fresh sync with eToro"),
         BotCommand("status", "Quick portfolio snapshot"),
         BotCommand("overview", "Full portfolio summary"),
         BotCommand("active", "List active copied traders"),
@@ -76,10 +77,11 @@ class TelegramBot:
     ]
 
     MAIN_KEYBOARD = [
-        ["/status", "/overview"],
-        ["/active", "/health"],
-        ["/discovery", "/alerts"],
-        ["/watchlist", "/settings"],
+        ["/sync", "/status"],
+        ["/overview", "/active"],
+        ["/health", "/discovery"],
+        ["/alerts", "/watchlist"],
+        ["/settings", "/help"],
     ]
 
     async def setup_commands(self) -> None:
@@ -164,6 +166,7 @@ class TelegramBot:
 
         handlers = {
             "/start": self._cmd_start,
+            "/sync": self._cmd_sync,
             "/status": self._cmd_status,
             "/overview": self._cmd_overview,
             "/active": self._cmd_active,
@@ -204,6 +207,7 @@ class TelegramBot:
         text = (
             "Available Commands\n\n"
             "/start \u2013 Welcome and main menu\n"
+            "/sync \u2013 Force fresh sync with eToro\n"
             "/status \u2013 Quick portfolio snapshot\n"
             "/overview \u2013 Full portfolio summary\n"
             "/active \u2013 List active copied traders\n"
@@ -215,6 +219,48 @@ class TelegramBot:
             "/help \u2013 Show this message"
         )
         await self._reply(update, text)
+
+    async def _cmd_sync(self, update: Update, args: list[str]) -> None:
+        from backend.database.connection import db_session
+        from backend.database.models import Portfolio, CopiedTrader
+        from backend.services.etoro_service import EToroSyncService
+
+        try:
+            await self._reply(update, "\U0001f504 Syncing with eToro...")
+
+            with db_session() as db:
+                p = db.query(Portfolio).first()
+                if not p:
+                    await self._reply(update, "No portfolio found.")
+                    return
+
+                sync = EToroSyncService()
+                if not sync.client.enabled:
+                    await self._reply(update, "\u274c eToro API not configured.")
+                    return
+
+                ok = await sync.sync_portfolio_data(db, p.id)
+                db.refresh(p)
+
+                if ok:
+                    active = db.query(CopiedTrader).filter(
+                        CopiedTrader.portfolio_id == p.id,
+                        CopiedTrader.is_active.is_(True),
+                        CopiedTrader.is_paused.is_(False),
+                    ).count()
+                    s = self._sym(p.currency or "USD")
+                    text = (
+                        f"\u2705 <b>Sync Complete</b>\n\n"
+                        f"\U0001f4b0 Value: {s}{p.total_value:,.2f}\n"
+                        f"\U0001f465 Traders: {active} active\n"
+                        f"\U0001f4c5 {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}"
+                    )
+                    await self._reply(update, text)
+                else:
+                    await self._reply(update, "\u274c Sync failed. Check logs.")
+        except Exception as e:
+            logger.error(f"/sync error: {e}")
+            await self._reply(update, f"\u274c Error: {e}")
 
     async def _cmd_status(self, update: Update, args: list[str]) -> None:
         from backend.database.connection import db_session
