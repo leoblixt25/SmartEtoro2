@@ -831,8 +831,8 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
     def fmt_alloc(pct):
         return f"{pct:.1f}%"
 
-    def fmt_row(icon, name, ret_s, alloc_s):
-        return f"{icon} {name:<16} {ret_s:>7}  {alloc_s:>6}"
+    def row(icon, name, ret_s, alloc_s):
+        return f"{icon} {name:<14} {ret_s:>6}  {alloc_s:>5}"
 
     uncopy = []
     keep = []
@@ -870,23 +870,28 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
     lines = [f"\U0001f4ca <b>Health \u2014 {total} traders</b> ({source_tag})"]
     lines.append(f"\u2705 {pos} good  \u274c {neg} bad  \u26aa {flat} flat\n")
 
+    tbl = [row("", "Name", "Return", "Alloc")]
+    tbl.append("\u2500" * 32)
+
     if uncopy:
-        lines.append(f"\u274c <b>UNCOPY</b>")
+        tbl.append(f"\u274c <b>UNCOPY</b>")
         for name, ret, alloc, risk, _ in uncopy:
-            lines.append(fmt_row("\U0001f534", name, ret_str(ret), fmt_alloc(alloc)))
-            logger.info(f"  UNCOPY {name}: ret={ret:.2f}%, alloc={alloc:.1f}%, risk={risk:.1f}")
+            tbl.append(row("\U0001f534", name, ret_str(ret), fmt_alloc(alloc)))
+            logger.info(f"  UNCOPY {name}: ret={ret:.2f}%, alloc={alloc:.1f}%")
 
     if keep:
-        lines.append(f"\u2705 <b>KEEP</b>")
+        tbl.append(f"\u2705 <b>KEEP</b>")
         for name, ret, alloc, risk, r in keep:
-            lines.append(fmt_row("\U0001f7e2", name, ret_str(ret), fmt_alloc(alloc)))
-            logger.info(f"  KEEP {name}: ret={ret:.2f}%, alloc={alloc:.1f}%, risk={risk:.1f}")
+            tbl.append(row("\U0001f7e2", name, ret_str(ret), fmt_alloc(alloc)))
+            logger.info(f"  KEEP {name}: ret={ret:.2f}%, alloc={alloc:.1f}%")
 
     if watch:
-        lines.append(f"\U0001f50d <b>WATCH</b>")
+        tbl.append(f"\U0001f50d <b>WATCH</b>")
         for name, ret, alloc, risk, r in watch:
-            lines.append(fmt_row("\U0001f7e1", name, ret_str(ret), fmt_alloc(alloc)))
-            logger.info(f"  WATCH {name}: ret={ret:.2f}%, alloc={alloc:.1f}%, risk={risk:.1f}")
+            tbl.append(row("\U0001f7e1", name, ret_str(ret), fmt_alloc(alloc)))
+            logger.info(f"  WATCH {name}: ret={ret:.2f}%, alloc={alloc:.1f}%")
+
+    lines.append(f"<code>{chr(10).join(tbl)}</code>")
 
     if uncopy:
         lines.append(f"\n\U0001f6a8 <b>Action:</b> UNCOPY <b>{uncopy[0][0]}</b> first ({uncopy[0][1]:+.1f}% at {uncopy[0][2]:.1f}%)")
