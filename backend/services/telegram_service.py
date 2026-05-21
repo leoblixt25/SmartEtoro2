@@ -220,6 +220,10 @@ class TelegramBot:
                     await self._reply(update, "No portfolio found.")
                     return
 
+                from backend.services.etoro_service import EToroSyncService
+                sync_service = EToroSyncService()
+                etoro_client = sync_service.client if sync_service.client.enabled else None
+
                 fresh, ts, label = await self._force_sync_before(db, p)
 
                 traders = [t for t in (p.copied_traders or []) if t.is_active and not t.is_paused]
@@ -230,7 +234,7 @@ class TelegramBot:
                 all_symbols = set()
                 symbol_to_traders = {}
                 for t in traders:
-                    holdings, _ = await get_trader_holdings(db, p.id, t.trader_username)
+                    holdings, _ = await get_trader_holdings(db, p.id, t.trader_username, etoro_client=etoro_client)
                     symbols = extract_symbols(holdings)
                     for sym in symbols:
                         all_symbols.add(sym)
