@@ -420,35 +420,35 @@ class TelegramBot:
                 health = overview['health_score']
                 health_icon = "\U0001f7e2" if health >= 70 else ("\U0001f7e1" if health >= 40 else "\U0001f534")
 
-                lines = [f"\U0001f4ca <b>Portfolio Summary</b>\n"]
-                lines.append(
-                    f"\U0001f4b0 <b>{s}{overview['total_value']:,.2f}</b>  "
-                    f"\U0001f4b5 Cash {s}{overview['available_cash']:,.2f}"
-                )
-                lines.append(
-                    f"{ret_icon} <b>{ret:+.2f}%</b>  "
-                    f"{health_icon} Health <b>{health:.0f}/100</b>"
-                )
-                lines.append(
-                    f"\U0001f465 <b>{overview['active_traders']}</b> traders  "
-                    f"\U0001f4a1 {overview['sentiment']}"
-                )
+                lines = [f"\U0001f4ca <b>Portfolio Summary</b> ({label})\n"]
+
+                tbl = [
+                    f"{'Metric':<14} {'Value':>16}",
+                    "\u2500" * 32,
+                    f"{'Value':<14} {s}{overview['total_value']:>16,.2f}",
+                    f"{'Cash':<14} {s}{overview['available_cash']:>16,.2f}",
+                    f"{'Return':<14} {ret:>16.2f}%",
+                    f"{'Health':<14} {health:>16.0f}/100",
+                    f"{'Traders':<14} {overview['active_traders']:>16}",
+                    f"{'Sentiment':<14} {overview['sentiment']:>16}",
+                ]
+                lines.append(f"<code>{chr(10).join(tbl)}</code>")
+
                 if overview.get("concentration_risk"):
-                    lines.append("\u26a0\ufe0f Concentration risk detected")
+                    lines.append(f"\n\u26a0\ufe0f Concentration risk detected")
 
                 if traders:
                     lines.append(f"\n\U0001f465 <b>Active Traders ({len(traders)})</b>")
+                    t_tbl = [f"{'Name':<14} {'Alloc':>6} {'Return':>7} {'DD':>6}"]
+                    t_tbl.append("\u2500" * 36)
                     for t in traders:
                         ret = t["total_return_pct"]
-                        pnl_icon = "\U0001f7e2" if ret >= 0 else "\U0001f534"
-                        ret_str = f"+{ret:.2f}%" if ret >= 0 else f"{ret:.2f}%"
-                        paused = " \u23f8\ufe0f paused" if t.get("is_paused") else ""
-                        lines.append(
-                            f"{pnl_icon} <b>{t['username']}</b>{paused}  "
-                            f"\U0001f4ca {t['allocation_pct']:.1f}%  "
-                            f"\U0001f4c8 {ret_str}  "
-                            f"\u26a0\ufe0f {t['risk_score']:.1f}"
-                        )
+                        dd = t.get("max_drawdown", 0)
+                        dd_icon = "\U0001f7e2" if dd < 10 else ("\U0001f7e1" if dd < 18 else "\U0001f534")
+                        paused = " \u23f8" if t.get("is_paused") else ""
+                        name = t["username"][:14] + paused
+                        t_tbl.append(f"{name:<14} {t['allocation_pct']:>5.1f}% {ret:>+6.1f}% {dd_icon}{dd:>5.1f}")
+                    lines.append(f"<code>{chr(10).join(t_tbl)}</code>")
 
                 lines.append(f"\n\U0001f4c5 {ts} ({label})")
 
@@ -476,20 +476,16 @@ class TelegramBot:
                     return
 
                 lines = [f"\U0001f465 <b>Active Traders ({len(traders)})</b>\n"]
+                tbl = [f"{'Name':<14} {'Alloc':>6} {'Return':>7} {'DD':>6}"]
+                tbl.append("\u2500" * 36)
                 for t in traders:
                     ret = t["total_return_pct"]
-                    pnl_icon = "\U0001f7e2" if ret >= 0 else "\U0001f534"
-                    ret_str = f"+{ret:.2f}%" if ret >= 0 else f"{ret:.2f}%"
-                    paused = " \u23f8\ufe0f paused" if t.get("is_paused") else ""
                     dd = t.get("max_drawdown", 0)
                     dd_icon = "\U0001f7e2" if dd < 10 else ("\U0001f7e1" if dd < 18 else "\U0001f534")
-                    lines.append(
-                        f"{pnl_icon} <b>{t['username']}</b>{paused}\n"
-                        f"    \U0001f4ca <b>{t['allocation_pct']:.1f}%</b>  "
-                        f"\U0001f4c8 <b>{ret_str}</b>\n"
-                        f"    \u26a0\ufe0f Risk {t['risk_score']:.1f}/10  "
-                        f"{dd_icon} DD {dd:.1f}%"
-                    )
+                    paused = " \u23f8" if t.get("is_paused") else ""
+                    name = t["username"][:14] + paused
+                    tbl.append(f"{name:<14} {t['allocation_pct']:>5.1f}% {ret:>+6.1f}% {dd_icon}{dd:>5.1f}")
+                lines.append(f"<code>{chr(10).join(tbl)}</code>")
                 lines.append(f"\n\U0001f4c5 {ts} ({label})")
                 await self._reply(update, "\n".join(lines))
         except Exception as e:
@@ -1084,11 +1080,19 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
             name = r.get("trader", "?")
             status = r.get("health_status") or r.get("status", "Incomplete")
             conf = r.get("confidence", "LOW")
-            ai_details.append(f"{_VERDICT_ICONS.get(status, '\u26aa')} <b>{name}</b> [{conf}]: {reason}")
+            ai_details.append((name, status, conf, reason, ret_val(r)))
 
-    if ai_details:
-        lines.append(f"\n\U0001f916 <b>AI Verdicts</b>")
-        lines.extend(ai_details)
+    flagged = [(n, s, c, r) for n, s, c, r, _ in ai_details if s.lower() in ("weak", "avoid", "watch")]
+    top_keep = sorted(
+        [(n, s, c, r, v) for n, s, c, r, v in ai_details if s.lower() in ("strong", "good")],
+        key=lambda x: -x[4],
+    )[:1]
+
+    show_verdicts = flagged + [(n, s, c, r) for n, s, c, r, _ in top_keep]
+    if show_verdicts:
+        lines.append(f"\n\U0001f916 <b>AI Insights</b>")
+        for name, status, conf, reason in show_verdicts:
+            lines.append(f"{_VERDICT_ICONS.get(status, '\u26aa')} <b>{name}</b>: {reason}")
 
     if uncopy:
         lines.append(f"\n\U0001f6a8 <b>Action:</b> UNCOPY <b>{uncopy[0][0]}</b> first ({uncopy[0][1]:+.1f}% at {uncopy[0][2]:.1f}%)")
