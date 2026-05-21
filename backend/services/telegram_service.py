@@ -175,6 +175,7 @@ class TelegramBot:
             "/alerts": self._cmd_alerts,
             "/watchlist": self._cmd_watchlist,
             "/settings": self._cmd_settings,
+            "/news": self._cmd_news,
             "/help": self._cmd_help,
         }
         handler = handlers.get(command)
@@ -198,10 +199,34 @@ class TelegramBot:
             "/active \u2014 Your copied traders\n"
             "/health \u2014 Trader health analysis\n"
             "/discovery \u2014 New eligible traders\n"
-            "/alerts \u2014 Important notifications\n\n"
+            "/alerts \u2014 Important notifications\n"
+            "/news \u2014 Latest market news\n\n"
             "Use the menu below or send /help for all commands."
         )
         await self._reply(update, text)
+
+    async def _cmd_news(self, update: Update, args: list[str]) -> None:
+        from backend.services.market_data import get_market_news
+
+        try:
+            await self._reply(update, "\U0001f4f0 Fetching latest market news...")
+            news = await get_market_news()
+            if not news:
+                await self._reply(update, "No news available right now.")
+                return
+
+            lines = [f"\U0001f4f0 <b>Market News ({len(news)})</b>\n"]
+            tbl = [f"{'Source':<16} {'Headline'}"]
+            tbl.append("\u2500" * 44)
+            for n in news:
+                title = n.get("title", "")[:42]
+                source = n.get("source", "?")[:14]
+                tbl.append(f"{source:<16} {title}")
+            lines.append(f"<code>{chr(10).join(tbl)}</code>")
+            await self._reply(update, "\n".join(lines))
+        except Exception as e:
+            logger.error(f"/news error: {e}")
+            await self._reply(update, f"News fetch failed: {e}")
 
     async def _cmd_help(self, update: Update, args: list[str]) -> None:
         text = (
@@ -216,6 +241,7 @@ class TelegramBot:
             "/alerts \u2013 Recent important alerts\n"
             "/watchlist \u2013 Monitored traders\n"
             "/settings \u2013 Current limits and preferences\n"
+            "/news \u2013 Latest market news\n"
             "/help \u2013 Show this message"
         )
         await self._reply(update, text)
