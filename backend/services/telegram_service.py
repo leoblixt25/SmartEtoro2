@@ -1001,9 +1001,11 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
         name = r.get("trader", "?")
         risk = r.get("risk_score") or 0
         entry = (name, ret, alloc, risk, r)
-        if ret < -1.0 and alloc > 5:
+        if alloc < 1.0:
+            watch.append(entry)
+        elif ret < -1.0 and alloc > 5:
             uncopy.append(entry)
-        elif ret < -3.0:
+        elif ret < -5.0:
             uncopy.append(entry)
         elif ret > 0.5:
             keep.append(entry)
@@ -1052,7 +1054,8 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
     lines.append(f"<code>{chr(10).join(tbl)}</code>")
 
     if uncopy:
-        lines.append(f"\n\U0001f6a8 <b>Action:</b> UNCOPY <b>{uncopy[0][0]}</b> first ({uncopy[0][1]:+.1f}% at {uncopy[0][2]:.1f}%)")
+        target = next((e for e in uncopy if e[2] >= 1.0), uncopy[0])
+        lines.append(f"\n\U0001f6a8 <b>Action:</b> UNCOPY <b>{target[0]}</b> first ({target[1]:+.1f}% at {target[2]:.1f}%)")
     elif not keep:
         lines.append(f"\n\U0001f6a8 <b>No traders making money</b> \u2014 review entire portfolio")
     elif len(keep) >= total * 0.6:
