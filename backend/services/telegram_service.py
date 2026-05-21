@@ -249,10 +249,16 @@ class TelegramBot:
                         CopiedTrader.is_paused.is_(False),
                     ).count()
                     s = self._sym(p.currency or "USD")
+                    tbl = [
+                        f"{'Metric':<12} {'Value':>14}",
+                        "\u2500" * 28,
+                        f"{'Value':<12} {s}{p.total_value:>14,.2f}",
+                        f"{'Cash':<12} {s}{p.available_cash:>14,.2f}",
+                        f"{'Traders':<12} {active:>14}",
+                    ]
                     text = (
                         f"\u2705 <b>Sync Complete</b>\n\n"
-                        f"\U0001f4b0 Value: {s}{p.total_value:,.2f}\n"
-                        f"\U0001f465 Traders: {active} active\n"
+                        f"<code>{chr(10).join(tbl)}</code>\n"
                         f"\U0001f4c5 {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}"
                     )
                     await self._reply(update, text)
@@ -280,19 +286,122 @@ class TelegramBot:
                 ret_icon = "\U0001f4c8" if ret >= 0 else "\U0001f4c9"
                 health = overview['health_score']
                 health_icon = "\U0001f7e2" if health >= 70 else ("\U0001f7e1" if health >= 40 else "\U0001f534")
+
+                tbl = [
+                    f"{'Metric':<12} {'Value':>14}",
+                    "\u2500" * 28,
+                    f"{'Value':<12} {s}{overview['total_value']:>14,.2f}",
+                    f"{'Cash':<12} {s}{overview['available_cash']:>14,.2f}",
+                    f"{'Return':<12} {ret_icon}{ret:>+14.2f}%",
+                    f"{'Health':<12} {health_icon}{health:>14.0f}/100",
+                    f"{'Traders':<12} {overview['active_traders']:>14}",
+                    f"{'Sentiment':<12} {overview['sentiment']:>14}",
+                ]
                 text = (
-                    f"\U0001f4ca <b>Portfolio Status</b>\n"
-                    f"{s}<b>{overview['total_value']:,.2f}</b>  "
-                    f"\U0001f4b0 {s}{overview['available_cash']:,.2f}\n"
-                    f"{ret_icon} <b>{ret:+.2f}%</b>  "
-                    f"{health_icon} Health <b>{health:.0f}/100</b>\n"
-                    f"\U0001f465 <b>{overview['active_traders']}</b> traders  "
-                    f"\U0001f4a1 {overview['sentiment']}\n"
+                    f"\U0001f4ca <b>Portfolio Status</b>\n\n"
+                    f"<code>{chr(10).join(tbl)}</code>\n"
                     f"\U0001f4c5 {ts} ({label})"
                 )
                 await self._reply(update, text)
         except Exception as e:
             logger.error(f"/status error: {e}")
+            await self._reply(update, f"Error: {e}")
+
+    async def _cmd_overview(self, update: Update, args: list[str]) -> None:
+        from backend.database.connection import db_session
+        from backend.database.models import Portfolio
+        from backend.services.portfolio_service import get_portfolio_overview, get_active_traders
+
+        try:
+            with db_session() as db:
+                p = db.query(Portfolio).first()
+                if not p:
+                    await self._reply(update, "No portfolio found.")
+                    return
+                fresh, ts, label = await self._force_sync_before(db, p)
+                overview = get_portfolio_overview(db, p.id)
+                traders = get_active_traders(db, p.id)
+                s = self._sym(overview.get("currency", "USD"))
+                ret = overview['total_return_pct']
+                ret_icon = "\U0001f4c8" if ret >= 0 else "\U0001f4c9"
+                health = overview['health_score']
+                health_icon = "\U0001f7e2" if health >= 70 else ("\U0001f7e1" if health >= 40 else "\U0001f534")
+
+                def row(icon, name, ret_s, alloc_s):
+                    return f"{icon} {name:<14} {ret_s:>7}  {alloc_s:>6}"
+
+                lines = [f"\U0001f4ca <b>Portfolio Summary</b>\n"]
+                tbl = [
+                    f"{'Metric':<12} {'Value':>14}",
+                    "\u2500" * 28,
+                    f"{'Value':<12} {s}{overview['total_value']:>14,.2f}",
+                    f"{'Cash':<12} {s}{overview['available_cash']:>14,.2f}",
+                    f"{'Return':<12} {ret_icon}{ret:>+14.2f}%",
+                    f"{'Health':<12} {health_icon}{health:>14.0f}/100",
+                    f"{'Traders':<12} {overview['active_traders']:>14}",
+                    f"{'Sentiment':<12} {overview['sentiment']:>14}",
+                ]
+                if overview.get("concentration_risk"):
+                    tbl.append(f"{'Risk':<12} {'Concentrated':>14}")
+
+                lines.append(f"<code>{chr(10).join(tbl)}</code>")
+
+                if traders:
+                    lines.append(f"\n\U0001f465 <b>Active Traders ({len(traders)})</b>")
+                    trows = [row("", "Name", "Return", "Alloc")]
+                    trows.append("\u2500" * 32)
+                    for t in traders:
+                        ret = t["total_return_pct"]
+                        ret_s = f"{ret:+.1f}%" if ret >= 0 else f"{ret:.1f}%"
+                        pnl_icon = "\U0001f7e2" if ret >= 0 else "\U0001f534"
+                        paused = " \u23f8" if t.get("is_paused") else ""
+                        trows.append(row(pnl_icon, t["username"][:14], ret_s, f"{t['allocation_pct']:.1f}%"))
+                    lines.append(f"<code>{chr(10).join(trows)}</code>")
+
+                lines.append(f"\n\U0001f4c5 {ts} ({label})")
+
+                await self._reply(update, "\n".join(lines))
+        except Exception as e:
+            logger.error(f"/overview error: {e}")
+            await self._reply(update, f"Error: {e}")
+
+    async def _cmd_active(self, update: Update, args: list[str]) -> None:
+        from backend.database.connection import db_session
+        from backend.database.models import Portfolio
+        from backend.services.portfolio_service import get_active_traders
+
+        try:
+            with db_session() as db:
+                p = db.query(Portfolio).first()
+                if not p:
+                    await self._reply(update, "No portfolio found.")
+                    return
+                fresh, ts, label = await self._force_sync_before(db, p)
+                traders = get_active_traders(db, p.id)
+
+                if not traders:
+                    await self._reply(update, "No active copied traders.")
+                    return
+
+                def row(icon, name, ret_s, alloc_s, dd_s):
+                    return f"{icon} {name:<14} {ret_s:>7}  {alloc_s:>6}  {dd_s:>5}"
+
+                lines = [f"\U0001f465 <b>Active Traders ({len(traders)})</b>\n"]
+                trows = [row("", "Name", "Return", "Alloc", "DD")]
+                trows.append("\u2500" * 38)
+                for t in traders:
+                    ret = t["total_return_pct"]
+                    ret_s = f"{ret:+.1f}%" if ret >= 0 else f"{ret:.1f}%"
+                    pnl_icon = "\U0001f7e2" if ret >= 0 else "\U0001f534"
+                    dd = t.get("max_drawdown", 0)
+                    dd_s = f"{dd:.1f}%"
+                    paused = " \u23f8" if t.get("is_paused") else ""
+                    trows.append(row(pnl_icon, t["username"][:14], ret_s, f"{t['allocation_pct']:.1f}%", dd_s))
+                lines.append(f"<code>{chr(10).join(trows)}</code>")
+                lines.append(f"\n\U0001f4c5 {ts} ({label})")
+                await self._reply(update, "\n".join(lines))
+        except Exception as e:
+            logger.error(f"/active error: {e}")
             await self._reply(update, f"Error: {e}")
 
     async def _cmd_overview(self, update: Update, args: list[str]) -> None:
@@ -734,19 +843,21 @@ class TelegramBot:
                     await self._reply(update, "No portfolio found.")
                     return
                 fresh, ts, label = await self._force_sync_before(db, p)
-                alerts = get_alerts(db, p.id, unread_only=True, limit=5)
+                alerts = get_alerts(db, p.id, unread_only=True, limit=10)
                 if not alerts:
                     await self._reply(update, "\u2705 No unread alerts.")
                     return
 
                 severity_icons = {"critical": "\U0001f534", "warning": "\u26a0\ufe0f", "info": "\U0001f7e1"}
                 lines = [f"\U0001f514 <b>Recent Alerts ({len(alerts)})</b>\n"]
+                tbl = [f"{'When':<12} {'Severity':<10} {'Alert':<20}"]
+                tbl.append("\u2500" * 44)
                 for a in alerts:
                     icon = severity_icons.get(a["severity"], "\u2753")
-                    lines.append(
-                        f"{icon} <b>{a['title']}</b>\n"
-                        f"  {a['message'][:200]}"
-                    )
+                    when = a["created_at"][:16] if a.get("created_at") else "?"
+                    title = a["title"][:20]
+                    tbl.append(f"{icon} {when:<10} {a['severity']:<10} {title:<20}")
+                lines.append(f"<code>{chr(10).join(tbl)}</code>")
                 lines.append(f"\n\U0001f4c5 {ts} ({label})")
                 await self._reply(update, "\n".join(lines))
         except Exception as e:
@@ -786,22 +897,25 @@ class TelegramBot:
 
                 by_signal = summary.get("by_signal", {})
                 signal_icons = {"increase": "\U0001f7e2", "hold": "\U0001f7e1", "reduce": "\U0001f534", "watch": "\U0001f50d"}
+
                 lines = [f"\U0001f6e1\ufe0f <b>Monitored Traders</b>\n"]
-                signal_parts = []
+                sig_parts = []
                 for sig, count in by_signal.items():
                     icon = signal_icons.get(sig, "\u2753")
-                    signal_parts.append(f"{icon} {sig} <b>{count}</b>")
-                lines.append("  ".join(signal_parts))
+                    sig_parts.append(f"{icon} {sig} <b>{count}</b>")
+                lines.append("  ".join(sig_parts))
 
+                def wrow(icon, name, sig, score):
+                    return f"{icon} {name:<14} {sig:>8}  {score:>6}"
+
+                tbl = [wrow("", "Name", "Signal", "Score")]
+                tbl.append("\u2500" * 34)
                 for r in results:
                     sig = r.get("signal", "watch")
                     sig_icon = signal_icons.get(sig, "\U0001f50d")
                     score = r.get("performance_score", 0)
-                    lines.append(
-                        f"\n{sig_icon} <b>{r['trader']}</b> \u2014 {sig} "
-                        f"(\U0001f4ca {score:.0f})"
-                    )
-
+                    tbl.append(wrow(sig_icon, r["trader"][:14], sig, f"{score:.0f}"))
+                lines.append(f"\n<code>{chr(10).join(tbl)}</code>")
                 lines.append(f"\n\U0001f4c5 {ts} ({label})")
 
                 await self._reply(update, "\n".join(lines))
@@ -825,16 +939,22 @@ class TelegramBot:
                 active = len([t for t in (p.copied_traders or []) if t.is_active and not t.is_paused])
                 health = p.health_score or 0
                 health_icon = "\U0001f7e2" if health >= 70 else ("\U0001f7e1" if health >= 40 else "\U0001f534")
+                s = self._sym(p.currency or "USD")
 
+                tbl = [
+                    f"{'Setting':<12} {'Value':>14}",
+                    "\u2500" * 28,
+                    f"{'ID':<12} {p.id:>14}",
+                    f"{'Currency':<12} {p.currency or 'USD':>14}",
+                    f"{'Mode':<12} {'Sim' if p.is_simulation else 'Live':>14}",
+                    f"{'Value':<12} {s}{p.total_value:>14,.2f}",
+                    f"{'Cash':<12} {s}{p.available_cash:>14,.2f}",
+                    f"{'Health':<12} {health_icon}{health:>14.0f}/100",
+                    f"{'Traders':<12} {active:>14}",
+                ]
                 text = (
-                    f"\u2699\ufe0f <b>Settings</b>\n"
-                    f"\U0001f3e6 Portfolio <b>#{p.id}</b>  "
-                    f"\U0001f4b1 {p.currency or 'USD'}  "
-                    f"{mode_icon} {'Sim' if p.is_simulation else 'Live'}\n"
-                    f"\U0001f4b0 <b>${p.total_value:,.2f}</b>  "
-                    f"\U0001f4b5 ${p.available_cash:,.2f}\n"
-                    f"{health_icon} Health <b>{health:.0f}/100</b>  "
-                    f"\U0001f465 <b>{active}</b> active\n"
+                    f"\u2699\ufe0f <b>Settings</b>\n\n"
+                    f"<code>{chr(10).join(tbl)}</code>\n"
                     f"\U0001f4c5 {ts} ({label})"
                 )
                 await self._reply(update, text)
