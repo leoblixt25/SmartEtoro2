@@ -380,63 +380,6 @@ class TelegramBot:
             logger.error(f"/status error: {e}")
             await self._reply(update, f"Error: {e}")
 
-    async def _cmd_overview(self, update: Update, args: list[str]) -> None:
-        from backend.database.connection import db_session
-        from backend.database.models import Portfolio
-        from backend.services.portfolio_service import get_portfolio_overview, get_active_traders
-
-        try:
-            with db_session() as db:
-                p = db.query(Portfolio).first()
-                if not p:
-                    await self._reply(update, "No portfolio found.")
-                    return
-                fresh, ts, label = await self._force_sync_before(db, p)
-                overview = get_portfolio_overview(db, p.id)
-                traders = get_active_traders(db, p.id)
-                s = self._sym(overview.get("currency", "USD"))
-                ret = overview['total_return_pct']
-                ret_icon = "\U0001f4c8" if ret >= 0 else "\U0001f4c9"
-                health = overview['health_score']
-                health_icon = "\U0001f7e2" if health >= 70 else ("\U0001f7e1" if health >= 40 else "\U0001f534")
-
-                def trow(icon, name, ret_s, alloc_s):
-                    return f"{icon} {name:<12} {ret_s:>6} {alloc_s:>5}"
-
-                lines = [f"\U0001f4ca <b>Portfolio Summary</b>\n"]
-                tbl = [
-                    f"{'Metric':<10} {'Value':>14}",
-                    "\u2500" * 26,
-                    f"{'Value':<10} {s}{overview['total_value']:>14,.2f}",
-                    f"{'Cash':<10} {s}{overview['available_cash']:>14,.2f}",
-                    f"{'Return':<10} {ret_icon}{ret:>+14.2f}%",
-                    f"{'Health':<10} {health_icon}{health:>14.0f}/100",
-                    f"{'Traders':<10} {overview['active_traders']:>14}",
-                    f"{'Sentiment':<10} {overview['sentiment']:>14}",
-                ]
-                if overview.get("concentration_risk"):
-                    tbl.append(f"{'Risk':<10} {'Concentrated':>14}")
-
-                lines.append(f"<code>{chr(10).join(tbl)}</code>")
-
-                if traders:
-                    lines.append(f"\n\U0001f465 <b>Active Traders ({len(traders)})</b>")
-                    trows = [trow("", "Name", "Return", "Alloc")]
-                    trows.append("\u2500" * 28)
-                    for t in traders:
-                        ret = t["total_return_pct"]
-                        ret_s = f"{ret:+.1f}%" if ret >= 0 else f"{ret:.1f}%"
-                        pnl_icon = "\U0001f7e2" if ret >= 0 else "\U0001f534"
-                        trows.append(trow(pnl_icon, t["username"][:12], ret_s, f"{t['allocation_pct']:.1f}%"))
-                    lines.append(f"<code>{chr(10).join(trows)}</code>")
-
-                lines.append(f"\n\U0001f4c5 {ts} ({label})")
-
-                await self._reply(update, "\n".join(lines))
-        except Exception as e:
-            logger.error(f"/overview error: {e}")
-            await self._reply(update, f"Error: {e}")
-
     async def _cmd_active(self, update: Update, args: list[str]) -> None:
         from backend.database.connection import db_session
         from backend.database.models import Portfolio
