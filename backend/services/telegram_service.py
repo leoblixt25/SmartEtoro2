@@ -1170,9 +1170,11 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
         else:
             watch.append(entry)
 
-    uncopy.sort(key=lambda x: -(x[2] * abs(x[1])))
-    keep.sort(key=lambda x: -x[1])
-    watch.sort(key=lambda x: (-x[3], x[1]))
+    _CONF = {"High": 3, "Medium": 2, "Low": 1}
+    def conf_key(r): return _CONF.get(r.get("_assessed_confidence", "Low"), 0)
+    uncopy.sort(key=lambda x: (-conf_key(x[4]), -(x[2] * abs(x[1]))))
+    keep.sort(key=lambda x: (-conf_key(x[4]), -x[1]))
+    watch.sort(key=lambda x: (-conf_key(x[4]), -x[3], x[1]))
 
     total = len(results)
     source_tag = source_label if source_label else ("Live" if live else "Cached")
