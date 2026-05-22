@@ -86,6 +86,81 @@ def _is_relevant_news(item: dict) -> bool:
 
 # ── News fetching ───────────────────────────────────────────────────
 
+async def _fetch_yfinance_news(symbol: str) -> List[Dict]:
+    """Fetch raw news from yfinance for a symbol."""
+    import yfinance as yf
+    import asyncio
+
+    def _fetch():
+        try:
+            ticker = yf.Ticker(symbol)
+            try:
+                raw = ticker.get_news() or []
+            except AttributeError:
+                raw = ticker.news or []
+            except Exception as e:
+                logger.warning("yfinance get_news failed for %s: %s", symbol, e)
+                return []
+            return [
+                {"title": a.get("title", ""), "summary": (a.get("summary") or "")[:300],
+                 "publisher": a.get("publisher", "Yahoo Finance")}
+                for a in raw if a.get("title")
+            ]
+        except Exception as e:
+            logger.warning("yfinance failed for %s: %s", symbol, e)
+            return []
+
+    loop = asyncio.get_event_loop()
+    items = await loop.run_in_executor(None, _fetch)
+    return items
+
+
+# ── HTTP news fallback (bypasses yfinance) ─────────────────────────
+
+YAHOO_FINANCE_API = "https://query1.finance.yahoo.com/v1/finance/search?q={symbol}&newsCount=5"
+
+
+async def _fetch_news_http(symbol: str) -> List[Dict]:
+    """Fetch news via direct HTTP to Yahoo Finance API (no yfinance dependency)."""
+    import httpx
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/125.0.0.0 Safari/537.36"
+        )
+    }
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                YAHOO_FINANCE_API.format(symbol=symbol),
+                headers=headers,
+            )
+            if resp.status_code != 200:
+                return []
+            data = resp.json()
+            news = data.get("news", [])
+            items = []
+            for item in news[:5]:
+                title = (item.get("title") or "").strip()
+                if not title or len(title) < 10:
+                    continue
+                sentiment, confidence = _score_sentiment(
+                    title, item.get("summary") or ""
+                )
+                items.append({
+                    "title": title,
+                    "summary": (item.get("summary") or "")[:300],
+                    "source": item.get("publisher", "Yahoo Finance"),
+                    "sentiment": sentiment,
+                    "confidence": confidence,
+                })
+            return items
+    except Exception as e:
+        logger.warning("HTTP news fallback failed for %s: %s", symbol, e)
+        return []
+
+
 async def fetch_symbol_news(
     symbol: str,
     max_items: int = 5,
@@ -93,13 +168,7 @@ async def fetch_symbol_news(
 ) -> List[Dict]:
     """Fetch and score news for a single symbol.
 
-    Args:
-        symbol: Stock/crypto ticker (e.g. "AAPL", "BTC-USD").
-        max_items: Maximum news items to return.
-        use_cache: If True, check cache before fetching.
-
-    Returns:
-        List of dicts with title, summary, source, sentiment, confidence.
+    Tries yfinance first, then falls back to direct HTTP call.
     """
     cache = get_news_cache()
 
@@ -108,10 +177,12 @@ async def fetch_symbol_news(
         if cached is not None:
             return cached[:max_items]
 
-    # Fetch via yfinance
     news = await _fetch_yfinance_news(symbol)
 
-    # Score and filter
+    if not news:
+        logger.info("yfinance empty for %s — trying HTTP fallback", symbol)
+        news = await _fetch_news_http(symbol)
+
     scored = []
     for item in news:
         if not _is_relevant_news(item):
@@ -130,7 +201,6 @@ async def fetch_symbol_news(
         if len(scored) >= max_items:
             break
 
-    # Cache result (even if empty — prevents re-fetch)
     if use_cache:
         cache.set(symbol, scored)
 
@@ -139,32 +209,6 @@ async def fetch_symbol_news(
         symbol, len(scored), use_cache,
     )
     return scored
-
-
-async def _fetch_yfinance_news(symbol: str) -> List[Dict]:
-    """Fetch raw news from yfinance for a symbol."""
-    import yfinance as yf
-    import asyncio
-
-    def _fetch():
-        try:
-            ticker = yf.Ticker(symbol)
-            try:
-                raw = ticker.get_news() or []
-            except AttributeError:
-                raw = ticker.news or []
-            return [
-                {"title": a.get("title", ""), "summary": (a.get("summary") or "")[:300],
-                 "publisher": a.get("publisher", "Yahoo Finance")}
-                for a in raw if a.get("title")
-            ]
-        except Exception as e:
-            logger.debug("yfinance failed for %s: %s", symbol, e)
-            return []
-
-    loop = asyncio.get_event_loop()
-    items = await loop.run_in_executor(None, _fetch)
-    return items
 
 
 async def fetch_news_for_symbols(
@@ -178,8 +222,13 @@ async def fetch_news_for_symbols(
     """
     import asyncio
 
+    if use_cache:
+        cache = get_news_cache()
+        for sym in symbols:
+            cache.invalidate(sym)
+
     tasks = [
-        fetch_symbol_news(sym, max_items=max_per_symbol, use_cache=use_cache)
+        fetch_symbol_news(sym, max_items=max_per_symbol, use_cache=False)
         for sym in symbols
     ]
     results = await asyncio.gather(*tasks, return_exceptions=True)
