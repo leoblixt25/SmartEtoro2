@@ -810,6 +810,18 @@ class TelegramBot:
         return "\n".join(lines)
 
     async def _cmd_health(self, update: Update, args: list[str]) -> None:
+        try:
+            text = await self._generate_health_report()
+            await self._reply(update, text)
+        except Exception as e:
+            logger.exception("Health analysis failed")
+            await self._reply(update, f"Health analysis failed: {e}")
+
+    async def _generate_health_report(self) -> str:
+        """Run full health analysis and return the summary text.
+
+        Shared between /health command and scheduled 12-hour report.
+        """
         from backend.database.connection import db_session
         from backend.database.models import Portfolio, CopiedTrader
         from backend.monitoring.trader_health_engine import analyze_trader_health
@@ -818,170 +830,160 @@ class TelegramBot:
         from backend.monitoring.news_service import fetch_news_for_symbols
         from backend.services.etoro_service import EToroSyncService
 
-        try:
-            sync_service = EToroSyncService()
-            etoro_client = sync_service.client if sync_service.client.enabled else None
+        sync_service = EToroSyncService()
+        etoro_client = sync_service.client if sync_service.client.enabled else None
 
-            with db_session() as db:
-                p = db.query(Portfolio).first()
-                if not p:
-                    await self._reply(update, "No portfolio found.")
-                    return
+        with db_session() as db:
+            p = db.query(Portfolio).first()
+            if not p:
+                return "No portfolio found."
 
-                freshness, ts, label = await self._force_sync_before(db, p)
+            freshness, ts, label = await self._force_sync_before(db, p)
 
-                traders = (
-                    db.query(CopiedTrader)
-                    .filter(
-                        CopiedTrader.portfolio_id == p.id,
-                        CopiedTrader.is_active.is_(True),
-                        CopiedTrader.is_paused.is_(False),
-                    )
-                    .all()
+            traders = (
+                db.query(CopiedTrader)
+                .filter(
+                    CopiedTrader.portfolio_id == p.id,
+                    CopiedTrader.is_active.is_(True),
+                    CopiedTrader.is_paused.is_(False),
                 )
+                .all()
+            )
 
-                if not traders:
-                    await self._reply(update, "No active traders to analyse.")
-                    return
+            if not traders:
+                return "No active traders to analyse."
 
-                enriched = []
-                for t in traders:
-                    trader_data = {
-                        "username": t.trader_username,
-                        "source": "tradeinfo" if t.trader_id else "unknown",
-                        "confidence": 1.0,
-                        "total_return_pct": t.total_return_pct,
-                        "return_1m": t.avg_monthly_return,
-                        "return_1w": getattr(t, 'return_1w', None),
-                        "return_1d": getattr(t, 'return_1d', None),
-                        "risk_score": t.risk_score,
-                        "max_drawdown": t.max_drawdown,
-                        "consistency_score": t.consistency_score,
-                        "volatility": t.volatility,
-                        "sharpe_score": t.sharpe_score,
-                        "diversification_score": t.diversification_score,
-                        "allocation_pct": t.allocation_pct,
-                        "watch_consecutive": t.watch_consecutive or 0,
-                    }
+            enriched = []
+            for t in traders:
+                trader_data = {
+                    "username": t.trader_username,
+                    "source": "tradeinfo" if t.trader_id else "unknown",
+                    "confidence": 1.0,
+                    "total_return_pct": t.total_return_pct,
+                    "return_1m": t.avg_monthly_return,
+                    "return_1w": getattr(t, 'return_1w', None),
+                    "return_1d": getattr(t, 'return_1d', None),
+                    "risk_score": t.risk_score,
+                    "max_drawdown": t.max_drawdown,
+                    "consistency_score": t.consistency_score,
+                    "volatility": t.volatility,
+                    "sharpe_score": t.sharpe_score,
+                    "diversification_score": t.diversification_score,
+                    "allocation_pct": t.allocation_pct,
+                    "watch_consecutive": t.watch_consecutive or 0,
+                }
 
-                    holdings, holdings_source = await get_trader_holdings(
-                        db, p.id, t.trader_username, etoro_client=etoro_client,
-                    )
-                    trader_data["_holdings_source"] = holdings_source
-                    trader_data["_holdings"] = holdings
-                    symbols = extract_symbols(holdings)
-                    news_by_symbol = await fetch_news_for_symbols(symbols)
-                    trader_data["_news_by_symbol"] = news_by_symbol
-                    news_summary = "N/A"
-                    if news_by_symbol:
-                        pos = sum(1 for v in news_by_symbol.values() if any(a.get("sentiment") == "positive" for a in v))
-                        neg = sum(1 for v in news_by_symbol.values() if any(a.get("sentiment") == "negative" for a in v))
-                        news_summary = f"{pos} pos, {neg} neg symbols"
-                    trader_data["_news_summary"] = news_summary
-                    enriched.append(trader_data)
+                holdings, holdings_source = await get_trader_holdings(
+                    db, p.id, t.trader_username, etoro_client=etoro_client,
+                )
+                trader_data["_holdings_source"] = holdings_source
+                trader_data["_holdings"] = holdings
+                symbols = extract_symbols(holdings)
+                news_by_symbol = await fetch_news_for_symbols(symbols)
+                trader_data["_news_by_symbol"] = news_by_symbol
+                news_summary = "N/A"
+                if news_by_symbol:
+                    pos = sum(1 for v in news_by_symbol.values() if any(a.get("sentiment") == "positive" for a in v))
+                    neg = sum(1 for v in news_by_symbol.values() if any(a.get("sentiment") == "negative" for a in v))
+                    news_summary = f"{pos} pos, {neg} neg symbols"
+                trader_data["_news_summary"] = news_summary
+                enriched.append(trader_data)
 
-                    await asyncio.sleep(0.1)
+                await asyncio.sleep(0.1)
 
-                # Try AI analysis on the full batch
-                ai_results = await ai_analyze_traders(enriched)
+            # Try AI analysis on the full batch
+            ai_results = await ai_analyze_traders(enriched)
 
-                results = []
-                if ai_results:
-                    # Map AI results back to enriched data
-                    ai_by_name = {r.get("name", "").lower(): r for r in ai_results}
-                    _STATUS_NORM = {"ELITE": "Strong", "STRONG": "Strong", "GOOD": "Good",
-                                    "WATCH": "Watch", "WEAK": "Weak", "AVOID": "Avoid",
-                                    "INCOMPLETE": "Incomplete"}
-                    for td in enriched:
-                        name = td["username"].lower()
-                        ai_r = ai_by_name.get(name, {})
-                        raw_status = (ai_r.get("status") or "INCOMPLETE").upper()
-                        norm_status = _STATUS_NORM.get(raw_status, "Incomplete")
-                        results.append({
-                            "name": td["username"],
-                            "trader": td["username"],
-                            "score": ai_r.get("score"),
-                            "health_score": ai_r.get("score"),
-                            "confidence": ai_r.get("confidence", "LOW"),
-                            "status": norm_status,
-                            "health_status": norm_status,
-                            "data_quality": "low" if ai_r.get("confidence") in ("LOW", "INCOMPLETE") else "medium",
-                            "action": ai_r.get("action", "REVIEW"),
-                            "recommendation": ai_r.get("action", "REVIEW"),
-                            "signal": "increase" if ai_r.get("action") == "KEEP" else ("reduce" if ai_r.get("action") == "REDUCE" else "watch"),
-                            "reason": ai_r.get("reason", "AI analysis"),
-                            "performance": ai_r.get("performance", {"day": None, "week": None, "month": None}),
-                            "risk": ai_r.get("risk", {"drawdown": None, "risk_score": None, "leverage": None, "concentration": None}),
-                            "risk_analysis": {},
-                            "news_exposure": {"level": ai_r.get("news_risk", "unknown"), "summary": ""},
-                            "news_analysis": {"impact": ai_r.get("news_risk", "unknown"), "details": td.get("_news_summary", "")},
-                            "holdings_count": len(td.get("_holdings", [])),
-                            "total_return_pct": td.get("total_return_pct"),
-                            "allocation_pct": td.get("allocation_pct"),
-                            "holdings_source": td.get("_holdings_source", "unknown"),
-                            "data_flags": {},
-                            "portfolio_concentration": {"warning": "Well diversified"},
-                            "watch_consecutive": td.get("watch_consecutive", 0),
-                        })
+            results = []
+            if ai_results:
+                ai_by_name = {r.get("name", "").lower(): r for r in ai_results}
+                _STATUS_NORM = {"ELITE": "Strong", "STRONG": "Strong", "GOOD": "Good",
+                                "WATCH": "Watch", "WEAK": "Weak", "AVOID": "Avoid",
+                                "INCOMPLETE": "Incomplete"}
+                for td in enriched:
+                    name = td["username"].lower()
+                    ai_r = ai_by_name.get(name, {})
+                    raw_status = (ai_r.get("status") or "INCOMPLETE").upper()
+                    norm_status = _STATUS_NORM.get(raw_status, "Incomplete")
+                    results.append({
+                        "name": td["username"],
+                        "trader": td["username"],
+                        "score": ai_r.get("score"),
+                        "health_score": ai_r.get("score"),
+                        "confidence": ai_r.get("confidence", "LOW"),
+                        "status": norm_status,
+                        "health_status": norm_status,
+                        "data_quality": "low" if ai_r.get("confidence") in ("LOW", "INCOMPLETE") else "medium",
+                        "action": ai_r.get("action", "REVIEW"),
+                        "recommendation": ai_r.get("action", "REVIEW"),
+                        "signal": "increase" if ai_r.get("action") == "KEEP" else ("reduce" if ai_r.get("action") == "REDUCE" else "watch"),
+                        "reason": ai_r.get("reason", "AI analysis"),
+                        "performance": ai_r.get("performance", {"day": None, "week": None, "month": None}),
+                        "risk": ai_r.get("risk", {"drawdown": None, "risk_score": None, "leverage": None, "concentration": None}),
+                        "risk_analysis": {},
+                        "news_exposure": {"level": ai_r.get("news_risk", "unknown"), "summary": ""},
+                        "news_analysis": {"impact": ai_r.get("news_risk", "unknown"), "details": td.get("_news_summary", "")},
+                        "holdings_count": len(td.get("_holdings", [])),
+                        "total_return_pct": td.get("total_return_pct"),
+                        "allocation_pct": td.get("allocation_pct"),
+                        "holdings_source": td.get("_holdings_source", "unknown"),
+                        "data_flags": {},
+                        "portfolio_concentration": {"warning": "Well diversified"},
+                        "watch_consecutive": td.get("watch_consecutive", 0),
+                    })
+            else:
+                for td in enriched:
+                    result = analyze_trader_health(td, td.get("_holdings", []), td.get("_news_by_symbol", {}))
+                    results.append(result)
+
+            if not results:
+                return "Health analysis complete. No signals to report."
+
+            async def _enrich_trader(r):
+                name = r.get("name") or r.get("trader")
+                try:
+                    m = await etoro_client.get_trader_metrics(name)
+                    if m.get("available"):
+                        dd_val = m.get("max_drawdown")
+                        dd_field = m.get("dd_field")
+                        yearly_dd = m.get("peak_to_valley")
+                        if dd_val is not None:
+                            r["real_dd"] = abs(dd_val)
+                            r["dd_source"] = dd_field or "peakToValley"
+                            r["dd_yearly"] = abs(yearly_dd) if yearly_dd is not None and dd_field != "peakToValley" else None
+                        elif yearly_dd is not None:
+                            r["real_dd"] = abs(yearly_dd)
+                            r["dd_source"] = "peakToValley"
+                            r["dd_yearly"] = None
+                        else:
+                            r["dd_source"] = "missing"
+                        r["real_risk"] = m.get("risk_score")
+                        r["profitable_months_pct"] = m.get("profitable_months_pct")
+                        r["win_ratio"] = m.get("win_ratio")
+                        r["trades_count"] = m.get("trades_count")
+                        r["weeks_since_registration"] = m.get("weeks_since_registration")
+                except Exception:
+                    pass
+            await asyncio.gather(*[_enrich_trader(r) for r in results])
+
+            summary = _build_health_summary(results, live=freshness, source_label=label, ts=ts, ai_used=bool(ai_results))
+
+            for r in results:
+                trader_name = r.get("name") or r.get("trader")
+                bucket, _, _ = _assess_trader(r, r.get("watch_consecutive", 0))
+                ct = next((t for t in traders if t.trader_username == trader_name), None)
+                if ct is None:
+                    continue
+                if bucket == "watch":
+                    ct.watch_consecutive = (ct.watch_consecutive or 0) + 1
+                    logger.info(f"  WATCH scan ++ {trader_name}: now {ct.watch_consecutive}")
                 else:
-                    # Fall back to rule-based engine
-                    for td in enriched:
-                        result = analyze_trader_health(td, td.get("_holdings", []), td.get("_news_by_symbol", {}))
-                        results.append(result)
+                    if ct.watch_consecutive:
+                        ct.watch_consecutive = 0
+            db.commit()
+            logger.info(f"Health: watch_consecutive updated for {len(results)} traders")
 
-                if not results:
-                    await self._reply(update, "Health analysis complete. No signals to report.")
-                    return
-
-                # Enrich with real metrics from tradeinfo API
-                async def _enrich_trader(r):
-                    name = r.get("name") or r.get("trader")
-                    try:
-                        m = await etoro_client.get_trader_metrics(name)
-                        if m.get("available"):
-                            dd_val = m.get("max_drawdown")
-                            dd_field = m.get("dd_field")
-                            yearly_dd = m.get("peak_to_valley")
-                            if dd_val is not None:
-                                r["real_dd"] = abs(dd_val)
-                                r["dd_source"] = dd_field or "peakToValley"
-                                r["dd_yearly"] = abs(yearly_dd) if yearly_dd is not None and dd_field != "peakToValley" else None
-                            elif yearly_dd is not None:
-                                r["real_dd"] = abs(yearly_dd)
-                                r["dd_source"] = "peakToValley"
-                                r["dd_yearly"] = None
-                            else:
-                                r["dd_source"] = "missing"
-                            r["real_risk"] = m.get("risk_score")
-                            r["profitable_months_pct"] = m.get("profitable_months_pct")
-                            r["win_ratio"] = m.get("win_ratio")
-                            r["trades_count"] = m.get("trades_count")
-                            r["weeks_since_registration"] = m.get("weeks_since_registration")
-                    except Exception:
-                        pass
-                await asyncio.gather(*[_enrich_trader(r) for r in results])
-
-                summary = _build_health_summary(results, live=freshness, source_label=label, ts=ts, ai_used=bool(ai_results))
-                await self._reply(update, summary)
-
-                # ── Update watch_consecutive in DB ──
-                for r in results:
-                    trader_name = r.get("name") or r.get("trader")
-                    bucket, _, _ = _assess_trader(r, r.get("watch_consecutive", 0))
-                    ct = next((t for t in traders if t.trader_username == trader_name), None)
-                    if ct is None:
-                        continue
-                    if bucket == "watch":
-                        ct.watch_consecutive = (ct.watch_consecutive or 0) + 1
-                        logger.info(f"  WATCH scan ++ {trader_name}: now {ct.watch_consecutive}")
-                    else:
-                        if ct.watch_consecutive:
-                            ct.watch_consecutive = 0
-                            logger.info(f"  Reset watch count for {trader_name}")
-                db.commit()
-        except Exception as e:
-            logger.error(f"/health error: {e}")
-            await self._reply(update, f"Health analysis failed: {e}")
+        return summary
 
     async def _cmd_alerts(self, update: Update, args: list[str]) -> None:
         from backend.database.connection import db_session

@@ -13,7 +13,7 @@ from backend.database.models import Alert, AlertType
 logger = logging.getLogger(__name__)
 
 
-LOSS_THRESHOLD = -6.0
+LOSS_THRESHOLD = -10.0
 PROFIT_MIN = 10.0
 PROFIT_MAX = 20.0
 DEDUP_HOURS = 24

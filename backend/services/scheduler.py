@@ -75,8 +75,17 @@ class SchedulerService:
             **interval_kwargs,
         )
 
+        # Health Report every 12 hours (09:00 & 21:00 UTC)
+        self._scheduler.add_job(
+            self._health_report_job,
+            CronTrigger(hour="9,21", minute=0),
+            id="health_report",
+            name="Health Report (12h)",
+            **interval_kwargs,
+        )
+
         self._scheduler.start()
-        logger.info("Scheduler started with 4 jobs (overlap prevention enabled)")
+        logger.info("Scheduler started with 5 jobs (overlap prevention enabled)")
 
     def stop(self):
         if self._scheduler:
@@ -192,3 +201,23 @@ class SchedulerService:
                         stats.get("discovered", 0), len(eligible))
         except Exception as e:
             logger.exception("Daily discovery job failed")
+
+    async def _health_report_job(self):
+        """Scheduled health report — runs _generate_health_report and sends to Telegram."""
+        from backend.services.telegram_service import TelegramBot
+
+        try:
+            bot = TelegramBot()
+            if not bot.enabled:
+                return
+
+            logger.info("Health report: starting scheduled analysis")
+            text = await bot._generate_health_report()
+            if text:
+                await bot.send_message(
+                    f"<b>📊 Scheduled Health Report</b>\n{text}",
+                    show_keyboard=False,
+                )
+                logger.info("Health report sent to Telegram")
+        except Exception as e:
+            logger.exception("Health report job failed")
