@@ -928,7 +928,16 @@ class TelegramBot:
                     try:
                         m = await etoro_client.get_trader_metrics(name)
                         if m.get("available"):
-                            r["real_dd"] = m.get("peak_to_valley") or m.get("max_drawdown")
+                            yearly_dd = m.get("max_drawdown")
+                            lifetime_dd = m.get("peak_to_valley")
+                            if yearly_dd is not None:
+                                r["real_dd"] = abs(yearly_dd)
+                                r["dd_source"] = "yearly"
+                            elif lifetime_dd is not None:
+                                r["real_dd"] = abs(lifetime_dd)
+                                r["dd_source"] = "lifetime"
+                            else:
+                                r["dd_source"] = "missing"
                             r["real_risk"] = m.get("risk_score")
                             r["profitable_months_pct"] = m.get("profitable_months_pct")
                             r["win_ratio"] = m.get("win_ratio")
@@ -1122,6 +1131,8 @@ def _assess_trader(r: dict, watch_consecutive: int = 0) -> tuple:
     cum_pl = r.get("total_return_pct") or 0.0
     dd_abs = abs(r.get("real_dd") or 0)
     risk = r.get("real_risk") or r.get("risk_score") or 0
+    dd_source = r.get("dd_source", "unknown")
+    dd_confident = dd_source == "yearly"
     perf = r.get("performance", {})
     medium = (perf.get("month") or perf.get("week") or 0.0)
     daily = perf.get("day") or 0.0
@@ -1158,6 +1169,8 @@ def _assess_trader(r: dict, watch_consecutive: int = 0) -> tuple:
         add_reason(f"Drawdown {dd_abs:.0f}% above threshold")
     elif dd_abs >= 15:
         add_reason(f"Drawdown {dd_abs:.0f}% approaching penalty threshold")
+    if dd_abs > 0 and not dd_confident:
+        add_reason(f"DD from {dd_source} source (not yearly)")
     if low_consistency:
         add_reason(f"Consistency {consistency}/100 below threshold")
     if high_risk:
@@ -1195,10 +1208,15 @@ def _assess_trader(r: dict, watch_consecutive: int = 0) -> tuple:
             if bucket == "watch":
                 add_reason("Borderline score — monitoring before decision")
         elif high_dd or excessive_dd:
-            bucket = "uncopy" if watch_consecutive >= 2 else "watch"
-            confidence = "Medium"
-            if bucket == "watch":
-                add_reason("Elevated drawdown — monitoring")
+            if not dd_confident:
+                bucket = "watch"
+                confidence = "Low"
+                add_reason("DD source uncertain — monitoring before decision")
+            else:
+                bucket = "uncopy" if watch_consecutive >= 2 else "watch"
+                confidence = "Medium"
+                if bucket == "watch":
+                    add_reason("Elevated drawdown — monitoring")
         else:
             bucket = "watch"
             confidence = "Medium"
@@ -1463,6 +1481,18 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
     if watch_reasons:
         lines.append(f"\n\U0001f50d <b>Why WATCH</b>")
         lines.extend(watch_reasons)
+
+    # ── DD source cross-check ──
+    dd_warnings = []
+    for r in results:
+        ds = r.get("dd_source", "unknown")
+        if ds == "lifetime":
+            dd_warnings.append(f"\u26a0\ufe0f {r.get('trader', '?')}: DD from lifetime peak-to-valley, not yearly")
+        elif ds == "missing":
+            dd_warnings.append(f"\u26a0\ufe0f {r.get('trader', '?')}: DD source unavailable")
+    if dd_warnings:
+        lines.append(f"\n\U0001f4cb <b>DD Source Notes</b>")
+        lines.extend(dd_warnings)
 
     # ── Action ──
     high_conf_uncopy = [e for e in uncopy if e[4].get("_assessed_confidence") == "High"]
