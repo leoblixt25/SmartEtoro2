@@ -233,12 +233,26 @@ class TelegramBot:
 
                 all_symbols = set()
                 symbol_to_traders = {}
-                for t in traders:
-                    holdings, _ = await get_trader_holdings(db, p.id, t.trader_username, etoro_client=etoro_client)
-                    symbols = extract_symbols(holdings)
-                    for sym in symbols:
-                        all_symbols.add(sym)
-                        symbol_to_traders.setdefault(sym, []).append(t.trader_username)
+
+                # Fetch holdings for ALL traders in a single API call to avoid rate limits
+                if etoro_client and etoro_client.enabled:
+                    raw = await etoro_client.get_portfolio_data()
+                    mirrors_raw = raw.get("clientPortfolio", {}).get("mirrors", []) if raw else []
+                    from backend.monitoring.holding_parser import parse_holdings_from_mirrors
+                    all_holdings = parse_holdings_from_mirrors(mirrors_raw)
+                    for t in traders:
+                        holdings = all_holdings.get(t.trader_username, [])
+                        symbols = extract_symbols(holdings)
+                        for sym in symbols:
+                            all_symbols.add(sym)
+                            symbol_to_traders.setdefault(sym, []).append(t.trader_username)
+                else:
+                    for t in traders:
+                        holdings, _ = await get_trader_holdings(db, p.id, t.trader_username, etoro_client=None)
+                        symbols = extract_symbols(holdings)
+                        for sym in symbols:
+                            all_symbols.add(sym)
+                            symbol_to_traders.setdefault(sym, []).append(t.trader_username)
 
                 if not all_symbols:
                     await self._reply(update, "No symbols found in active trader holdings.")
