@@ -601,8 +601,11 @@ class EToroAPIClient:
             params={"period": "LastTwoYears"},
         )
         if tradeinfo:
-            # Log raw response keys for debugging
+            # Log raw response keys for debugging (INFO for first trader seen)
             resp_keys = list(tradeinfo.keys()) if isinstance(tradeinfo, dict) else []
+            if not hasattr(self, '_tradeinfo_keys_logged'):
+                logger.info("Tradeinfo raw keys for %s: %s", username, resp_keys)
+                self._tradeinfo_keys_logged = True
             logger.debug("Tradeinfo raw keys for %s: %s", username, resp_keys)
 
             # Extract copyability info if available in the response
@@ -620,7 +623,16 @@ class EToroAPIClient:
 
             gain_raw = tradeinfo.get("gainPerc") or tradeinfo.get("gain")
             risk_raw = tradeinfo.get("riskScore")
-            dd_raw = tradeinfo.get("maxMonthlyDrawdown")
+            # Try multiple field name patterns for monthly drawdown
+            dd_raw = None
+            for dd_field in ("maxMonthlyDrawdown", "MaxMonthlyDrawdown", "max_monthly_drawdown", "maxDrawdown", "drawdown"):
+                v = tradeinfo.get(dd_field)
+                if v is not None:
+                    dd_raw = v
+                    logger.info("Monthly DD for %s: field='%s' value=%s", username, dd_field, v)
+                    break
+            if dd_raw is None:
+                logger.info("No monthly DD field found for %s. Keys: %s", username, resp_keys)
             vol_raw = tradeinfo.get("volatility")
             avg_raw = tradeinfo.get("avgReturn")
 
