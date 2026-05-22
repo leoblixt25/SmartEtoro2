@@ -413,7 +413,7 @@ class TelegramBot:
                     return
 
                 def trow(icon, name, ret_s, alloc_s):
-                    return f"{icon} {name:<12} {ret_s:>6} {alloc_s:>5}"
+                    return f"{icon} {name:<12.12} {ret_s:>6} {alloc_s:>5}"
 
                 lines = [f"\U0001f465 <b>Active Traders ({len(traders)})</b>\n"]
                 trows = [trow("", "Name", "Return", "Alloc")]
@@ -1152,7 +1152,7 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
         return f"{pct:.1f}%"
 
     def row(icon, name, ret_s, alloc_s):
-        return f"{icon} {name:<12} {ret_s:>6} {alloc_s:>5}"
+        return f"{icon} {name:<12.12} {ret_s:>6} {alloc_s:>5}"
 
     uncopy = []
     keep = []
