@@ -176,6 +176,7 @@ class TelegramBot:
             "/watchlist": self._cmd_watchlist,
             "/settings": self._cmd_settings,
             "/news": self._cmd_news,
+            "/allocate": self._cmd_allocate,
             "/help": self._cmd_help,
         }
         handler = handlers.get(command)
@@ -289,6 +290,81 @@ class TelegramBot:
             logger.error(f"/news error: {e}")
             await self._reply(update, f"News fetch failed: {e}")
 
+    async def _cmd_allocate(self, update: Update, args: list[str]) -> None:
+        """Usage: /allocate <trader_name> <new_amount>
+
+        Changes the copy amount for a trader on eToro.
+        Use the amount shown in /active or /health as reference.
+        """
+        from backend.database.connection import db_session
+        from backend.database.models import Portfolio, CopiedTrader
+        from backend.services.etoro_service import EToroSyncService
+
+        if len(args) < 2:
+            await self._reply(update, "Usage: /allocate <trader_name> <amount>\nExample: /allocate QuantumComputing 5000")
+            return
+
+        trader_name = args[0]
+        try:
+            new_amount = float(args[1])
+        except ValueError:
+            await self._reply(update, "Amount must be a number.")
+            return
+
+        if new_amount <= 0:
+            await self._reply(update, "Amount must be positive.")
+            return
+
+        try:
+            sync_service = EToroSyncService()
+            client = sync_service.client
+
+            if not client or not client.enabled:
+                await self._reply(update, "eToro API not configured.")
+                return
+
+            with db_session() as db:
+                p = db.query(Portfolio).first()
+                if not p:
+                    await self._reply(update, "No portfolio found.")
+                    return
+
+                fresh, ts, label = await self._force_sync_before(db, p)
+
+                trader = (
+                    db.query(CopiedTrader)
+                    .filter(
+                        CopiedTrader.portfolio_id == p.id,
+                        CopiedTrader.trader_username.ilike(f"%{trader_name}%"),
+                    )
+                    .first()
+                )
+
+                if not trader:
+                    await self._reply(update, f"Trader '{trader_name}' not found.")
+                    return
+
+                mirror_id = int(trader.trader_id) if trader.trader_id and trader.trader_id.isdigit() else None
+                if not mirror_id or mirror_id <= 0:
+                    await self._reply(update, f"Trader '{trader.trader_username}' has no valid mirror ID — cannot allocate.")
+                    return
+
+                current_amount = trader.allocated_amount or 0
+                await self._reply(update, f"Changing {trader.trader_username} from ${current_amount:.2f} to ${new_amount:.2f}...")
+
+                result = await client.execute_change_mirror_amount(mirror_id, new_amount)
+
+                if result and result.get("error"):
+                    detail = result.get("detail", "unknown error")
+                    await self._reply(update, f"Failed: {detail[:200]}")
+                else:
+                    trader.allocated_amount = new_amount
+                    db.commit()
+                    await self._reply(update, f"Done. {trader.trader_username} now allocated ${new_amount:.2f}")
+        except Exception as e:
+            logger.error(f"/allocate error: {e}")
+            await self._reply(update, f"Allocation failed: {e}")
+
     async def _cmd_help(self, update: Update, args: list[str]) -> None:
         text = (
             "Available Commands\n\n"
@@ -303,6 +379,7 @@ class TelegramBot:
             "/watchlist \u2013 Monitored traders\n"
             "/settings \u2013 Current limits and preferences\n"
             "/news \u2013 Latest market news\n"
+            "/allocate <name> <amount> \u2013 Change copy amount\n"
             "/help \u2013 Show this message"
         )
         await self._reply(update, text)
