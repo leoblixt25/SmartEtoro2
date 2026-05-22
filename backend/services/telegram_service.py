@@ -334,7 +334,7 @@ class TelegramBot:
         from backend.services.etoro_service import EToroSyncService
 
         if len(args) < 2:
-            await self._reply(update, "Usage: /allocate <trader_name> <amount>\nExample: /allocate QuantumComputing 5000")
+            await self._reply(update, "Usage: /allocate &lt;trader_name&gt; &lt;amount&gt;\nExample: /allocate QuantumComputing 5000")
             return
 
         trader_name = args[0]
@@ -412,7 +412,7 @@ class TelegramBot:
             "/watchlist \u2013 Monitored traders\n"
             "/settings \u2013 Current limits and preferences\n"
             "/news \u2013 Latest market news\n"
-            "/allocate <name> <amount> \u2013 Change copy amount\n"
+            "/allocate &lt;name&gt; &lt;amount&gt; \u2013 Change copy amount\n"
             "/help \u2013 Show this message"
         )
         await self._reply(update, text)
