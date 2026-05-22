@@ -1105,231 +1105,143 @@ class TelegramBot:
 
 
 def _assess_trader(r: dict, watch_consecutive: int = 0) -> tuple:
-    """Evaluate trader health with 3-layer performance analysis.
+    """Score-first classification — quantitative metrics drive decisions.
 
-    Layer A (50-60%): Long-term cumulative P/L — the primary signal.
-    Layer B (25-30%): Medium-term trend — detecting momentum shifts.
-    Layer C (10-20%): Short-term movement — treated as noise unless persistent.
+    Decision priority:
+      1. Health score (0-100)
+      2. Trend deterioration
+      3. Consistency
+      4. AI sentiment (minor — never overrides score)
+      5. Risk concentration
 
-    Acts like a patient portfolio manager: long-term quality >> daily noise.
+    AI is a soft modifier only. A score >= 60 can NEVER be UNCOPY
+    from AI alone. UNCOPY requires score < 50, or score < 60 with
+    HIGH confidence AI + deterioration.
     """
-    # ── Layer A: Long-term cumulative P/L ──
+    score = r.get("_health_score") or _compute_health_score(r)
     cum_pl = r.get("total_return_pct") or 0.0
-
-    # ── Layer B: Medium-term trend (last 7-30 days) ──
+    dd_abs = abs(r.get("real_dd") or 0)
+    risk = r.get("real_risk") or r.get("risk_score") or 0
     perf = r.get("performance", {})
-    monthly = perf.get("month") or 0.0
-    weekly = perf.get("week") or 0.0
-    medium = monthly or weekly or 0.0
-
-    # ── Layer C: Short-term noise (daily fluctuations) ──
+    medium = (perf.get("month") or perf.get("week") or 0.0)
     daily = perf.get("day") or 0.0
-
-    alloc = r.get("allocation_pct") or 0
     ai_status = (r.get("health_status") or r.get("status", "")).lower()
     ai_conf = (r.get("confidence") or "LOW").upper()
-    news = r.get("news_analysis", {}).get("impact", "unknown")
-    risk_score = r.get("real_risk") or r.get("risk_score") or 0
-    dd = r.get("real_dd") or 0
     consistency = r.get("consistency_score") or 50
-    volatility = r.get("volatility") or 0
 
-    signals = []
     reasons = []
+    trend_declining = medium < -1.0
+    severe_decline = medium < -3.0
+    trend_positive = medium > 0.5
+    ai_negative = ai_status in ("weak", "avoid")
+    ai_high = ai_conf == "HIGH"
+    high_dd = dd_abs > 25
+    excessive_dd = dd_abs > 35
+    low_consistency = consistency < 30
+    high_risk = risk > 7
 
-    # ── Layer A: Long-term cumulative P/L ──
-    if cum_pl > 5.0:
-        signals.append("cum_strong")
-        reasons.append(f"Long: +{cum_pl:.1f}%")
-    elif cum_pl > 2.0:
-        signals.append("cum_good")
-        reasons.append(f"Long: +{cum_pl:.1f}%")
-    elif cum_pl > 0.5:
-        signals.append("cum_positive")
-    elif cum_pl > -2.0:
-        signals.append("cum_flat")
-    elif cum_pl > -5.0:
-        signals.append("cum_declining")
-        reasons.append(f"Long: {cum_pl:.1f}%")
-    else:
-        signals.append("cum_bad")
-        reasons.append(f"Long: {cum_pl:.1f}% (severe)")
+    # ── Build measurable reason components ──
+    def add_reason(text):
+        if text not in reasons:
+            reasons.append(text)
 
-    # ── Layer B: Medium-term trend ──
-    if medium > 2.0:
-        signals.append("trend_good")
-        reasons.append(f"Trend: +{medium:.1f}%")
-    elif medium > 0.5:
-        signals.append("trend_stable")
-    elif medium > -1.0:
-        signals.append("trend_slight")
-        if medium < -0.3:
-            reasons.append(f"Trend: {medium:+.1f}%")
-    elif medium > -3.0:
-        signals.append("trend_declining")
-        reasons.append(f"Trend: {medium:+.1f}% (declining)")
-    else:
-        signals.append("trend_bad")
-        reasons.append(f"Trend: {medium:+.1f}% (significant)")
+    if cum_pl > 0:
+        add_reason(f"Return +{cum_pl:.1f}%")
+    elif cum_pl < -2:
+        add_reason(f"Return {cum_pl:.1f}% declining")
 
-    # ── Layer C: Short-term noise (low weight) ──
-    if daily < -1.0:
-        signals.append("noise_negative")
-        reasons.append(f"Daily: {daily:+.1f}%")
-    elif daily < -0.3:
-        signals.append("noise_slight")
-
-    # ── AI verdict ──
-    if ai_status in ("strong", "good"):
-        signals.append("ai_positive")
-    elif ai_status in ("weak", "avoid"):
-        signals.append("ai_negative")
-        reasons.append("AI: Negative" if ai_conf != "HIGH" else "AI: Negative (HIGH)")
-    elif ai_status == "watch":
-        signals.append("ai_mixed")
-    elif ai_status == "incomplete" or not ai_status:
-        signals.append("ai_unknown")
-
-    # ── News ──
-    if news in ("negative", "high"):
-        signals.append("news_negative")
-    elif news in ("positive", "low"):
-        signals.append("news_positive")
-    elif news == "medium":
-        signals.append("news_mixed")
-
-    # ── Risk ──
-    if risk_score >= 7:
-        signals.append("high_risk")
-    elif risk_score >= 5:
-        signals.append("elevated_risk")
-
-    # ── Drawdown ──
-    if dd and abs(dd) > 25:
-        signals.append("high_dd")
-
-    # ── Volatility ──
-    if volatility and volatility > 15:
-        signals.append("high_volatility")
-
-    # ── Consistency ──
-    if consistency < 30:
-        signals.append("low_consistency")
-    elif consistency >= 70:
-        signals.append("consistent")
-
-    # ── Allocation ──
-    if alloc < 1.0:
-        signals.append("tiny_alloc")
-
-    # ── Signal groups ──
-    long_positive = {"cum_strong", "cum_good"}
-    long_neutral = {"cum_positive", "cum_flat"}
-    long_negative = {"cum_declining", "cum_bad"}
-
-    secondary_neg = {"ai_negative", "news_negative", "high_risk", "elevated_risk",
-                     "high_dd", "low_consistency", "high_volatility", "trend_declining", "trend_bad"}
-    secondary_pos = {"ai_positive", "news_positive", "consistent", "trend_good", "trend_stable"}
-
-    found_long = {s for s in signals if s in long_positive | long_neutral | long_negative}
-    found_neg2 = {s for s in signals if s in secondary_neg}
-    found_pos2 = {s for s in signals if s in secondary_pos}
+    if trend_declining:
+        add_reason(f"Trend {medium:+.1f}% over 30d")
+    if high_dd:
+        add_reason(f"Drawdown {dd_abs:.0f}% above threshold")
+    if excessive_dd:
+        add_reason(f"Drawdown {dd_abs:.0f}% severe")
+    if low_consistency:
+        add_reason(f"Consistency {consistency}/100 below threshold")
+    if high_risk:
+        add_reason(f"Risk score {risk} above ideal band")
+    if risk < 3 and risk > 0:
+        add_reason(f"Risk {risk} signals under-diversification")
+    if ai_negative and ai_high:
+        add_reason(f"AI negative (HIGH confidence)")
+    elif ai_negative:
+        add_reason(f"AI negative sentiment")
+    if watch_consecutive > 0 and score < 60:
+        add_reason(f"Watch scan {watch_consecutive + 1}")
 
     # ══════════════════════════════════════════════════════════════
-    # CLASSIFICATION — first matching rule wins
+    # CLASSIFICATION — score-first, then deterioration
     # ══════════════════════════════════════════════════════════════
 
-    # ── UNCOPY ──
-    # Only when long-term is genuinely deteriorating across multiple scans
-
-    # 1. Severe cumulative loss
-    if "cum_bad" in signals:
+    # ── UNCOPY: score < 50, or < 60 with HIGH AI + deterioration ──
+    if score < 50:
         bucket = "uncopy"
-        confidence = "High" if len(found_neg2) >= 2 else "Medium"
-
-    # 2. Declining cumulative + declining trend + secondary confirmation
-    elif "cum_declining" in signals and "trend_declining" in signals and len(found_neg2) >= 1:
-        bucket = "uncopy" if watch_consecutive >= 2 else "watch"
-        confidence = "Medium"
-        if bucket == "watch":
-            reasons.append(f"Declining — scan {watch_consecutive + 1}/2 before UNCOPY")
-
-    # 3. Declining cumulative + AI negative HIGH
-    elif "cum_declining" in signals and "ai_negative" in signals and ai_conf == "HIGH":
-        bucket = "uncopy" if watch_consecutive >= 1 else "watch"
         confidence = "High"
-        if bucket == "watch":
-            reasons.append("Emerging decline — monitoring")
+        add_reason(f"Score {score}/100 — Avoid")
 
-    # 4. Trend declining 2+ scans + multiple secondary negatives
-    elif "trend_declining" in signals and len(found_neg2) >= 2:
-        bucket = "uncopy" if watch_consecutive >= 2 else "watch"
-        confidence = "Medium"
-        if bucket == "watch":
-            reasons.append(f"Weakening — scan {watch_consecutive + 1}/2 before UNCOPY")
+    elif score < 60:
+        # Score 50-59: borderline, needs strong evidence
+        if ai_negative and ai_high and trend_declining:
+            bucket = "uncopy"
+            confidence = "Medium"
+        elif watch_consecutive >= 2 and (trend_declining or low_consistency):
+            bucket = "uncopy"
+            confidence = "Medium"
+        elif ai_negative and ai_high:
+            bucket = "uncopy" if watch_consecutive >= 1 else "watch"
+            confidence = "Medium"
+            if bucket == "watch":
+                add_reason("Borderline score — monitoring before decision")
+        elif high_dd or excessive_dd:
+            bucket = "uncopy" if watch_consecutive >= 2 else "watch"
+            confidence = "Medium"
+            if bucket == "watch":
+                add_reason("Elevated drawdown — monitoring")
+        else:
+            bucket = "watch"
+            confidence = "Medium"
+        if bucket == "uncopy":
+            add_reason(f"Score {score}/100 — Average")
 
-    # 5. AI negative persisted 2+ scans + no long-term strength
-    elif "ai_negative" in signals and watch_consecutive >= 2 and not (found_long & long_positive):
-        bucket = "uncopy"
-        confidence = "Medium"
-
-    # ── KEEP ──
-    # Strong long-term performance protects against AI/news noise
-
-    # 6. Strong cumulative — overrides AI/news concerns
-    elif "cum_strong" in signals:
+    # ── KEEP: score >= 75, no severe deterioration ──
+    elif score >= 75:
         bucket = "keep"
-        confidence = "High"
+        confidence = "High" if score >= 80 else "Medium"
+        if severe_decline:
+            bucket = "watch"
+            confidence = "Medium"
+            add_reason("Score strong but severe trend decline")
 
-    # 7. Good cumulative + positive trend or AI
-    elif "cum_good" in signals and (found_pos2 & {"ai_positive", "trend_good", "trend_stable"}):
-        bucket = "keep"
-        confidence = "High"
+    # ── KEEP/WATCH: score 60-74 ──
+    elif score >= 60:
+        # KEEP if stable or positive
+        if trend_positive or (consistency >= 60 and not trend_declining):
+            bucket = "keep"
+            confidence = "Medium"
+        elif trend_declining and watch_consecutive >= 2:
+            bucket = "watch"
+            confidence = "Medium"
+            add_reason("Weakening trend persists")
+        elif excessive_dd:
+            bucket = "watch"
+            confidence = "Medium"
+        elif ai_negative and ai_high:
+            bucket = "watch"
+            confidence = "Medium"
+        elif watch_consecutive >= 1 and trend_declining:
+            bucket = "watch"
+            confidence = "Medium"
+        else:
+            bucket = "watch"
+            confidence = "Medium"
 
-    # 8. Positive cumulative + no serious negatives
-    elif "cum_positive" in signals and not (found_neg2 & {"high_risk", "news_negative"}) and "trend_declining" not in signals:
-        bucket = "keep"
-        confidence = "Medium"
-
-    # 9. Flat cumulative but AI/trend positive
-    elif "cum_flat" in signals and (found_pos2 & {"ai_positive", "trend_good", "trend_stable"}):
-        bucket = "keep"
-        confidence = "Medium"
-
-    # ── WATCH ──
-
-    # 10. Declining cumulative — needs monitoring
-    elif "cum_declining" in signals:
-        bucket = "watch"
-        confidence = "Medium"
-
-    # 11. Declining trend + any negative signal
-    elif "trend_declining" in signals and (found_neg2 - {"trend_declining", "trend_bad"}):
-        bucket = "watch"
-        confidence = "Medium"
-
-    # 12. AI negative with weak long-term
-    elif "ai_negative" in signals and "cum_strong" not in signals and "cum_good" not in signals:
-        bucket = "watch"
-        confidence = "Medium"
-
-    # 13. News negative alone
-    elif "news_negative" in signals:
-        bucket = "watch"
-        confidence = "Medium"
-
-    # 14. Noise-driven — short-term dip only, long-term fine
-    elif "noise_negative" in signals:
-        bucket = "watch"
-        confidence = "Low"
-
-    # 15. Other mixed / no clear signals
+    # ── WATCH: score < 60 (not yet UNCOPY) ──
     else:
         bucket = "watch"
-        confidence = "Low"
+        confidence = "Medium"
 
     if not reasons:
-        reasons.append("Monitoring required")
+        add_reason(f"Score {score}/100")
 
     return bucket, " \u2022 ".join(reasons), confidence
 
@@ -1352,17 +1264,20 @@ def _compute_health_score(r: dict) -> int:
     if cum_pl > 0:
         ret_score = min(cum_pl, 5.0) / 5.0 * 30
 
-    # ── Drawdown score (30%) — smooth quadratic penalty above -20% ──
-    dd_score = 30.0
-    if dd > 20:
-        if dd <= 25:
-            t = (dd - 20) / 5
-            penalty = t * t * 0.4
-            dd_score = 30 * (1 - penalty)
-        else:
-            t = (dd - 25) / 10
-            penalty = 0.4 + t * t * 0.6
-            dd_score = max(0, 30 * (1 - penalty))
+    # ── Drawdown score (30%) — reward ≤10%, accelerate penalty >20% ──
+    if dd <= 10:
+        dd_score = 30.0
+    elif dd <= 20:
+        t = (dd - 10) / 10
+        dd_score = 30 - t * 8
+    elif dd <= 25:
+        t = (dd - 20) / 5
+        dd_score = 22 - t * t * 10
+    elif dd <= 35:
+        t = (dd - 25) / 10
+        dd_score = 12 * (1 - t) ** 2
+    else:
+        dd_score = 0
 
     # ── Risk score (20%) — peaks at 4-5, penalizes both extremes ──
     if not risk or risk == 0:
