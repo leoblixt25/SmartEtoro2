@@ -726,6 +726,7 @@ class TelegramBot:
                         "sharpe_score": t.sharpe_score,
                         "diversification_score": t.diversification_score,
                         "allocation_pct": t.allocation_pct,
+                        "watch_consecutive": t.watch_consecutive or 0,
                     }
 
                     holdings, holdings_source = await get_trader_holdings(
@@ -785,6 +786,7 @@ class TelegramBot:
                             "holdings_source": td.get("_holdings_source", "unknown"),
                             "data_flags": {},
                             "portfolio_concentration": {"warning": "Well diversified"},
+                            "watch_consecutive": td.get("watch_consecutive", 0),
                         })
                 else:
                     # Fall back to rule-based engine
@@ -798,6 +800,22 @@ class TelegramBot:
 
                 summary = _build_health_summary(results, live=freshness, source_label=label, ts=ts, ai_used=bool(ai_results))
                 await self._reply(update, summary)
+
+                # ── Update watch_consecutive in DB ──
+                for r in results:
+                    trader_name = r.get("name") or r.get("trader")
+                    bucket, _, _ = _assess_trader(r, r.get("watch_consecutive", 0))
+                    ct = next((t for t in traders if t.trader_username == trader_name), None)
+                    if ct is None:
+                        continue
+                    if bucket == "watch":
+                        ct.watch_consecutive = (ct.watch_consecutive or 0) + 1
+                        logger.info(f"  WATCH scan ++ {trader_name}: now {ct.watch_consecutive}")
+                    else:
+                        if ct.watch_consecutive:
+                            ct.watch_consecutive = 0
+                            logger.info(f"  Reset watch count for {trader_name}")
+                db.commit()
         except Exception as e:
             logger.error(f"/health error: {e}")
             await self._reply(update, f"Health analysis failed: {e}")
@@ -946,6 +964,157 @@ class TelegramBot:
 
 
 
+def _assess_trader(r: dict, watch_consecutive: int = 0) -> tuple:
+    """Evaluate all signals and return (bucket: str, reason: str, confidence: str).
+
+    bucket: "keep", "watch", "uncopy"
+    reason: bullet-point summary of signals
+    confidence: "High", "Medium", "Low"
+    """
+    ret = r.get("total_return_pct") or 0.0
+    alloc = r.get("allocation_pct") or 0
+    ai_status = (r.get("health_status") or r.get("status", "")).lower()
+    ai_conf = (r.get("confidence") or "LOW").upper()
+    news = r.get("news_analysis", {}).get("impact", "unknown")
+    risk_score = r.get("risk_score") or 0
+    consistency = r.get("consistency_score") or 50
+    volatility = r.get("volatility") or 0
+
+    signals = []
+    reasons = []
+
+    # ── Signal: AI verdict ──
+    if ai_status in ("strong", "good"):
+        signals.append("ai_positive")
+        reasons.append("AI: Positive outlook")
+    elif ai_status in ("weak", "avoid"):
+        signals.append("ai_negative")
+        if ai_conf == "HIGH":
+            reasons.append("AI: Negative (HIGH confidence)")
+        else:
+            reasons.append("AI: Negative outlook")
+    elif ai_status == "watch":
+        signals.append("ai_mixed")
+        reasons.append("AI: Mixed signals")
+    elif ai_status == "incomplete" or not ai_status:
+        signals.append("ai_unknown")
+
+    # ── Signal: Return ──
+    if ret > 2.0:
+        signals.append("strong_return")
+    elif ret > 0.5:
+        signals.append("positive_return")
+        reasons.append("Return: Positive")
+    elif ret > -2.0:
+        if ret < -0.5:
+            signals.append("slight_loss")
+            reasons.append(f"Return: {ret:+.1f}% (minor)")
+    elif ret > -5.0:
+        signals.append("moderate_loss")
+        reasons.append(f"Return: {ret:+.1f}% (declining)")
+    else:
+        signals.append("severe_loss")
+        reasons.append(f"Return: {ret:+.1f}% (severe)")
+
+    # ── Signal: News ──
+    if news in ("negative", "high"):
+        signals.append("news_negative")
+        reasons.append("News: Negative sentiment")
+    elif news in ("positive", "low"):
+        signals.append("news_positive")
+    elif news == "medium":
+        signals.append("news_mixed")
+        reasons.append("News: Mixed sentiment")
+
+    # ── Signal: Risk ──
+    if risk_score >= 7:
+        signals.append("high_risk")
+        reasons.append(f"Risk: Score {risk_score:.0f}/10")
+    elif risk_score >= 5:
+        signals.append("elevated_risk")
+    elif risk_score > 0 and risk_score < 5:
+        pass
+
+    # ── Signal: Volatility ──
+    if volatility and volatility > 15:
+        signals.append("high_volatility")
+        reasons.append(f"Volatility: High ({volatility:.0f}%)")
+
+    # ── Signal: Consistency ──
+    if consistency < 30:
+        signals.append("low_consistency")
+        reasons.append(f"Consistency: Low ({consistency:.0f})")
+    elif consistency >= 70:
+        signals.append("consistent")
+
+    # ── Signal: Allocation (small = likely closing) ──
+    if alloc < 1.0:
+        signals.append("tiny_alloc")
+        reasons.append("Allocation: Minimal (closing?)")
+
+    # ── Classification ──
+    neg_signals = [s for s in signals if s in ("ai_negative", "moderate_loss", "severe_loss", "news_negative", "high_risk", "low_consistency", "high_volatility")]
+    pos_signals = [s for s in signals if s in ("ai_positive", "strong_return", "positive_return", "news_positive", "consistent")]
+
+    # UNCOPY: multiple strong negative signals agree
+    if "severe_loss" in signals:
+        bucket = "uncopy"
+        if "ai_negative" in signals and ai_conf == "HIGH":
+            confidence = "High"
+        else:
+            confidence = "Medium"
+    elif len(neg_signals) >= 2 and ("ai_negative" in signals or "moderate_loss" in signals):
+        if watch_consecutive >= 2:
+            bucket = "uncopy"
+            confidence = "High" if ai_conf == "HIGH" else "Medium"
+        else:
+            bucket = "watch"
+            reasons.append(f"Watch scan {watch_consecutive + 1}/2 before escalation")
+            confidence = "Medium"
+    elif "ai_negative" in signals and ai_conf == "HIGH":
+        bucket = "uncopy"
+        confidence = "High"
+    elif "moderate_loss" in signals and "high_risk" in signals:
+        if watch_consecutive >= 2:
+            bucket = "uncopy"
+            confidence = "Medium"
+        else:
+            bucket = "watch"
+            reasons.append(f"Watch scan {watch_consecutive + 1}/2 before escalation")
+            confidence = "Medium"
+
+    # KEEP: positive signals outweigh negatives
+    elif "strong_return" in signals or ("positive_return" in signals and "ai_positive" in signals):
+        bucket = "keep"
+        confidence = "High"
+    elif "positive_return" in signals and len(neg_signals) == 0:
+        bucket = "keep"
+        confidence = "High"
+    elif "ai_positive" in signals and ("slight_loss" not in signals):
+        bucket = "keep"
+        confidence = "Medium"
+
+    # WATCH: everything else
+    else:
+        bucket = "watch"
+        if len(neg_signals) >= 2 or "slight_loss" in signals:
+            confidence = "Medium"
+        elif len(signals) <= 1:
+            confidence = "Low"
+        else:
+            confidence = "Medium"
+        if not reasons:
+            reasons.append("Flat or mixed signals")
+
+    # Auto-downgrade tiny allocation to WATCH
+    if bucket == "uncopy" and alloc < 1.0:
+        bucket = "watch"
+        confidence = "Low"
+        reasons.append("Minimal allocation — likely already closing")
+
+    return bucket, " \u2022 ".join(reasons), confidence
+
+
 def _build_health_summary(results: list[dict], live: bool = False, source_label: str = "Cached", ts: str = "", ai_used: bool = False) -> str:
     def ret_val(r):
         tr = r.get("total_return_pct")
@@ -971,28 +1140,18 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
     def row(icon, name, ret_s, alloc_s):
         return f"{icon} {name:<12} {ret_s:>6} {alloc_s:>5}"
 
-    _AI_VERDICT = {"Strong": "keep", "Good": "keep", "Watch": "watch", "Incomplete": "watch", "Weak": "uncopy", "Avoid": "uncopy"}
-
     uncopy = []
     keep = []
     watch = []
     for r in results:
-        ret = ret_val(r)
-        alloc = r.get("allocation_pct") or 0
-        name = r.get("trader", "?")
-        risk = r.get("risk_score") or 0
-        ai_status = (r.get("health_status") or r.get("status", "")).title()
-        ai_bucket = _AI_VERDICT.get(ai_status, "")
-        entry = (name, ret, alloc, risk, r)
-        if ai_bucket:
-            {"keep": keep, "watch": watch, "uncopy": uncopy}[ai_bucket].append(entry)
-        elif alloc < 1.0:
-            watch.append(entry)
-        elif ret < -1.0 and alloc > 5:
+        watch_count = r.get("watch_consecutive", 0)
+        bucket, reason, confidence = _assess_trader(r, watch_count)
+        r["_assessed_reason"] = reason
+        r["_assessed_confidence"] = confidence
+        entry = (r.get("trader", "?"), ret_val(r), r.get("allocation_pct") or 0, r.get("risk_score") or 0, r)
+        if bucket == "uncopy":
             uncopy.append(entry)
-        elif ret < -5.0:
-            uncopy.append(entry)
-        elif ret > 0.5:
+        elif bucket == "keep":
             keep.append(entry)
         else:
             watch.append(entry)
@@ -1021,7 +1180,7 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
 
     if uncopy:
         tbl.append(f"\u274c <b>UNCOPY</b>")
-        for name, ret, alloc, risk, _ in uncopy:
+        for name, ret, alloc, risk, r in uncopy:
             tbl.append(row("\U0001f534", name, ret_str(ret), fmt_alloc(alloc)))
             logger.info(f"  UNCOPY {name}: ret={ret:.2f}%, alloc={alloc:.1f}%")
 
@@ -1039,9 +1198,36 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
 
     lines.append(f"<code>{chr(10).join(tbl)}</code>")
 
-    if uncopy:
-        target = next((e for e in uncopy if e[2] >= 1.0), uncopy[0])
-        lines.append(f"\n\U0001f6a8 <b>Action:</b> UNCOPY <b>{target[0]}</b> first ({target[1]:+.1f}% at {target[2]:.1f}%)")
+    # ── Reasons for WATCH and UNCOPY ──
+    watch_reasons = []
+    for name, ret, alloc, risk, r in watch:
+        reason = r.get("_assessed_reason", "")
+        conf = r.get("_assessed_confidence", "Low")
+        if reason:
+            watch_reasons.append(f"\U0001f7e1 <b>{name}</b>: {reason}")
+
+    uncopy_reasons = []
+    for name, ret, alloc, risk, r in uncopy:
+        reason = r.get("_assessed_reason", "")
+        conf = r.get("_assessed_confidence", "Low")
+        if reason:
+            uncopy_reasons.append(f"\U0001f916 <b>{name}</b>: {reason} \u2022 Confidence: {conf}")
+
+    if uncopy_reasons:
+        lines.append(f"\n\u274c <b>Why UNCOPY</b>")
+        lines.extend(uncopy_reasons)
+
+    if watch_reasons:
+        lines.append(f"\n\U0001f50d <b>Why WATCH</b>")
+        lines.extend(watch_reasons)
+
+    # ── Action ──
+    high_conf_uncopy = [e for e in uncopy if e[4].get("_assessed_confidence") == "High"]
+    if high_conf_uncopy:
+        target = next((e for e in high_conf_uncopy if e[2] >= 1.0), high_conf_uncopy[0])
+        lines.append(f"\n\U0001f6a8 <b>Action:</b> UNCOPY <b>{target[0]}</b> ({target[1]:+.1f}% at {target[2]:.1f}%)")
+    elif uncopy:
+        lines.append(f"\n\u26a0\ufe0f <b>Review needed</b> \u2014 potential UNCOPY candidates flagged (needs confirmation)")
     elif not keep:
         lines.append(f"\n\U0001f6a8 <b>No traders making money</b> \u2014 review entire portfolio")
     elif len(keep) >= total * 0.6:
