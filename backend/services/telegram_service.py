@@ -401,33 +401,33 @@ class TelegramBot:
                 health_icon = "\U0001f7e2" if health >= 70 else ("\U0001f7e1" if health >= 40 else "\U0001f534")
 
                 def trow(icon, name, ret_s, alloc_s):
-                    return f"{icon} {name:<14} {ret_s:>7}  {alloc_s:>6}"
+                    return f"{icon} {name:<12} {ret_s:>6} {alloc_s:>5}"
 
                 lines = [f"\U0001f4ca <b>Portfolio Summary</b>\n"]
                 tbl = [
-                    f"{'Metric':<12} {'Value':>14}",
-                    "\u2500" * 28,
-                    f"{'Value':<12} {s}{overview['total_value']:>14,.2f}",
-                    f"{'Cash':<12} {s}{overview['available_cash']:>14,.2f}",
-                    f"{'Return':<12} {ret_icon}{ret:>+14.2f}%",
-                    f"{'Health':<12} {health_icon}{health:>14.0f}/100",
-                    f"{'Traders':<12} {overview['active_traders']:>14}",
-                    f"{'Sentiment':<12} {overview['sentiment']:>14}",
+                    f"{'Metric':<10} {'Value':>14}",
+                    "\u2500" * 26,
+                    f"{'Value':<10} {s}{overview['total_value']:>14,.2f}",
+                    f"{'Cash':<10} {s}{overview['available_cash']:>14,.2f}",
+                    f"{'Return':<10} {ret_icon}{ret:>+14.2f}%",
+                    f"{'Health':<10} {health_icon}{health:>14.0f}/100",
+                    f"{'Traders':<10} {overview['active_traders']:>14}",
+                    f"{'Sentiment':<10} {overview['sentiment']:>14}",
                 ]
                 if overview.get("concentration_risk"):
-                    tbl.append(f"{'Risk':<12} {'Concentrated':>14}")
+                    tbl.append(f"{'Risk':<10} {'Concentrated':>14}")
 
                 lines.append(f"<code>{chr(10).join(tbl)}</code>")
 
                 if traders:
                     lines.append(f"\n\U0001f465 <b>Active Traders ({len(traders)})</b>")
                     trows = [trow("", "Name", "Return", "Alloc")]
-                    trows.append("\u2500" * 32)
+                    trows.append("\u2500" * 28)
                     for t in traders:
                         ret = t["total_return_pct"]
                         ret_s = f"{ret:+.1f}%" if ret >= 0 else f"{ret:.1f}%"
                         pnl_icon = "\U0001f7e2" if ret >= 0 else "\U0001f534"
-                        trows.append(trow(pnl_icon, t["username"][:14], ret_s, f"{t['allocation_pct']:.1f}%"))
+                        trows.append(trow(pnl_icon, t["username"][:12], ret_s, f"{t['allocation_pct']:.1f}%"))
                     lines.append(f"<code>{chr(10).join(trows)}</code>")
 
                 lines.append(f"\n\U0001f4c5 {ts} ({label})")
@@ -456,16 +456,16 @@ class TelegramBot:
                     return
 
                 def trow(icon, name, ret_s, alloc_s):
-                    return f"{icon} {name:<14} {ret_s:>7}  {alloc_s:>6}"
+                    return f"{icon} {name:<12} {ret_s:>6} {alloc_s:>5}"
 
                 lines = [f"\U0001f465 <b>Active Traders ({len(traders)})</b>\n"]
                 trows = [trow("", "Name", "Return", "Alloc")]
-                trows.append("\u2500" * 32)
+                trows.append("\u2500" * 28)
                 for t in traders:
                     ret = t["total_return_pct"]
                     ret_s = f"{ret:+.1f}%" if ret >= 0 else f"{ret:.1f}%"
                     pnl_icon = "\U0001f7e2" if ret >= 0 else "\U0001f534"
-                    trows.append(trow(pnl_icon, t["username"][:14], ret_s, f"{t['allocation_pct']:.1f}%"))
+                    trows.append(trow(pnl_icon, t["username"][:12], ret_s, f"{t['allocation_pct']:.1f}%"))
                 lines.append(f"<code>{chr(10).join(trows)}</code>")
                 lines.append(f"\n\U0001f4c5 {ts} ({label})")
                 await self._reply(update, "\n".join(lines))
@@ -512,15 +512,13 @@ class TelegramBot:
 
                 if traders:
                     lines.append(f"\n\U0001f465 <b>Active Traders ({len(traders)})</b>")
-                    t_tbl = [f"{'Name':<14} {'Alloc':>6} {'Return':>7} {'DD':>6}"]
-                    t_tbl.append("\u2500" * 36)
+                    t_tbl = [f"{'Name':<12} {'Alloc':>5} {'Return':>6}"]
+                    t_tbl.append("\u2500" * 26)
                     for t in traders:
                         ret = t["total_return_pct"]
-                        dd = t.get("max_drawdown", 0)
-                        dd_icon = "\U0001f7e2" if dd < 10 else ("\U0001f7e1" if dd < 18 else "\U0001f534")
                         paused = " \u23f8" if t.get("is_paused") else ""
-                        name = t["username"][:14] + paused
-                        t_tbl.append(f"{name:<14} {t['allocation_pct']:>5.1f}% {ret:>+6.1f}% {dd_icon}{dd:>5.1f}")
+                        name = t["username"][:12] + paused
+                        t_tbl.append(f"{name:<12} {t['allocation_pct']:>4.1f}% {ret:>+5.1f}%")
                     lines.append(f"<code>{chr(10).join(t_tbl)}</code>")
 
                 lines.append(f"\n\U0001f4c5 {ts} ({label})")
@@ -528,41 +526,6 @@ class TelegramBot:
                 await self._reply(update, "\n".join(lines))
         except Exception as e:
             logger.error(f"/overview error: {e}")
-            await self._reply(update, f"Error: {e}")
-
-    async def _cmd_active(self, update: Update, args: list[str]) -> None:
-        from backend.database.connection import db_session
-        from backend.database.models import Portfolio
-        from backend.services.portfolio_service import get_active_traders
-
-        try:
-            with db_session() as db:
-                p = db.query(Portfolio).first()
-                if not p:
-                    await self._reply(update, "No portfolio found.")
-                    return
-                fresh, ts, label = await self._force_sync_before(db, p)
-                traders = get_active_traders(db, p.id)
-
-                if not traders:
-                    await self._reply(update, "No active copied traders.")
-                    return
-
-                lines = [f"\U0001f465 <b>Active Traders ({len(traders)})</b>\n"]
-                tbl = [f"{'Name':<14} {'Alloc':>6} {'Return':>7} {'DD':>6}"]
-                tbl.append("\u2500" * 36)
-                for t in traders:
-                    ret = t["total_return_pct"]
-                    dd = t.get("max_drawdown", 0)
-                    dd_icon = "\U0001f7e2" if dd < 10 else ("\U0001f7e1" if dd < 18 else "\U0001f534")
-                    paused = " \u23f8" if t.get("is_paused") else ""
-                    name = t["username"][:14] + paused
-                    tbl.append(f"{name:<14} {t['allocation_pct']:>5.1f}% {ret:>+6.1f}% {dd_icon}{dd:>5.1f}")
-                lines.append(f"<code>{chr(10).join(tbl)}</code>")
-                lines.append(f"\n\U0001f4c5 {ts} ({label})")
-                await self._reply(update, "\n".join(lines))
-        except Exception as e:
-            logger.error(f"/active error: {e}")
             await self._reply(update, f"Error: {e}")
 
     async def _cmd_discovery(self, update: Update, args: list[str]) -> None:
@@ -1063,7 +1026,9 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
         return f"{pct:.1f}%"
 
     def row(icon, name, ret_s, alloc_s):
-        return f"{icon} {name:<14} {ret_s:>6}  {alloc_s:>5}"
+        return f"{icon} {name:<12} {ret_s:>6} {alloc_s:>5}"
+
+    _AI_VERDICT = {"Strong": "keep", "Good": "keep", "Watch": "watch", "Incomplete": "watch", "Weak": "uncopy", "Avoid": "uncopy"}
 
     uncopy = []
     keep = []
@@ -1073,8 +1038,12 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
         alloc = r.get("allocation_pct") or 0
         name = r.get("trader", "?")
         risk = r.get("risk_score") or 0
+        ai_status = (r.get("health_status") or r.get("status", "")).title()
+        ai_bucket = _AI_VERDICT.get(ai_status, "")
         entry = (name, ret, alloc, risk, r)
-        if alloc < 1.0:
+        if ai_bucket:
+            {"keep": keep, "watch": watch, "uncopy": uncopy}[ai_bucket].append(entry)
+        elif alloc < 1.0:
             watch.append(entry)
         elif ret < -1.0 and alloc > 5:
             uncopy.append(entry)
@@ -1092,8 +1061,8 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
     total = len(results)
     source_tag = source_label if source_label else ("Live" if live else "Cached")
     pos = len(keep)
-    neg = sum(1 for r in results if ret_val(r) < 0)
-    flat = total - pos - neg
+    neg = len(uncopy)
+    flat = len(watch)
 
     logger.info(
         f"HEALTH REPORT: {total} traders ({source_tag}), "
