@@ -1375,6 +1375,43 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
     def row(icon, name, ret_s, alloc_s, ddr_s, score_s):
         return f"{icon} {name:<10.10} {ret_s:>5} {alloc_s:>4} {ddr_s:>4} {score_s:>3}"
 
+    uncopy = []
+    keep = []
+    watch = []
+    for r in results:
+        watch_count = r.get("watch_consecutive", 0)
+        bucket, reason, confidence = _assess_trader(r, watch_count)
+        r["_assessed_reason"] = reason
+        r["_assessed_confidence"] = confidence
+        health_score = _compute_health_score(r)
+        r["_health_score"] = health_score
+        entry = (r.get("trader", "?"), ret_val(r), r.get("allocation_pct") or 0, r.get("risk_score") or 0, r, health_score)
+        if bucket == "uncopy":
+            uncopy.append(entry)
+        elif bucket == "keep":
+            keep.append(entry)
+        else:
+            watch.append(entry)
+
+    uncopy.sort(key=lambda x: -x[5])
+    keep.sort(key=lambda x: -x[5])
+    watch.sort(key=lambda x: -x[5])
+
+    total = len(results)
+    source_tag = source_label if source_label else ("Live" if live else "Cached")
+    pos = len(keep)
+    neg = len(uncopy)
+    flat = len(watch)
+
+    logger.info(
+        f"HEALTH REPORT: {total} traders ({source_tag}), "
+        f"{pos} keep, {neg} uncopy, {flat} watch"
+    )
+
+    ai_tag = " \U0001f916" if ai_used else ""
+    lines = [f"\U0001f4ca <b>Health \u2014 {total} traders</b> ({source_tag}{ai_tag})"]
+    lines.append(f"\u2705 {pos} good  \u274c {neg} bad  \u26aa {flat} flat\n")
+
     tbl = [row("", "Name", "Ret", "Al%", "D/R", "Sc")]
     tbl.append("\u2500" * 32)
 
