@@ -1207,6 +1207,10 @@ def _assess_trader(r: dict, watch_consecutive: int = 0) -> tuple:
             bucket = "watch"
             reasons.append(f"Watch scan {watch_consecutive + 1}/2 before escalation")
             confidence = "Medium"
+    elif "ai_negative" in signals and watch_consecutive >= 2:
+        bucket = "uncopy"
+        confidence = "Medium"
+        reasons.append("AI: Negative persisted across scans")
     elif "ai_negative" in signals and ai_conf == "HIGH":
         bucket = "uncopy"
         confidence = "High"
