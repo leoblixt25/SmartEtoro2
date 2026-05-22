@@ -1101,156 +1101,231 @@ class TelegramBot:
 
 
 def _assess_trader(r: dict, watch_consecutive: int = 0) -> tuple:
-    """Evaluate all signals and return (bucket: str, reason: str, confidence: str).
+    """Evaluate trader health with 3-layer performance analysis.
 
-    bucket: "keep", "watch", "uncopy"
-    reason: bullet-point summary of signals
-    confidence: "High", "Medium", "Low"
+    Layer A (50-60%): Long-term cumulative P/L — the primary signal.
+    Layer B (25-30%): Medium-term trend — detecting momentum shifts.
+    Layer C (10-20%): Short-term movement — treated as noise unless persistent.
+
+    Acts like a patient portfolio manager: long-term quality >> daily noise.
     """
-    ret = r.get("total_return_pct") or 0.0
+    # ── Layer A: Long-term cumulative P/L ──
+    cum_pl = r.get("total_return_pct") or 0.0
+
+    # ── Layer B: Medium-term trend (last 7-30 days) ──
+    perf = r.get("performance", {})
+    monthly = perf.get("month") or 0.0
+    weekly = perf.get("week") or 0.0
+    medium = monthly or weekly or 0.0
+
+    # ── Layer C: Short-term noise (daily fluctuations) ──
+    daily = perf.get("day") or 0.0
+
     alloc = r.get("allocation_pct") or 0
     ai_status = (r.get("health_status") or r.get("status", "")).lower()
     ai_conf = (r.get("confidence") or "LOW").upper()
     news = r.get("news_analysis", {}).get("impact", "unknown")
-    risk_score = r.get("risk_score") or 0
+    risk_score = r.get("real_risk") or r.get("risk_score") or 0
+    dd = r.get("real_dd") or 0
     consistency = r.get("consistency_score") or 50
     volatility = r.get("volatility") or 0
 
     signals = []
     reasons = []
 
-    # ── Signal: AI verdict ──
+    # ── Layer A: Long-term cumulative P/L ──
+    if cum_pl > 5.0:
+        signals.append("cum_strong")
+        reasons.append(f"Long: +{cum_pl:.1f}%")
+    elif cum_pl > 2.0:
+        signals.append("cum_good")
+        reasons.append(f"Long: +{cum_pl:.1f}%")
+    elif cum_pl > 0.5:
+        signals.append("cum_positive")
+    elif cum_pl > -2.0:
+        signals.append("cum_flat")
+    elif cum_pl > -5.0:
+        signals.append("cum_declining")
+        reasons.append(f"Long: {cum_pl:.1f}%")
+    else:
+        signals.append("cum_bad")
+        reasons.append(f"Long: {cum_pl:.1f}% (severe)")
+
+    # ── Layer B: Medium-term trend ──
+    if medium > 2.0:
+        signals.append("trend_good")
+        reasons.append(f"Trend: +{medium:.1f}%")
+    elif medium > 0.5:
+        signals.append("trend_stable")
+    elif medium > -1.0:
+        signals.append("trend_slight")
+        if medium < -0.3:
+            reasons.append(f"Trend: {medium:+.1f}%")
+    elif medium > -3.0:
+        signals.append("trend_declining")
+        reasons.append(f"Trend: {medium:+.1f}% (declining)")
+    else:
+        signals.append("trend_bad")
+        reasons.append(f"Trend: {medium:+.1f}% (significant)")
+
+    # ── Layer C: Short-term noise (low weight) ──
+    if daily < -1.0:
+        signals.append("noise_negative")
+        reasons.append(f"Daily: {daily:+.1f}%")
+    elif daily < -0.3:
+        signals.append("noise_slight")
+
+    # ── AI verdict ──
     if ai_status in ("strong", "good"):
         signals.append("ai_positive")
-        reasons.append("AI: Positive outlook")
     elif ai_status in ("weak", "avoid"):
         signals.append("ai_negative")
-        if ai_conf == "HIGH":
-            reasons.append("AI: Negative (HIGH confidence)")
-        else:
-            reasons.append("AI: Negative outlook")
+        reasons.append("AI: Negative" if ai_conf != "HIGH" else "AI: Negative (HIGH)")
     elif ai_status == "watch":
         signals.append("ai_mixed")
-        reasons.append("AI: Mixed signals")
     elif ai_status == "incomplete" or not ai_status:
         signals.append("ai_unknown")
 
-    # ── Signal: Return ──
-    if ret > 2.0:
-        signals.append("strong_return")
-    elif ret > 0.5:
-        signals.append("positive_return")
-        reasons.append("Return: Positive")
-    elif ret > -2.0:
-        if ret < -0.5:
-            signals.append("slight_loss")
-            reasons.append(f"Return: {ret:+.1f}% (minor)")
-    elif ret > -5.0:
-        signals.append("moderate_loss")
-        reasons.append(f"Return: {ret:+.1f}% (declining)")
-    else:
-        signals.append("severe_loss")
-        reasons.append(f"Return: {ret:+.1f}% (severe)")
-
-    # ── Signal: News ──
+    # ── News ──
     if news in ("negative", "high"):
         signals.append("news_negative")
-        reasons.append("News: Negative sentiment")
     elif news in ("positive", "low"):
         signals.append("news_positive")
     elif news == "medium":
         signals.append("news_mixed")
-        reasons.append("News: Mixed sentiment")
 
-    # ── Signal: Risk ──
+    # ── Risk ──
     if risk_score >= 7:
         signals.append("high_risk")
-        reasons.append(f"Risk: Score {risk_score:.0f}/10")
     elif risk_score >= 5:
         signals.append("elevated_risk")
-    elif risk_score > 0 and risk_score < 5:
-        pass
 
-    # ── Signal: Volatility ──
+    # ── Drawdown ──
+    if dd and abs(dd) > 25:
+        signals.append("high_dd")
+
+    # ── Volatility ──
     if volatility and volatility > 15:
         signals.append("high_volatility")
-        reasons.append(f"Volatility: High ({volatility:.0f}%)")
 
-    # ── Signal: Consistency ──
+    # ── Consistency ──
     if consistency < 30:
         signals.append("low_consistency")
-        reasons.append(f"Consistency: Low ({consistency:.0f})")
     elif consistency >= 70:
         signals.append("consistent")
 
-    # ── Signal: Allocation (small = likely closing) ──
+    # ── Allocation ──
     if alloc < 1.0:
         signals.append("tiny_alloc")
-        reasons.append("Allocation: Minimal (closing?)")
 
-    # ── Classification ──
-    neg_signals = [s for s in signals if s in ("ai_negative", "moderate_loss", "severe_loss", "news_negative", "high_risk", "low_consistency", "high_volatility")]
-    pos_signals = [s for s in signals if s in ("ai_positive", "strong_return", "positive_return", "news_positive", "consistent")]
+    # ── Signal groups ──
+    long_positive = {"cum_strong", "cum_good"}
+    long_neutral = {"cum_positive", "cum_flat"}
+    long_negative = {"cum_declining", "cum_bad"}
 
-    # UNCOPY: multiple strong negative signals agree
-    if "severe_loss" in signals:
+    secondary_neg = {"ai_negative", "news_negative", "high_risk", "elevated_risk",
+                     "high_dd", "low_consistency", "high_volatility", "trend_declining", "trend_bad"}
+    secondary_pos = {"ai_positive", "news_positive", "consistent", "trend_good", "trend_stable"}
+
+    found_long = {s for s in signals if s in long_positive | long_neutral | long_negative}
+    found_neg2 = {s for s in signals if s in secondary_neg}
+    found_pos2 = {s for s in signals if s in secondary_pos}
+
+    # ══════════════════════════════════════════════════════════════
+    # CLASSIFICATION — first matching rule wins
+    # ══════════════════════════════════════════════════════════════
+
+    # ── UNCOPY ──
+    # Only when long-term is genuinely deteriorating across multiple scans
+
+    # 1. Severe cumulative loss
+    if "cum_bad" in signals:
         bucket = "uncopy"
-        if "ai_negative" in signals and ai_conf == "HIGH":
-            confidence = "High"
-        else:
-            confidence = "Medium"
-    elif len(neg_signals) >= 2 and ("ai_negative" in signals or "moderate_loss" in signals):
-        if watch_consecutive >= 2:
-            bucket = "uncopy"
-            confidence = "High" if ai_conf == "HIGH" else "Medium"
-        else:
-            bucket = "watch"
-            reasons.append(f"Watch scan {watch_consecutive + 1}/2 before escalation")
-            confidence = "Medium"
-    elif "ai_negative" in signals and watch_consecutive >= 2:
+        confidence = "High" if len(found_neg2) >= 2 else "Medium"
+
+    # 2. Declining cumulative + declining trend + secondary confirmation
+    elif "cum_declining" in signals and "trend_declining" in signals and len(found_neg2) >= 1:
+        bucket = "uncopy" if watch_consecutive >= 2 else "watch"
+        confidence = "Medium"
+        if bucket == "watch":
+            reasons.append(f"Declining — scan {watch_consecutive + 1}/2 before UNCOPY")
+
+    # 3. Declining cumulative + AI negative HIGH
+    elif "cum_declining" in signals and "ai_negative" in signals and ai_conf == "HIGH":
+        bucket = "uncopy" if watch_consecutive >= 1 else "watch"
+        confidence = "High"
+        if bucket == "watch":
+            reasons.append("Emerging decline — monitoring")
+
+    # 4. Trend declining 2+ scans + multiple secondary negatives
+    elif "trend_declining" in signals and len(found_neg2) >= 2:
+        bucket = "uncopy" if watch_consecutive >= 2 else "watch"
+        confidence = "Medium"
+        if bucket == "watch":
+            reasons.append(f"Weakening — scan {watch_consecutive + 1}/2 before UNCOPY")
+
+    # 5. AI negative persisted 2+ scans + no long-term strength
+    elif "ai_negative" in signals and watch_consecutive >= 2 and not (found_long & long_positive):
         bucket = "uncopy"
         confidence = "Medium"
-        reasons.append("AI: Negative persisted across scans")
-    elif "ai_negative" in signals and ai_conf == "HIGH":
-        bucket = "uncopy"
-        confidence = "High"
-    elif "moderate_loss" in signals and "high_risk" in signals:
-        if watch_consecutive >= 2:
-            bucket = "uncopy"
-            confidence = "Medium"
-        else:
-            bucket = "watch"
-            reasons.append(f"Watch scan {watch_consecutive + 1}/2 before escalation")
-            confidence = "Medium"
 
-    # KEEP: positive signals outweigh negatives
-    elif "strong_return" in signals or ("positive_return" in signals and "ai_positive" in signals):
+    # ── KEEP ──
+    # Strong long-term performance protects against AI/news noise
+
+    # 6. Strong cumulative — overrides AI/news concerns
+    elif "cum_strong" in signals:
         bucket = "keep"
         confidence = "High"
-    elif "positive_return" in signals and len(neg_signals) == 0:
+
+    # 7. Good cumulative + positive trend or AI
+    elif "cum_good" in signals and (found_pos2 & {"ai_positive", "trend_good", "trend_stable"}):
         bucket = "keep"
         confidence = "High"
-    elif "ai_positive" in signals and ("slight_loss" not in signals):
+
+    # 8. Positive cumulative + no serious negatives
+    elif "cum_positive" in signals and not (found_neg2 & {"high_risk", "news_negative"}) and "trend_declining" not in signals:
         bucket = "keep"
         confidence = "Medium"
 
-    # WATCH: everything else
-    else:
+    # 9. Flat cumulative but AI/trend positive
+    elif "cum_flat" in signals and (found_pos2 & {"ai_positive", "trend_good", "trend_stable"}):
+        bucket = "keep"
+        confidence = "Medium"
+
+    # ── WATCH ──
+
+    # 10. Declining cumulative — needs monitoring
+    elif "cum_declining" in signals:
         bucket = "watch"
-        if len(neg_signals) >= 2 or "slight_loss" in signals:
-            confidence = "Medium"
-        elif len(signals) <= 1:
-            confidence = "Low"
-        else:
-            confidence = "Medium"
-        if not reasons:
-            reasons.append("Flat or mixed signals")
+        confidence = "Medium"
 
-    # Auto-downgrade tiny allocation to WATCH
-    if bucket == "uncopy" and alloc < 1.0:
+    # 11. Declining trend + any negative signal
+    elif "trend_declining" in signals and (found_neg2 - {"trend_declining", "trend_bad"}):
+        bucket = "watch"
+        confidence = "Medium"
+
+    # 12. AI negative with weak long-term
+    elif "ai_negative" in signals and "cum_strong" not in signals and "cum_good" not in signals:
+        bucket = "watch"
+        confidence = "Medium"
+
+    # 13. News negative alone
+    elif "news_negative" in signals:
+        bucket = "watch"
+        confidence = "Medium"
+
+    # 14. Noise-driven — short-term dip only, long-term fine
+    elif "noise_negative" in signals:
         bucket = "watch"
         confidence = "Low"
-        reasons.append("Minimal allocation — likely already closing")
+
+    # 15. Other mixed / no clear signals
+    else:
+        bucket = "watch"
+        confidence = "Low"
+
+    if not reasons:
+        reasons.append("Monitoring required")
 
     return bucket, " \u2022 ".join(reasons), confidence
 
