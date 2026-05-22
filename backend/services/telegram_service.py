@@ -1152,10 +1152,12 @@ def _assess_trader(r: dict, watch_consecutive: int = 0) -> tuple:
 
     if trend_declining:
         add_reason(f"Trend {medium:+.1f}% over 30d")
-    if high_dd:
-        add_reason(f"Drawdown {dd_abs:.0f}% above threshold")
     if excessive_dd:
         add_reason(f"Drawdown {dd_abs:.0f}% severe")
+    elif high_dd:
+        add_reason(f"Drawdown {dd_abs:.0f}% above threshold")
+    elif dd_abs >= 15:
+        add_reason(f"Drawdown {dd_abs:.0f}% approaching penalty threshold")
     if low_consistency:
         add_reason(f"Consistency {consistency}/100 below threshold")
     if high_risk:
@@ -1264,18 +1266,18 @@ def _compute_health_score(r: dict) -> int:
     if cum_pl > 0:
         ret_score = min(cum_pl, 5.0) / 5.0 * 30
 
-    # ── Drawdown score (30%) — reward ≤10%, accelerate penalty >20% ──
-    if dd <= 10:
+    # ── Drawdown score (30%) — reward low DD, accelerate penalty >15% ──
+    if dd <= 5:
         dd_score = 30.0
-    elif dd <= 20:
-        t = (dd - 10) / 10
-        dd_score = 30 - t * 8
+    elif dd <= 15:
+        t = (dd - 5) / 10
+        dd_score = 30 - t * 10
     elif dd <= 25:
-        t = (dd - 20) / 5
-        dd_score = 22 - t * t * 10
+        t = (dd - 15) / 10
+        dd_score = 20 - t * 12
     elif dd <= 35:
         t = (dd - 25) / 10
-        dd_score = 12 * (1 - t) ** 2
+        dd_score = 8 * (1 - t)
     else:
         dd_score = 0
 
@@ -1321,6 +1323,11 @@ def _compute_health_score(r: dict) -> int:
     ai_conf_score = {"HIGH": 5, "MEDIUM": 3, "LOW": 1}.get(ai_conf, 2)
 
     total = int(round(ret_score + dd_score + risk_score + cons_score + ai_conf_score))
+
+    # ── Negative return floor penalty ──
+    if cum_pl < 0:
+        total -= int(round(min(30, abs(cum_pl) * 10)))
+
     return max(0, min(100, total))
 
 
