@@ -928,7 +928,7 @@ class TelegramBot:
                     try:
                         m = await etoro_client.get_trader_metrics(name)
                         if m.get("available"):
-                            r["real_dd"] = m.get("max_drawdown")
+                            r["real_dd"] = m.get("peak_to_valley") or m.get("max_drawdown")
                             r["real_risk"] = m.get("risk_score")
                     except Exception:
                         pass
