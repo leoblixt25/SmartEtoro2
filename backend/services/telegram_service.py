@@ -922,6 +922,18 @@ class TelegramBot:
                     await self._reply(update, "Health analysis complete. No signals to report.")
                     return
 
+                # Enrich with real DD/risk from tradeinfo API
+                async def _enrich_risk(r):
+                    name = r.get("name") or r.get("trader")
+                    try:
+                        m = await etoro_client.get_trader_metrics(name)
+                        if m.get("available"):
+                            r["real_dd"] = m.get("max_drawdown")
+                            r["real_risk"] = m.get("risk_score")
+                    except Exception:
+                        pass
+                await asyncio.gather(*[_enrich_risk(r) for r in results])
+
                 summary = _build_health_summary(results, live=freshness, source_label=label, ts=ts, ai_used=bool(ai_results))
                 await self._reply(update, summary)
 
@@ -1261,8 +1273,21 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
     def fmt_alloc(pct):
         return f"{pct:.1f}%"
 
-    def row(icon, name, ret_s, alloc_s):
-        return f"{icon} {name:<12.12} {ret_s:>6} {alloc_s:>5}"
+    def fmt_dd_rs(r):
+        dd = r.get("real_dd")
+        rs = r.get("real_risk")
+        if dd is not None:
+            dds = f"{dd:.0f}"
+        else:
+            dds = "-"
+        if rs is not None:
+            rss = f"{rs:.0f}"
+        else:
+            rss = "-"
+        return f"{dds}/{rss}"
+
+    def row(icon, name, ret_s, alloc_s, dd_rs_s):
+        return f"{icon} {name:<12.12} {ret_s:>6} {alloc_s:>5} {dd_rs_s:>5}"
 
     uncopy = []
     keep = []
@@ -1301,25 +1326,25 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
     lines = [f"\U0001f4ca <b>Health \u2014 {total} traders</b> ({source_tag}{ai_tag})"]
     lines.append(f"\u2705 {pos} good  \u274c {neg} bad  \u26aa {flat} flat\n")
 
-    tbl = [row("", "Name", "Return", "Alloc")]
-    tbl.append("\u2500" * 32)
+    tbl = [row("", "Name", "Return", "Alloc", "DD/R")]
+    tbl.append("\u2500" * 38)
 
     if uncopy:
         tbl.append(f"\u274c <b>UNCOPY</b>")
         for name, ret, alloc, risk, r in uncopy:
-            tbl.append(row("\U0001f534", name, ret_str(ret), fmt_alloc(alloc)))
+            tbl.append(row("\U0001f534", name, ret_str(ret), fmt_alloc(alloc), fmt_dd_rs(r)))
             logger.info(f"  UNCOPY {name}: ret={ret:.2f}%, alloc={alloc:.1f}%")
 
     if keep:
         tbl.append(f"\u2705 <b>KEEP</b>")
         for name, ret, alloc, risk, r in keep:
-            tbl.append(row("\U0001f7e2", name, ret_str(ret), fmt_alloc(alloc)))
+            tbl.append(row("\U0001f7e2", name, ret_str(ret), fmt_alloc(alloc), fmt_dd_rs(r)))
             logger.info(f"  KEEP {name}: ret={ret:.2f}%, alloc={alloc:.1f}%")
 
     if watch:
         tbl.append(f"\U0001f50d <b>WATCH</b>")
         for name, ret, alloc, risk, r in watch:
-            tbl.append(row("\U0001f7e1", name, ret_str(ret), fmt_alloc(alloc)))
+            tbl.append(row("\U0001f7e1", name, ret_str(ret), fmt_alloc(alloc), fmt_dd_rs(r)))
             logger.info(f"  WATCH {name}: ret={ret:.2f}%, alloc={alloc:.1f}%")
 
     lines.append(f"<code>{chr(10).join(tbl)}</code>")
