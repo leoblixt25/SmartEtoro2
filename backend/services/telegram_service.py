@@ -1357,13 +1357,13 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
         return f"{v:+.1f}%" if v else "0.0%"
 
     def fmt_alloc(pct):
-        return f"{pct:.1f}%"
+        return f"{pct:.0f}%"
 
     def fmt_dd_rs(r):
         dd = r.get("real_dd")
         rs = r.get("real_risk")
         if dd is not None:
-            dds = f"{dd:.0f}"
+            dds = f"{abs(dd):.0f}"
         else:
             dds = "-"
         if rs is not None:
@@ -1372,48 +1372,11 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
             rss = "-"
         return f"{dds}/{rss}"
 
-    def row(icon, name, ret_s, alloc_s, dd_rs_s, score_s):
-        return f"{icon} {name:<12.12} {ret_s:>6} {alloc_s:>5} {dd_rs_s:>5} {score_s:>3}"
+    def row(icon, name, ret_s, alloc_s, ddr_s, score_s):
+        return f"{icon} {name:<10.10} {ret_s:>5} {alloc_s:>4} {ddr_s:>4} {score_s:>3}"
 
-    uncopy = []
-    keep = []
-    watch = []
-    for r in results:
-        watch_count = r.get("watch_consecutive", 0)
-        bucket, reason, confidence = _assess_trader(r, watch_count)
-        r["_assessed_reason"] = reason
-        r["_assessed_confidence"] = confidence
-        health_score = _compute_health_score(r)
-        r["_health_score"] = health_score
-        entry = (r.get("trader", "?"), ret_val(r), r.get("allocation_pct") or 0, r.get("risk_score") or 0, r, health_score)
-        if bucket == "uncopy":
-            uncopy.append(entry)
-        elif bucket == "keep":
-            keep.append(entry)
-        else:
-            watch.append(entry)
-
-    uncopy.sort(key=lambda x: -x[5])
-    keep.sort(key=lambda x: -x[5])
-    watch.sort(key=lambda x: -x[5])
-
-    total = len(results)
-    source_tag = source_label if source_label else ("Live" if live else "Cached")
-    pos = len(keep)
-    neg = len(uncopy)
-    flat = len(watch)
-
-    logger.info(
-        f"HEALTH REPORT: {total} traders ({source_tag}), "
-        f"{pos} keep, {neg} uncopy, {flat} watch"
-    )
-
-    ai_tag = " \U0001f916" if ai_used else ""
-    lines = [f"\U0001f4ca <b>Health \u2014 {total} traders</b> ({source_tag}{ai_tag})"]
-    lines.append(f"\u2705 {pos} good  \u274c {neg} bad  \u26aa {flat} flat\n")
-
-    tbl = [row("", "Name", "Return", "Alloc", "DD/R", "Sco")]
-    tbl.append("\u2500" * 42)
+    tbl = [row("", "Name", "Ret", "Al%", "D/R", "Sc")]
+    tbl.append("\u2500" * 32)
 
     if uncopy:
         tbl.append(f"\u274c <b>UNCOPY</b>")
