@@ -154,6 +154,17 @@ class TelegramBot:
             return
         if not update.message or not update.message.text:
             return
+        # Deduplicate: skip if we already processed this update_id
+        update_id = update.update_id
+        if hasattr(self, '_processed_updates') and update_id in self._processed_updates:
+            logger.debug(f"Skipping duplicate update_id={update_id}")
+            return
+        if not hasattr(self, '_processed_updates'):
+            self._processed_updates = set()
+        self._processed_updates.add(update_id)
+        # Trim old IDs (keep last 100)
+        if len(self._processed_updates) > 100:
+            self._processed_updates = set(list(self._processed_updates)[-100:])
         user_id = update.effective_user.id if update.effective_user else None
         if not user_id or not self._is_authorized(user_id):
             return
