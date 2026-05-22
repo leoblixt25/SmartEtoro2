@@ -1253,8 +1253,12 @@ def _assess_trader(r: dict, watch_consecutive: int = 0) -> tuple:
 
     # ── KEEP/WATCH: score 60-74 ──
     elif score >= 60:
-        # KEEP if stable or positive
-        if trend_positive or (consistency >= 60 and not trend_declining):
+        # Negative return + score < 65: uncopy — persistent loss, not just volatility
+        if cum_pl < 0 and score < 65:
+            bucket = "uncopy"
+            confidence = "Medium"
+            add_reason(f"Negative return with score {score}/100")
+        elif trend_positive or (consistency >= 60 and not trend_declining):
             bucket = "keep"
             confidence = "Medium"
         elif trend_declining and watch_consecutive >= 2:
