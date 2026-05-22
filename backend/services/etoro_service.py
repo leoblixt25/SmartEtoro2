@@ -1362,10 +1362,21 @@ class EToroSyncService:
                 available_cash = float(v)
                 break
 
+        # ── Log all top-level keys from clientPortfolio for debugging ──
+        logger.info(f"RAW CP keys: {list(cp.keys())}")
+
+        # Also log raw values for key fields
+        for k in ("equity", "netValue", "NetValue", "totalValue", "TotalValue", "NetLiquidatingValue",
+                  "availableCash", "cash", "credit", "nonInvested", "freeCash", "currentInvestment"):
+            v = cp.get(k)
+            if v is not None:
+                logger.info(f"  CP field '{k}' = {v} (type={type(v).__name__})")
+
         # ── Try multiple API equity field names ────────────────────────────
         api_equity = None
         equity_field = None
-        for field in ("equity", "netValue", "NetValue", "totalValue", "TotalValue", "NetLiquidatingValue"):
+        for field in ("equity", "netValue", "NetValue", "totalValue", "TotalValue", "NetLiquidatingValue",
+                      "currentValue", "CurrentValue", "portfolioValue", "PortfolioValue", "accountEquity"):
             v = cp.get(field)
             if v is not None and float(v) > 0:
                 api_equity = float(v)
@@ -1377,16 +1388,19 @@ class EToroSyncService:
             equity_source = f"api_{equity_field}"
         else:
             # Fallback: sum of mirror current values + direct positions + cash
-            # Mirror current value = initialInvestment + unrealizedPnL only
-            # (NOT including closedPositionsNetProfit — already paid out)
+            # Mirror current value = position amounts + unrealizedPnL only
+            # (NOT using API initialInvestment — it's stale for added funds)
             sum_mirror_current = 0.0
             for m in mirrors:
-                mirror_init = m.get("initialInvestment", 0.0)
+                mirror_amounts = sum(
+                    pos.get("amount", 0.0)
+                    for pos in m.get("positions", [])
+                )
                 mirror_upnl = sum(
                     pos.get("unrealizedPnL", {}).get("pnL", 0.0)
                     for pos in m.get("positions", [])
                 )
-                sum_mirror_current += mirror_init + mirror_upnl
+                sum_mirror_current += mirror_amounts + mirror_upnl
 
             # Direct positions current value = amount + unrealizedPnL
             sum_direct_current = 0.0

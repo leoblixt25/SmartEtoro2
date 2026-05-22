@@ -796,7 +796,7 @@ class TelegramBot:
                     await self._reply(update, "Health analysis complete. No signals to report.")
                     return
 
-                summary = _build_health_summary(results, live=freshness, source_label=label, ts=ts)
+                summary = _build_health_summary(results, live=freshness, source_label=label, ts=ts, ai_used=bool(ai_results))
                 await self._reply(update, summary)
         except Exception as e:
             logger.error(f"/health error: {e}")
@@ -946,7 +946,7 @@ class TelegramBot:
 
 
 
-def _build_health_summary(results: list[dict], live: bool = False, source_label: str = "Cached", ts: str = "") -> str:
+def _build_health_summary(results: list[dict], live: bool = False, source_label: str = "Cached", ts: str = "", ai_used: bool = False) -> str:
     def ret_val(r):
         tr = r.get("total_return_pct")
         if tr is not None and tr != 0:
@@ -1012,7 +1012,8 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
         f"{pos} keep, {neg} uncopy, {flat} watch"
     )
 
-    lines = [f"\U0001f4ca <b>Health \u2014 {total} traders</b> ({source_tag})"]
+    ai_tag = " \U0001f916" if ai_used else ""
+    lines = [f"\U0001f4ca <b>Health \u2014 {total} traders</b> ({source_tag}{ai_tag})"]
     lines.append(f"\u2705 {pos} good  \u274c {neg} bad  \u26aa {flat} flat\n")
 
     tbl = [row("", "Name", "Return", "Alloc")]
