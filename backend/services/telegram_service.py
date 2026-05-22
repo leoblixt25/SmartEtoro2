@@ -928,15 +928,16 @@ class TelegramBot:
                     try:
                         m = await etoro_client.get_trader_metrics(name)
                         if m.get("available"):
-                            monthly_dd = m.get("max_drawdown")
+                            dd_val = m.get("max_drawdown")
+                            dd_field = m.get("dd_field")
                             yearly_dd = m.get("peak_to_valley")
-                            if monthly_dd is not None:
-                                r["real_dd"] = abs(monthly_dd)
-                                r["dd_source"] = "monthly"
-                                r["dd_yearly"] = abs(yearly_dd) if yearly_dd is not None else None
+                            if dd_val is not None:
+                                r["real_dd"] = abs(dd_val)
+                                r["dd_source"] = dd_field or "peakToValley"
+                                r["dd_yearly"] = abs(yearly_dd) if yearly_dd is not None and dd_field != "peakToValley" else None
                             elif yearly_dd is not None:
                                 r["real_dd"] = abs(yearly_dd)
-                                r["dd_source"] = "yearly"
+                                r["dd_source"] = "peakToValley"
                                 r["dd_yearly"] = None
                             else:
                                 r["dd_source"] = "missing"
@@ -1174,10 +1175,10 @@ def _assess_trader(r: dict, watch_consecutive: int = 0) -> tuple:
         add_reason(f"Drawdown {dd_abs:.0f}% approaching penalty threshold")
     if dd_abs > 0 and not dd_confident:
         add_reason("DD source unavailable — score may be unreliable")
-    elif dd_source == "yearly":
-        add_reason("DD from yearly peak-to-valley (monthly unavailable)")
+    elif dd_source == "peakToValley":
+        add_reason("DD from 2-year peak-to-valley (weekly unavailable)")
     if dd_yearly is not None and dd_yearly > dd_abs * 1.5 and dd_yearly > 15:
-        add_reason(f"Past yearly peak {dd_yearly:.0f}% (recovered)")
+        add_reason(f"Past 2-year peak {dd_yearly:.0f}% (recovered)")
     if low_consistency:
         add_reason(f"Consistency {consistency}/100 below threshold")
     if high_risk:
@@ -1495,12 +1496,12 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
         ds = r.get("dd_source", "unknown")
         dy = r.get("dd_yearly")
         name = r.get("trader", "?")
-        if ds == "yearly":
-            dd_warnings.append(f"\u26a0\ufe0f {name}: DD from yearly peak-to-valley (monthly unavailable)")
+        if ds == "peakToValley":
+            dd_warnings.append(f"\u26a0\ufe0f {name}: DD from 2-year peak-to-valley (weekly unavailable)")
         elif ds == "missing":
             dd_warnings.append(f"\u26a0\ufe0f {name}: DD source unavailable")
-        elif ds == "monthly" and dy is not None and dy > abs(r.get("real_dd") or 0) * 1.5 and dy > 15:
-            dd_warnings.append(f"\U0001f7e1 {name}: Current DD {abs(r.get('real_dd') or 0):.0f}%, past peak {dy:.0f}%")
+        elif ds in ("weeklyDd", "dailyDd") and dy is not None and dy > abs(r.get("real_dd") or 0) * 1.5 and dy > 15:
+            dd_warnings.append(f"\U0001f7e1 {name}: Current DD {abs(r.get('real_dd') or 0):.0f}%, 2-year peak {dy:.0f}%")
     if dd_warnings:
         lines.append(f"\n\U0001f4cb <b>DD Notes</b>")
         lines.extend(dd_warnings)

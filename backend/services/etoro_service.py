@@ -623,16 +623,21 @@ class EToroAPIClient:
 
             gain_raw = tradeinfo.get("gainPerc") or tradeinfo.get("gain")
             risk_raw = tradeinfo.get("riskScore")
-            # Try multiple field name patterns for monthly drawdown
+            # Drawdown fields from eToro tradeinfo API:
+            #   dailyDd   — daily max drawdown
+            #   weeklyDd  — weekly max drawdown
+            #   peakToValley — peak-to-valley over the query period (LastTwoYears)
             dd_raw = None
-            for dd_field in ("maxMonthlyDrawdown", "MaxMonthlyDrawdown", "max_monthly_drawdown", "maxDrawdown", "drawdown"):
+            dd_field_name = None
+            for dd_field in ("weeklyDd", "dailyDd", "peakToValley"):
                 v = tradeinfo.get(dd_field)
                 if v is not None:
                     dd_raw = v
-                    logger.info("Monthly DD for %s: field='%s' value=%s", username, dd_field, v)
+                    dd_field_name = dd_field
+                    logger.info("DD for %s: field='%s' value=%s", username, dd_field, v)
                     break
             if dd_raw is None:
-                logger.info("No monthly DD field found for %s. Keys: %s", username, resp_keys)
+                logger.info("No DD field found for %s. Keys: %s", username, resp_keys)
             vol_raw = tradeinfo.get("volatility")
             avg_raw = tradeinfo.get("avgReturn")
 
@@ -698,6 +703,7 @@ class EToroAPIClient:
                 "avg_return": float(avg_raw) if avg_raw is not None else None,
                 "risk_score": float(risk_raw) if risk_raw is not None and risk_raw != 0 else None,
                 "max_drawdown": float(dd_raw) if dd_raw is not None else None,
+                "dd_field": dd_field_name,
                 "volatility": float(vol_raw) if vol_raw is not None else None,
                 "total_return_pct": float(gain_raw) if gain_raw is not None else None,
                 "is_copyable": bool(is_copyable),
