@@ -33,13 +33,15 @@ def classify_instrument(symbol: str) -> str:
     return "stock"
 
 
-def parse_holdings_from_mirrors(mirrors: List[Dict]) -> Dict[str, List[Dict]]:
+def parse_holdings_from_mirrors(mirrors: List[Dict], instrument_id_map: Dict[int, str] = None) -> Dict[str, List[Dict]]:
     """Extract per-trader holdings from eToro API mirror data.
 
     Args:
         mirrors: List of mirror dicts from get_portfolio_data()['clientPortfolio']['mirrors']
+        instrument_id_map: Optional {instrumentID: symbol} mapping for ordersForOpen
 
     Each mirror has: parentUsername, positions[{instrument, amount, ...}]
+    Falls back to ordersForOpen[{instrumentID, amount, ...}] when positions is empty.
 
     Returns:
         {username: [{symbol, name, weight, type, amount}, ...]}
@@ -49,6 +51,20 @@ def parse_holdings_from_mirrors(mirrors: List[Dict]) -> Dict[str, List[Dict]]:
     for mirror in mirrors:
         username = mirror.get("parentUsername", "unknown")
         positions = mirror.get("positions", [])
+
+        # Some API versions/plans put open positions in ordersForOpen instead of positions
+        if not positions and instrument_id_map:
+            orders = mirror.get("ordersForOpen", [])
+            for order in orders:
+                iid = order.get("instrumentID")
+                if iid and iid in instrument_id_map:
+                    sym = instrument_id_map[iid]
+                    positions.append({
+                        "instrument": sym,
+                        "amount": order.get("amount", 0),
+                        "isBuy": order.get("isBuy", True),
+                        "leverage": order.get("leverage", 1),
+                    })
 
         holdings = []
         total_amount = sum(
@@ -142,11 +158,25 @@ async def get_trader_holdings(
             raw = await etoro_client.get_portfolio_data()
             if raw:
                 mirrors = raw.get("clientPortfolio", {}).get("mirrors", [])
-                by_user = parse_holdings_from_mirrors(mirrors)
+
+                # Resolve instrument IDs from ordersForOpen to ticker symbols
+                all_instrument_ids = set()
+                for m in mirrors:
+                    if not m.get("positions"):
+                        for order in m.get("ordersForOpen", []):
+                            iid = order.get("instrumentID")
+                            if iid:
+                                all_instrument_ids.add(iid)
+
+                instrument_id_map: Dict[int, str] = {}
+                if all_instrument_ids:
+                    instrument_id_map = await etoro_client.resolve_instrument_ids(list(all_instrument_ids))
+
+                by_user = parse_holdings_from_mirrors(mirrors, instrument_id_map)
                 holdings = by_user.get(trader_username, [])
                 if holdings:
                     logger.info(
-                        "Holdings for %s: %d positions via API",
+                        "Holdings for %s: %d positions via API (mirrors + ordersForOpen)",
                         trader_username, len(holdings),
                     )
                     return holdings, "api_mirror"

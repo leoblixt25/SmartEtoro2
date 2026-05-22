@@ -41,12 +41,59 @@ class EToroAPIClient:
         # ETORO_ENV overrides the API environment segment (e.g. "demo").
         # Some API keys only have demo permissions — set this to "demo" in that case.
         self.env = os.getenv("ETORO_ENV", "real").strip().lower()
+        # Instrument ID → ticker symbol cache (instrument IDs never change)
+        self._instrument_cache: Dict[int, str] = {}
 
         if not self.api_key or not self.user_key:
             logger.warning("eToro API credentials not configured")
             self.enabled = False
         else:
             self.enabled = True
+
+    async def resolve_instrument_ids(self, instrument_ids: List[int]) -> Dict[int, str]:
+        """Resolve numeric instrument IDs to ticker symbols via eToro metadata API.
+
+        Uses the batch endpoint /api/v1/market-data/instruments?instrumentIds=...
+        Results are cached in self._instrument_cache (IDs never change).
+        Returns {id: symbol} for all requested IDs (unknown ones get a fallback string).
+        """
+        missing = [iid for iid in instrument_ids if iid not in self._instrument_cache]
+        if missing:
+            # Batch in chunks of 50 (API limit)
+            chunk_size = 50
+            for chunk_start in range(0, len(missing), chunk_size):
+                chunk = missing[chunk_start:chunk_start + chunk_size]
+                ids_param = ",".join(str(i) for i in chunk)
+                try:
+                    async with httpx.AsyncClient(timeout=15.0) as client:
+                        resp = await client.get(
+                            f"{self.BASE_URL}/api/v1/market-data/instruments",
+                            params={"instrumentIds": ids_param},
+                            headers=self._get_headers(),
+                        )
+                        if resp.status_code == 200:
+                            data = resp.json()
+                            items = data if isinstance(data, list) else data.get("data", data.get("instruments", []))
+                            for item in items:
+                                iid = item.get("instrumentId") or item.get("InstrumentID")
+                                sym = (item.get("symbol") or item.get("internalSymbolFull")
+                                       or item.get("Symbol") or item.get("displayName")
+                                       or item.get("DisplayName"))
+                                if iid and sym:
+                                    self._instrument_cache[int(iid)] = str(sym).upper()
+                        elif resp.status_code == 404:
+                            logger.warning("Instrument metadata endpoint not found (404), falling back to ID as symbol")
+                            break
+                        else:
+                            logger.warning("Instrument metadata returned %d for %d IDs", resp.status_code, len(chunk))
+                except Exception as e:
+                    logger.warning("Failed to resolve instruments chunk: %s", e)
+            # Mark unresolved IDs so we don't retry every time
+            for iid in missing:
+                if iid not in self._instrument_cache:
+                    self._instrument_cache[iid] = f"ID:{iid}"
+            logger.info("Resolved %d/%d instrument IDs to symbols", len([i for i in instrument_ids if not self._instrument_cache.get(i, "").startswith("ID:")]), len(instrument_ids))
+        return {iid: self._instrument_cache.get(iid, f"ID:{iid}") for iid in instrument_ids}
 
     def _get_headers(self) -> Dict[str, str]:
         return {

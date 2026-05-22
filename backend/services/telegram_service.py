@@ -239,8 +239,21 @@ class TelegramBot:
                 if etoro_client and etoro_client.enabled:
                     raw = await etoro_client.get_portfolio_data()
                     mirrors_raw = raw.get("clientPortfolio", {}).get("mirrors", []) if raw else []
+
+                    # Resolve instrument IDs from ordersForOpen to ticker symbols
                     from backend.monitoring.holding_parser import parse_holdings_from_mirrors
-                    all_holdings = parse_holdings_from_mirrors(mirrors_raw)
+                    all_instrument_ids = set()
+                    for m in mirrors_raw:
+                        if not m.get("positions"):
+                            for order in m.get("ordersForOpen", []):
+                                iid = order.get("instrumentID")
+                                if iid:
+                                    all_instrument_ids.add(iid)
+                    instrument_id_map = {}
+                    if all_instrument_ids:
+                        instrument_id_map = await etoro_client.resolve_instrument_ids(list(all_instrument_ids))
+
+                    all_holdings = parse_holdings_from_mirrors(mirrors_raw, instrument_id_map)
                     for t in traders:
                         holdings = all_holdings.get(t.trader_username, [])
                         symbols = extract_symbols(holdings)
@@ -256,7 +269,27 @@ class TelegramBot:
                             symbol_to_traders.setdefault(sym, []).append(t.trader_username)
 
                 if not all_symbols:
-                    await self._reply(update, "No symbols found in active trader holdings.")
+                    # Fallback: fetch major market headlines when no holdings found
+                    fallback_symbols = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "NVDA", "META", "SPY", "BTC-USD"]
+                    news_by_symbol = await fetch_news_for_symbols(fallback_symbols, max_per_symbol=2)
+                    total_articles = sum(len(items) for items in news_by_symbol.values())
+                    if not total_articles:
+                        await self._reply(update, "No symbols found and no market headlines available.")
+                        return
+                    lines = [f"\U0001f4f0 <b>Market Headlines</b> (no portfolio symbols — showing major markets)\n"]
+                    sent_icons = {"positive": "\U0001f7e2", "negative": "\U0001f534", "neutral": "\U0001f7e1"}
+                    tbl = [f"{'Sym':<6} {'Sentiment':<10} {'Headline':<30}"]
+                    tbl.append("\u2500" * 48)
+                    for sym in sorted(news_by_symbol.keys()):
+                        items = news_by_symbol.get(sym, [])
+                        for item in items:
+                            sent = item.get("sentiment", "neutral")
+                            icon = sent_icons.get(sent, "\u26aa")
+                            title = item.get("title", "")[:28]
+                            tbl.append(f"{sym:<6} {icon}{sent:<9} {title:<30}")
+                    lines.append(f"<code>{chr(10).join(tbl)}</code>")
+                    lines.append(f"\n\U0001f4c5 {ts} ({label})")
+                    await self._reply(update, "\n".join(lines))
                     return
 
                 news_by_symbol = await fetch_news_for_symbols(list(all_symbols), max_per_symbol=2)
