@@ -922,17 +922,21 @@ class TelegramBot:
                     await self._reply(update, "Health analysis complete. No signals to report.")
                     return
 
-                # Enrich with real DD/risk from tradeinfo API
-                async def _enrich_risk(r):
+                # Enrich with real metrics from tradeinfo API
+                async def _enrich_trader(r):
                     name = r.get("name") or r.get("trader")
                     try:
                         m = await etoro_client.get_trader_metrics(name)
                         if m.get("available"):
                             r["real_dd"] = m.get("peak_to_valley") or m.get("max_drawdown")
                             r["real_risk"] = m.get("risk_score")
+                            r["profitable_months_pct"] = m.get("profitable_months_pct")
+                            r["win_ratio"] = m.get("win_ratio")
+                            r["trades_count"] = m.get("trades_count")
+                            r["weeks_since_registration"] = m.get("weeks_since_registration")
                     except Exception:
                         pass
-                await asyncio.gather(*[_enrich_risk(r) for r in results])
+                await asyncio.gather(*[_enrich_trader(r) for r in results])
 
                 summary = _build_health_summary(results, live=freshness, source_label=label, ts=ts, ai_used=bool(ai_results))
                 await self._reply(update, summary)
@@ -1330,6 +1334,94 @@ def _assess_trader(r: dict, watch_consecutive: int = 0) -> tuple:
     return bucket, " \u2022 ".join(reasons), confidence
 
 
+def _compute_health_score(r: dict) -> int:
+    """Weighted score 0-100 prioritizing quality & stability over raw return.
+
+    Components: return 30%, drawdown 30%, risk 20%, consistency 15%, AI 5%.
+    """
+    cum_pl = r.get("total_return_pct") or 0.0
+    dd = abs(r.get("real_dd") or 0)
+    risk = r.get("real_risk") or r.get("risk_score") or 0
+    prof_months = r.get("profitable_months_pct")
+    win_ratio = r.get("win_ratio")
+    trades = r.get("trades_count")
+    ai_conf = (r.get("confidence") or "LOW").upper()
+
+    # ── Return score (30%) — capped at +5% "good enough" ceiling ──
+    ret_score = 0.0
+    if cum_pl > 0:
+        ret_score = min(cum_pl, 5.0) / 5.0 * 30
+
+    # ── Drawdown score (30%) — smooth quadratic penalty above -20% ──
+    dd_score = 30.0
+    if dd > 20:
+        if dd <= 25:
+            t = (dd - 20) / 5
+            penalty = t * t * 0.4
+            dd_score = 30 * (1 - penalty)
+        else:
+            t = (dd - 25) / 10
+            penalty = 0.4 + t * t * 0.6
+            dd_score = max(0, 30 * (1 - penalty))
+
+    # ── Risk score (20%) — peaks at 4-5, penalizes both extremes ──
+    if not risk or risk == 0:
+        risk_score = 10
+    elif 4 <= risk <= 5:
+        risk_score = 20
+    elif 3 <= risk <= 6:
+        risk_score = 16
+    elif 2 <= risk <= 7:
+        risk_score = 12
+    elif 1 <= risk <= 8:
+        risk_score = 8
+    else:
+        risk_score = 4
+
+    # High risk (>7) compounding penalty unless top-tier return
+    if risk > 7 and cum_pl <= 5.0:
+        ret_score *= 0.5
+        risk_score *= 0.5
+
+    # ── Consistency score (15%) — stable monthly performance ──
+    cons_score = 7.5  # default neutral
+    if prof_months is not None and prof_months > 0:
+        if prof_months >= 80:
+            cons_score = 15
+        elif prof_months >= 65:
+            cons_score = 12
+        elif prof_months >= 50:
+            cons_score = 10
+        elif prof_months >= 35:
+            cons_score = 7
+        else:
+            cons_score = 4
+    if win_ratio is not None and win_ratio > 0:
+        win_bonus = win_ratio / 100 * 3
+        cons_score = min(15, cons_score + win_bonus)
+    if trades is not None and trades >= 50:
+        cons_score = min(15, cons_score + 2)
+
+    # ── AI confidence score (5%) ──
+    ai_conf_score = {"HIGH": 5, "MEDIUM": 3, "LOW": 1}.get(ai_conf, 2)
+
+    total = int(round(ret_score + dd_score + risk_score + cons_score + ai_conf_score))
+    return max(0, min(100, total))
+
+
+def _tier_label(score: int) -> str:
+    if score >= 80:
+        return "\U0001f7e2 Elite"
+    elif score >= 70:
+        return "\U0001f7e2 Strong"
+    elif score >= 60:
+        return "\U0001f7e0 Good"
+    elif score >= 50:
+        return "\U0001f7e1 Average"
+    else:
+        return "\U0001f534 Avoid"
+
+
 def _build_health_summary(results: list[dict], live: bool = False, source_label: str = "Cached", ts: str = "", ai_used: bool = False) -> str:
     def ret_val(r):
         tr = r.get("total_return_pct")
@@ -1365,8 +1457,8 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
             rss = "-"
         return f"{dds}/{rss}"
 
-    def row(icon, name, ret_s, alloc_s, dd_rs_s):
-        return f"{icon} {name:<12.12} {ret_s:>6} {alloc_s:>5} {dd_rs_s:>5}"
+    def row(icon, name, ret_s, alloc_s, dd_rs_s, score_s):
+        return f"{icon} {name:<12.12} {ret_s:>6} {alloc_s:>5} {dd_rs_s:>5} {score_s:>3}"
 
     uncopy = []
     keep = []
@@ -1376,7 +1468,9 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
         bucket, reason, confidence = _assess_trader(r, watch_count)
         r["_assessed_reason"] = reason
         r["_assessed_confidence"] = confidence
-        entry = (r.get("trader", "?"), ret_val(r), r.get("allocation_pct") or 0, r.get("risk_score") or 0, r)
+        health_score = _compute_health_score(r)
+        r["_health_score"] = health_score
+        entry = (r.get("trader", "?"), ret_val(r), r.get("allocation_pct") or 0, r.get("risk_score") or 0, r, health_score)
         if bucket == "uncopy":
             uncopy.append(entry)
         elif bucket == "keep":
@@ -1384,11 +1478,9 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
         else:
             watch.append(entry)
 
-    _CONF = {"High": 3, "Medium": 2, "Low": 1}
-    def conf_key(r): return _CONF.get(r.get("_assessed_confidence", "Low"), 0)
-    uncopy.sort(key=lambda x: (-conf_key(x[4]), -(x[2] * abs(x[1]))))
-    keep.sort(key=lambda x: (-conf_key(x[4]), -x[1]))
-    watch.sort(key=lambda x: (-conf_key(x[4]), -x[3], x[1]))
+    uncopy.sort(key=lambda x: -x[5])
+    keep.sort(key=lambda x: -x[5])
+    watch.sort(key=lambda x: -x[5])
 
     total = len(results)
     source_tag = source_label if source_label else ("Live" if live else "Cached")
@@ -1405,39 +1497,38 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
     lines = [f"\U0001f4ca <b>Health \u2014 {total} traders</b> ({source_tag}{ai_tag})"]
     lines.append(f"\u2705 {pos} good  \u274c {neg} bad  \u26aa {flat} flat\n")
 
-    tbl = [row("", "Name", "Return", "Alloc", "DD/R")]
-    tbl.append("\u2500" * 38)
+    tbl = [row("", "Name", "Return", "Alloc", "DD/R", "Sco")]
+    tbl.append("\u2500" * 42)
 
     if uncopy:
         tbl.append(f"\u274c <b>UNCOPY</b>")
-        for name, ret, alloc, risk, r in uncopy:
-            tbl.append(row("\U0001f534", name, ret_str(ret), fmt_alloc(alloc), fmt_dd_rs(r)))
-            logger.info(f"  UNCOPY {name}: ret={ret:.2f}%, alloc={alloc:.1f}%")
+        for name, ret, alloc, risk, r, hs in uncopy:
+            tbl.append(row("\U0001f534", name, ret_str(ret), fmt_alloc(alloc), fmt_dd_rs(r), str(hs)))
+            logger.info(f"  UNCOPY {name}: ret={ret:.2f}%, score={hs}")
 
     if keep:
         tbl.append(f"\u2705 <b>KEEP</b>")
-        for name, ret, alloc, risk, r in keep:
-            tbl.append(row("\U0001f7e2", name, ret_str(ret), fmt_alloc(alloc), fmt_dd_rs(r)))
-            logger.info(f"  KEEP {name}: ret={ret:.2f}%, alloc={alloc:.1f}%")
+        for name, ret, alloc, risk, r, hs in keep:
+            tbl.append(row("\U0001f7e2", name, ret_str(ret), fmt_alloc(alloc), fmt_dd_rs(r), str(hs)))
+            logger.info(f"  KEEP {name}: ret={ret:.2f}%, score={hs}")
 
     if watch:
         tbl.append(f"\U0001f50d <b>WATCH</b>")
-        for name, ret, alloc, risk, r in watch:
-            tbl.append(row("\U0001f7e1", name, ret_str(ret), fmt_alloc(alloc), fmt_dd_rs(r)))
-            logger.info(f"  WATCH {name}: ret={ret:.2f}%, alloc={alloc:.1f}%")
+        for name, ret, alloc, risk, r, hs in watch:
+            tbl.append(row("\U0001f7e1", name, ret_str(ret), fmt_alloc(alloc), fmt_dd_rs(r), str(hs)))
+            logger.info(f"  WATCH {name}: ret={ret:.2f}%, score={hs}")
 
     lines.append(f"<code>{chr(10).join(tbl)}</code>")
 
     # ── Reasons for WATCH and UNCOPY ──
     watch_reasons = []
-    for name, ret, alloc, risk, r in watch:
+    for name, ret, alloc, risk, r, hs in watch:
         reason = r.get("_assessed_reason", "")
-        conf = r.get("_assessed_confidence", "Low")
         if reason:
             watch_reasons.append(f"\U0001f7e1 <b>{name}</b>: {reason}")
 
     uncopy_reasons = []
-    for name, ret, alloc, risk, r in uncopy:
+    for name, ret, alloc, risk, r, hs in uncopy:
         reason = r.get("_assessed_reason", "")
         conf = r.get("_assessed_confidence", "Low")
         if reason:
