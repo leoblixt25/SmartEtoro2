@@ -1546,9 +1546,6 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
             rss = "-"
         return f"{dds}/{rss}"
 
-    def row(name, ret_s, alloc_s, ddr_s, score_s):
-        return f" {name:<10.10} {ret_s:>5} {alloc_s:>4} {ddr_s:>4} {score_s:>3}"
-
     uncopy = []
     keep = []
     watch = []
@@ -1586,25 +1583,25 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
     lines = [f"\U0001f4ca <b>Health \u2014 {total} traders</b> ({source_tag}{ai_tag})"]
     lines.append(f"\u2705 {pos} good  \u274c {neg} bad  \u26aa {flat} flat\n")
 
-    tbl = [row("Name", "Ret", "Al%", "D/R", "Sc")]
-    tbl.append("\u2500" * 31)
+    tbl = [f"{'Name':<12} {'Ret':>7} {'Al%':>4} {'D/R':>5} {'Sc':>3}"]
+    tbl.append("\u2500" * 35)
 
     if keep:
         tbl.append(f"\u2705 KEEP")
         for name, ret, alloc, risk, r, hs in keep:
-            tbl.append(row(name, ret_str(ret), fmt_alloc(alloc), fmt_dd_rs(r), str(hs)))
+            tbl.append(f"{name[:12]:<12} {ret_str(ret):>7} {fmt_alloc(alloc):>4} {fmt_dd_rs(r):>5} {hs:>3}")
 
     if watch:
         tbl.append(f"\U0001f50d WATCH")
         for name, ret, alloc, risk, r, hs in watch:
-            tbl.append(row(name, ret_str(ret), fmt_alloc(alloc), fmt_dd_rs(r), str(hs)))
+            tbl.append(f"{name[:12]:<12} {ret_str(ret):>7} {fmt_alloc(alloc):>4} {fmt_dd_rs(r):>5} {hs:>3}")
 
     if uncopy:
         tbl.append(f"\u274c UNCOPY")
         for name, ret, alloc, risk, r, hs in uncopy:
-            tbl.append(row(name, ret_str(ret), fmt_alloc(alloc), fmt_dd_rs(r), str(hs)))
+            tbl.append(f"{name[:12]:<12} {ret_str(ret):>7} {fmt_alloc(alloc):>4} {fmt_dd_rs(r):>5} {hs:>3}")
 
-    lines.append(f"```{chr(10).join(tbl)}```")
+    lines.append(f"<code>{chr(10).join(tbl)}</code>")
 
     # ── Reasons for WATCH and UNCOPY ──
     watch_reasons = []
