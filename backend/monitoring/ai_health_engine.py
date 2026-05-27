@@ -2,6 +2,7 @@
 AI-Powered Trader Health Engine — uses OpenAI/OpenRouter/Groq to analyze traders.
 Falls back to rule-based engine if AI is unavailable.
 """
+import asyncio
 import json
 import logging
 import os
@@ -175,7 +176,7 @@ async def ai_analyze_traders(traders_data: List[Dict], portfolio_summary: Option
         kwargs["response_format"] = {"type": "json_object"}
 
     try:
-        response = client.chat.completions.create(**kwargs)
+        response = await asyncio.to_thread(client.chat.completions.create, **kwargs)
         raw = response.choices[0].message.content
         results = _parse_ai_response(raw)
         if not results:

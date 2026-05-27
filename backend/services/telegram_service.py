@@ -892,7 +892,7 @@ class TelegramBot:
             kwargs["response_format"] = {"type": "json_object"}
 
         try:
-            response = client.chat.completions.create(**kwargs)
+            response = await asyncio.to_thread(client.chat.completions.create, **kwargs)
             raw = response.choices[0].message.content
             raw = raw.strip()
             if raw.startswith("```"):
@@ -1067,37 +1067,41 @@ class TelegramBot:
             if not results:
                 return "Health analysis complete. No signals to report."
 
+            # Enrich with DD/risk from tradeinfo API (limited to 3 concurrent to avoid OOM)
+            sem = asyncio.Semaphore(3)
+
             async def _enrich_trader(r):
-                name = r.get("name") or r.get("trader")
-                try:
-                    m = await etoro_client.get_trader_metrics(name)
-                    if m.get("available"):
-                        yd = m.get("yearly_dd")
-                        if yd is not None:
-                            r["real_dd"] = abs(yd)
-                            r["dd_source"] = "yearlyDd"
-                            r["dd_yearly"] = None
-                        else:
-                            dd_val = m.get("max_drawdown")
-                            dd_field = m.get("dd_field")
-                            yearly_peak = m.get("peak_to_valley")
-                            if dd_val is not None:
-                                r["real_dd"] = abs(dd_val)
-                                r["dd_source"] = dd_field or "peakToValley"
-                                r["dd_yearly"] = abs(yearly_peak) if yearly_peak is not None and dd_field != "peakToValley" else None
-                            elif yearly_peak is not None:
-                                r["real_dd"] = abs(yearly_peak)
-                                r["dd_source"] = "peakToValley"
+                async with sem:
+                    name = r.get("name") or r.get("trader")
+                    try:
+                        m = await etoro_client.get_trader_metrics(name)
+                        if m.get("available"):
+                            yd = m.get("yearly_dd")
+                            if yd is not None:
+                                r["real_dd"] = abs(yd)
+                                r["dd_source"] = "yearlyDd"
                                 r["dd_yearly"] = None
                             else:
-                                r["dd_source"] = "missing"
-                        r["real_risk"] = m.get("risk_score")
-                        r["profitable_months_pct"] = m.get("profitable_months_pct")
-                        r["win_ratio"] = m.get("win_ratio")
-                        r["trades_count"] = m.get("trades_count")
-                        r["weeks_since_registration"] = m.get("weeks_since_registration")
-                except Exception:
-                    pass
+                                dd_val = m.get("max_drawdown")
+                                dd_field = m.get("dd_field")
+                                yearly_peak = m.get("peak_to_valley")
+                                if dd_val is not None:
+                                    r["real_dd"] = abs(dd_val)
+                                    r["dd_source"] = dd_field or "peakToValley"
+                                    r["dd_yearly"] = abs(yearly_peak) if yearly_peak is not None and dd_field != "peakToValley" else None
+                                elif yearly_peak is not None:
+                                    r["real_dd"] = abs(yearly_peak)
+                                    r["dd_source"] = "peakToValley"
+                                    r["dd_yearly"] = None
+                                else:
+                                    r["dd_source"] = "missing"
+                            r["real_risk"] = m.get("risk_score")
+                            r["profitable_months_pct"] = m.get("profitable_months_pct")
+                            r["win_ratio"] = m.get("win_ratio")
+                            r["trades_count"] = m.get("trades_count")
+                            r["weeks_since_registration"] = m.get("weeks_since_registration")
+                    except Exception:
+                        pass
             await asyncio.gather(*[_enrich_trader(r) for r in results])
 
             # Persist scraped stats for each trader
