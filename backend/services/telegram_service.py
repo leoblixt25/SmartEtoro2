@@ -1100,6 +1100,17 @@ class TelegramBot:
                     pass
             await asyncio.gather(*[_enrich_trader(r) for r in results])
 
+            # Persist scraped stats for each trader
+            try:
+                from backend.services.scraper_service import upsert_scraped_stats
+                for r in results:
+                    name = r.get("name") or r.get("trader")
+                    yearly_dd = r.get("real_dd")
+                    risk_7d = r.get("real_risk") or r.get("risk_score")
+                    upsert_scraped_stats(db, name, risk_7d, yearly_dd)
+            except Exception:
+                logger.exception("Failed to persist scraped stats")
+
             summary = _build_health_summary(results, live=freshness, source_label=label, ts=ts, ai_used=bool(ai_results))
 
             for r in results:

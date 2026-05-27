@@ -162,6 +162,16 @@ class PortfolioSnapshot(Base):
     portfolio = relationship("Portfolio", back_populates="snapshots")
 
 
+class EtoroScrapedStats(Base):
+    """Scraped stats from eToro trader profile Stats tab — 12-month rolling values."""
+    __tablename__ = "etoro_scraped_stats"
+
+    investor_id = Column(String, primary_key=True, index=True)
+    avg_risk_score_7d = Column(Integer, nullable=True)
+    yearly_max_dd = Column(Float, nullable=True)
+    last_scraped_at = Column(DateTime, default=datetime.utcnow)
+
+
 class Alert(Base):
     """System alerts sent to the user."""
     __tablename__ = "alerts"
