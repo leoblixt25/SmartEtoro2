@@ -811,7 +811,7 @@ class TelegramBot:
 
     async def _cmd_health(self, update: Update, args: list[str]) -> None:
         try:
-            text = await self._generate_health_report()
+            text = await self._generate_health_report(show_reallocation=True)
             await self._reply(update, text)
         except Exception as e:
             logger.exception("Health analysis failed")
@@ -1568,7 +1568,12 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
             return "watch"
         return None
 
-    uid = 0
+    def trader_score(r):
+        s = r.get("score") or r.get("health_score")
+        if s is not None:
+            return int(s)
+        return _compute_health_score(r)
+
     uncopy = []
     keep = []
     watch = []
@@ -1579,14 +1584,19 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
             watch_count = r.get("watch_consecutive", 0)
             bucket, reason, _ = _assess_trader(r, watch_count)
         r["_assessed_reason"] = reason
-        uid += 1
-        entry = (r.get("trader", "?"), ret_val(r), r.get("allocation_pct") or 0, r.get("risk_score") or 0, r)
+        sc = trader_score(r)
+        r["_health_score"] = sc
+        entry = (r.get("trader", "?"), ret_val(r), r.get("allocation_pct") or 0, r.get("risk_score") or 0, r, sc)
         if bucket == "uncopy":
             uncopy.append(entry)
         elif bucket == "keep":
             keep.append(entry)
         else:
             watch.append(entry)
+
+    uncopy.sort(key=lambda x: -x[5])
+    keep.sort(key=lambda x: -x[5])
+    watch.sort(key=lambda x: -x[5])
 
     total = len(results)
     source_tag = source_label if source_label else ("Live" if live else "Cached")
@@ -1603,35 +1613,35 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
     lines = [f"\U0001f4ca <b>Health \u2014 {total} traders</b> ({source_tag}{ai_tag})"]
     lines.append(f"\u2705 {pos} good  \u274c {neg} bad  \u26aa {flat} flat\n")
 
-    tbl = [f"{'Name':<12} {'Ret':>7} {'Al%':>4} {'D/R':>5}"]
-    tbl.append("\u2500" * 31)
+    tbl = [f"{'Name':<12} {'Sc':>3} {'Ret':>7} {'Al%':>4} {'D/R':>5}"]
+    tbl.append("\u2500" * 34)
 
     if keep:
         tbl.append(f"\u2705 KEEP")
-        for name, ret, alloc, risk, r in keep:
-            tbl.append(f"{name[:12]:<12} {ret_str(ret):>7} {fmt_alloc(alloc):>4} {fmt_dd_rs(r):>5}")
+        for name, ret, alloc, risk, r, sc in keep:
+            tbl.append(f"{name[:12]:<12} {sc:>3} {ret_str(ret):>7} {fmt_alloc(alloc):>4} {fmt_dd_rs(r):>5}")
 
     if watch:
         tbl.append(f"\U0001f50d WATCH")
-        for name, ret, alloc, risk, r in watch:
-            tbl.append(f"{name[:12]:<12} {ret_str(ret):>7} {fmt_alloc(alloc):>4} {fmt_dd_rs(r):>5}")
+        for name, ret, alloc, risk, r, sc in watch:
+            tbl.append(f"{name[:12]:<12} {sc:>3} {ret_str(ret):>7} {fmt_alloc(alloc):>4} {fmt_dd_rs(r):>5}")
 
     if uncopy:
         tbl.append(f"\u274c UNCOPY")
-        for name, ret, alloc, risk, r in uncopy:
-            tbl.append(f"{name[:12]:<12} {ret_str(ret):>7} {fmt_alloc(alloc):>4} {fmt_dd_rs(r):>5}")
+        for name, ret, alloc, risk, r, sc in uncopy:
+            tbl.append(f"{name[:12]:<12} {sc:>3} {ret_str(ret):>7} {fmt_alloc(alloc):>4} {fmt_dd_rs(r):>5}")
 
     lines.append(f"<code>{chr(10).join(tbl)}</code>")
 
     # ── Reasons for WATCH and UNCOPY ──
     watch_reasons = []
-    for name, ret, alloc, risk, r in watch:
+    for name, ret, alloc, risk, r, sc in watch:
         reason = r.get("reason") or r.get("_assessed_reason", "")
         if reason:
             watch_reasons.append(f"\U0001f7e1 <b>{name}</b>: {reason}")
 
     uncopy_reasons = []
-    for name, ret, alloc, risk, r in uncopy:
+    for name, ret, alloc, risk, r, sc in uncopy:
         reason = r.get("reason") or r.get("_assessed_reason", "")
         if reason:
             uncopy_reasons.append(f"\U0001f916 <b>{name}</b>: {reason}")
