@@ -629,7 +629,7 @@ class EToroAPIClient:
             #   peakToValley — peak-to-valley over the query period (LastTwoYears)
             dd_raw = None
             dd_field_name = None
-            for dd_field in ("weeklyDd", "dailyDd", "peakToValley"):
+            for dd_field in ("peakToValley", "weeklyDd", "dailyDd"):
                 v = tradeinfo.get(dd_field)
                 if v is not None:
                     dd_raw = v
@@ -1547,31 +1547,31 @@ class EToroSyncService:
             closed_pnl = m.get("closedPositionsNetProfit", 0.0)
             total_pnl = closed_pnl + unrealized_pnl_mirror
 
-            # Calculate invested amount from actual position data (API initialInvestment is stale)
-            invested_from_positions = sum(pos.get("amount", 0.0) for pos in positions)
-            # Fallback to API field only if no positions (shouldn't happen for active mirrors)
-            initial_investment = invested_from_positions if invested_from_positions > 0 else (
-                m.get("currentInvestment")
-                or m.get("investedAmount")
+            # Compute original invested amount — try API mirror-level fields first.
+            # These represent the actual capital put into this trader copy, which is
+            # the correct denominator for P/L%. Fall back to current position amounts
+            # only when the API fields are missing (e.g. data migration edge case).
+            api_invested = (
+                m.get("investedAmount")
                 or m.get("netInvestment")
                 or m.get("initialInvestment")
-                or 1.0
             )
-            try:
-                initial_investment = float(initial_investment)
-            except (ValueError, TypeError):
-                initial_investment = 1.0
-
-            # Net Value = invested + unrealized PnL (matches eToro UI Net Value column)
-            mirror_equity = initial_investment + unrealized_pnl_mirror
-
-            # eToro P/L % = P/L / (Net Value - P/L) * 100 = P/L / invested * 100
-            # This matches the eToro UI P/L(%) column exactly
-            if initial_investment > 0:
-                total_return_pct = (total_pnl / initial_investment) * 100
+            if api_invested is not None:
+                try:
+                    original_investment = float(api_invested)
+                except (ValueError, TypeError):
+                    original_investment = 0.0
             else:
-                total_return_pct = 0.0
-            
+                invested_from_positions = sum(pos.get("amount", 0.0) for pos in positions)
+                original_investment = invested_from_positions if invested_from_positions > 0 else 1.0
+
+            # Mirror equity = invested + unrealized PnL (matches eToro UI Net Value column).
+            # Used for allocation_pct and stop-loss sizing, NOT for P/L% calculation.
+            mirror_equity = original_investment + unrealized_pnl_mirror
+
+            # eToro P/L % = P/L / originalInvestment * 100  (matches My Portfolio column)
+            total_return_pct = (total_pnl / max(original_investment, 1.0)) * 100
+            total_return_pct = max(min(total_return_pct, 1000.0), -200.0)
             import json
             # eToro API mirrorId key can vary by account type (retail vs non-retail).
             # Use a best-effort string key rather than integer — some plans don't
@@ -1601,16 +1601,6 @@ class EToroSyncService:
             # allocated_amount = mirror equity (what's actually at stake for this trader)
             # Used by partial_profit_lock and reduce_on_drawdown to compute new amounts
             allocated_amount = mirror_equity
-
-            # eToro P/L % = P/L / Net Value * 100 (matches eToro UI column)
-            # Net Value = initialInvestment + unrealizedPnL = mirror_equity
-            # NOT P/L / initialInvestment which gives wrong results
-            net_value = mirror_equity if mirror_equity > 0 else initial_investment
-            total_return_pct = (total_pnl / max(net_value, 1.0)) * 100
-
-            # Clamp to realistic range: eToro allows up to 2x leverage so max loss is ~200%.
-            # Stale API values for removed/pending-close positions can produce absurd numbers.
-            total_return_pct = max(min(total_return_pct, 1000.0), -200.0)
 
             result.append({
                 "trader_id": str(mirror_id),

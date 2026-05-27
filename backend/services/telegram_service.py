@@ -1188,8 +1188,6 @@ def _assess_trader(r: dict, watch_consecutive: int = 0) -> tuple:
         add_reason(f"Drawdown {dd_abs:.0f}% approaching penalty threshold")
     if dd_abs > 0 and not dd_confident:
         add_reason("DD source unavailable — score may be unreliable")
-    elif dd_source == "peakToValley":
-        add_reason("DD from 2-year peak-to-valley (weekly unavailable)")
     if dd_yearly is not None and dd_yearly > dd_abs * 1.5 and dd_yearly > 15:
         add_reason(f"Past 2-year peak {dd_yearly:.0f}% (recovered)")
     if low_consistency:
@@ -1513,9 +1511,7 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
         ds = r.get("dd_source", "unknown")
         dy = r.get("dd_yearly")
         name = r.get("trader", "?")
-        if ds == "peakToValley":
-            dd_warnings.append(f"\u26a0\ufe0f {name}: DD from 2-year peak-to-valley (weekly unavailable)")
-        elif ds == "missing":
+        if ds == "missing":
             dd_warnings.append(f"\u26a0\ufe0f {name}: DD source unavailable")
         elif ds in ("weeklyDd", "dailyDd") and dy is not None and dy > abs(r.get("real_dd") or 0) * 1.5 and dy > 15:
             dd_warnings.append(f"\U0001f7e1 {name}: Current DD {abs(r.get('real_dd') or 0):.0f}%, 2-year peak {dy:.0f}%")
