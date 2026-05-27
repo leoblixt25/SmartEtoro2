@@ -1012,8 +1012,15 @@ class TelegramBot:
 
                 await asyncio.sleep(0.1)
 
+            # Build portfolio summary for AI
+            portfolio_summary = {
+                "total_invested_capital": float(p.total_value or 0),
+                "total_portfolio_value": float(p.total_value or 0),
+                "total_available_cash": float(p.available_cash or 0),
+            }
+
             # Try AI analysis on the full batch
-            ai_results = await ai_analyze_traders(enriched)
+            ai_results = await ai_analyze_traders(enriched, portfolio_summary)
 
             results = []
             if ai_results:
@@ -1065,19 +1072,25 @@ class TelegramBot:
                 try:
                     m = await etoro_client.get_trader_metrics(name)
                     if m.get("available"):
-                        dd_val = m.get("max_drawdown")
-                        dd_field = m.get("dd_field")
-                        yearly_dd = m.get("peak_to_valley")
-                        if dd_val is not None:
-                            r["real_dd"] = abs(dd_val)
-                            r["dd_source"] = dd_field or "peakToValley"
-                            r["dd_yearly"] = abs(yearly_dd) if yearly_dd is not None and dd_field != "peakToValley" else None
-                        elif yearly_dd is not None:
-                            r["real_dd"] = abs(yearly_dd)
-                            r["dd_source"] = "peakToValley"
+                        yd = m.get("yearly_dd")
+                        if yd is not None:
+                            r["real_dd"] = abs(yd)
+                            r["dd_source"] = "yearlyDd"
                             r["dd_yearly"] = None
                         else:
-                            r["dd_source"] = "missing"
+                            dd_val = m.get("max_drawdown")
+                            dd_field = m.get("dd_field")
+                            yearly_peak = m.get("peak_to_valley")
+                            if dd_val is not None:
+                                r["real_dd"] = abs(dd_val)
+                                r["dd_source"] = dd_field or "peakToValley"
+                                r["dd_yearly"] = abs(yearly_peak) if yearly_peak is not None and dd_field != "peakToValley" else None
+                            elif yearly_peak is not None:
+                                r["real_dd"] = abs(yearly_peak)
+                                r["dd_source"] = "peakToValley"
+                                r["dd_yearly"] = None
+                            else:
+                                r["dd_source"] = "missing"
                         r["real_risk"] = m.get("risk_score")
                         r["profitable_months_pct"] = m.get("profitable_months_pct")
                         r["win_ratio"] = m.get("win_ratio")
@@ -1498,19 +1511,6 @@ def _compute_health_score(r: dict) -> int:
     return max(0, min(100, total))
 
 
-def _tier_label(score: int) -> str:
-    if score >= 80:
-        return "\U0001f7e2 Elite"
-    elif score >= 70:
-        return "\U0001f7e2 Strong"
-    elif score >= 60:
-        return "\U0001f7e0 Good"
-    elif score >= 50:
-        return "\U0001f7e1 Average"
-    else:
-        return "\U0001f534 Avoid"
-
-
 def _build_health_summary(results: list[dict], live: bool = False, source_label: str = "Cached", ts: str = "", ai_used: bool = False) -> str:
     def ret_val(r):
         tr = r.get("total_return_pct")
@@ -1546,27 +1546,36 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
             rss = "-"
         return f"{dds}/{rss}"
 
+    def ai_bucket(r):
+        s = r.get("status", "") or ""
+        status_upper = s.upper()
+        if status_upper in ("STRONG", "GOOD", "ELITE"):
+            return "keep"
+        if status_upper in ("WEAK", "AVOID"):
+            return "uncopy"
+        if status_upper == "WATCH":
+            return "watch"
+        return None
+
+    uid = 0
     uncopy = []
     keep = []
     watch = []
     for r in results:
-        watch_count = r.get("watch_consecutive", 0)
-        bucket, reason, confidence = _assess_trader(r, watch_count)
+        bucket = ai_bucket(r)
+        reason = r.get("reason", "")
+        if not bucket:
+            watch_count = r.get("watch_consecutive", 0)
+            bucket, reason, _ = _assess_trader(r, watch_count)
         r["_assessed_reason"] = reason
-        r["_assessed_confidence"] = confidence
-        health_score = _compute_health_score(r)
-        r["_health_score"] = health_score
-        entry = (r.get("trader", "?"), ret_val(r), r.get("allocation_pct") or 0, r.get("risk_score") or 0, r, health_score)
+        uid += 1
+        entry = (r.get("trader", "?"), ret_val(r), r.get("allocation_pct") or 0, r.get("risk_score") or 0, r)
         if bucket == "uncopy":
             uncopy.append(entry)
         elif bucket == "keep":
             keep.append(entry)
         else:
             watch.append(entry)
-
-    uncopy.sort(key=lambda x: -x[5])
-    keep.sort(key=lambda x: -x[5])
-    watch.sort(key=lambda x: -x[5])
 
     total = len(results)
     source_tag = source_label if source_label else ("Live" if live else "Cached")
@@ -1583,39 +1592,38 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
     lines = [f"\U0001f4ca <b>Health \u2014 {total} traders</b> ({source_tag}{ai_tag})"]
     lines.append(f"\u2705 {pos} good  \u274c {neg} bad  \u26aa {flat} flat\n")
 
-    tbl = [f"{'Name':<12} {'Ret':>7} {'Al%':>4} {'D/R':>5} {'Sc':>3}"]
-    tbl.append("\u2500" * 35)
+    tbl = [f"{'Name':<12} {'Ret':>7} {'Al%':>4} {'D/R':>5}"]
+    tbl.append("\u2500" * 31)
 
     if keep:
         tbl.append(f"\u2705 KEEP")
-        for name, ret, alloc, risk, r, hs in keep:
-            tbl.append(f"{name[:12]:<12} {ret_str(ret):>7} {fmt_alloc(alloc):>4} {fmt_dd_rs(r):>5} {hs:>3}")
+        for name, ret, alloc, risk, r in keep:
+            tbl.append(f"{name[:12]:<12} {ret_str(ret):>7} {fmt_alloc(alloc):>4} {fmt_dd_rs(r):>5}")
 
     if watch:
         tbl.append(f"\U0001f50d WATCH")
-        for name, ret, alloc, risk, r, hs in watch:
-            tbl.append(f"{name[:12]:<12} {ret_str(ret):>7} {fmt_alloc(alloc):>4} {fmt_dd_rs(r):>5} {hs:>3}")
+        for name, ret, alloc, risk, r in watch:
+            tbl.append(f"{name[:12]:<12} {ret_str(ret):>7} {fmt_alloc(alloc):>4} {fmt_dd_rs(r):>5}")
 
     if uncopy:
         tbl.append(f"\u274c UNCOPY")
-        for name, ret, alloc, risk, r, hs in uncopy:
-            tbl.append(f"{name[:12]:<12} {ret_str(ret):>7} {fmt_alloc(alloc):>4} {fmt_dd_rs(r):>5} {hs:>3}")
+        for name, ret, alloc, risk, r in uncopy:
+            tbl.append(f"{name[:12]:<12} {ret_str(ret):>7} {fmt_alloc(alloc):>4} {fmt_dd_rs(r):>5}")
 
     lines.append(f"<code>{chr(10).join(tbl)}</code>")
 
     # ── Reasons for WATCH and UNCOPY ──
     watch_reasons = []
-    for name, ret, alloc, risk, r, hs in watch:
-        reason = r.get("_assessed_reason", "")
+    for name, ret, alloc, risk, r in watch:
+        reason = r.get("reason") or r.get("_assessed_reason", "")
         if reason:
             watch_reasons.append(f"\U0001f7e1 <b>{name}</b>: {reason}")
 
     uncopy_reasons = []
-    for name, ret, alloc, risk, r, hs in uncopy:
-        reason = r.get("_assessed_reason", "")
-        conf = r.get("_assessed_confidence", "Low")
+    for name, ret, alloc, risk, r in uncopy:
+        reason = r.get("reason") or r.get("_assessed_reason", "")
         if reason:
-            uncopy_reasons.append(f"\U0001f916 <b>{name}</b>: {reason} \u2022 Confidence: {conf}")
+            uncopy_reasons.append(f"\U0001f916 <b>{name}</b>: {reason}")
 
     if uncopy_reasons:
         lines.append(f"\n\u274c <b>Why UNCOPY</b>")
@@ -1634,9 +1642,9 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
         if ds == "missing":
             dd_warnings.append(f"\u26a0\ufe0f {name}: DD source unavailable")
         elif ds in ("weeklyDd", "dailyDd") and dy is None:
-            dd_warnings.append(f"\U0001f7e1 {name}: DD from {ds} (2-year peak data unavailable)")
+            dd_warnings.append(f"\U0001f7e1 {name}: DD from {ds} (yearly peak data unavailable)")
         elif ds in ("weeklyDd", "dailyDd") and dy is not None and dy > abs(r.get("real_dd") or 0) * 1.5 and dy > 15:
-            dd_warnings.append(f"\U0001f7e1 {name}: Current DD {abs(r.get('real_dd') or 0):.0f}%, 2-year peak {dy:.0f}%")
+            dd_warnings.append(f"\U0001f7e1 {name}: Current DD {abs(r.get('real_dd') or 0):.0f}%, yearly peak {dy:.0f}%")
     if dd_warnings:
         lines.append(f"\n\U0001f4cb <b>DD Notes</b>")
         lines.extend(dd_warnings)
@@ -1647,7 +1655,7 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
         target = next((e for e in high_conf_uncopy if e[2] >= 1.0), high_conf_uncopy[0])
         lines.append(f"\n\U0001f6a8 <b>Action:</b> UNCOPY <b>{target[0]}</b> ({target[1]:+.1f}% at {target[2]:.1f}%)")
     elif uncopy:
-        lines.append(f"\n\u26a0\ufe0f <b>Review needed</b> \u2014 potential UNCOPY candidates flagged (needs confirmation)")
+        lines.append(f"\n\u26a0\ufe0f <b>Review needed</b> \u2014 potential UNCOPY candidates flagged")
     elif not keep:
         lines.append(f"\n\U0001f6a8 <b>No traders making money</b> \u2014 review entire portfolio")
     elif len(keep) >= total * 0.6:

@@ -71,27 +71,24 @@ Return ONLY valid JSON — a JSON object with a "traders" key containing an arra
 }"""
 
 
-def _build_trader_text(traders_data: List[Dict]) -> str:
-    """Format trader data for the AI prompt."""
-    lines = ["Analyze these copied traders:\n"]
+def _build_trader_text(traders_data: List[Dict], portfolio_summary: Optional[Dict] = None) -> str:
+    """Format trader data for the AI prompt with clean metrics."""
+    lines = []
+    if portfolio_summary:
+        lines.append("Portfolio:")
+        lines.append(f"  Invested: ${portfolio_summary.get('total_invested_capital', 0):,.2f}")
+        lines.append(f"  Value: ${portfolio_summary.get('total_portfolio_value', 0):,.2f}")
+        lines.append(f"  Cash: ${portfolio_summary.get('total_available_cash', 0):,.2f}")
+        lines.append("")
+    lines.append("Traders:")
     for td in traders_data:
-        lines.append(f"Trader: {td.get('username', '?')}")
-        # Performance
-        perf_parts = []
-        for k in ["return_1d", "return_1w", "return_1m"]:
-            v = td.get(k)
-            if v is not None:
-                perf_parts.append(f"{k}={v:+.2f}%")
-        lines.append(f"  Performance: {', '.join(perf_parts) if perf_parts else 'N/A'}")
-        lines.append(f"  Total return: {td.get('total_return_pct', 'N/A')}%")
-        # Risk
-        lines.append(f"  Risk score: {td.get('risk_score', 'N/A')}")
-        lines.append(f"  Max drawdown: {td.get('max_drawdown', 'N/A')}%")
-        lines.append(f"  Volatility: {td.get('volatility', 'N/A')}")
-        lines.append(f"  Consistency: {td.get('consistency_score', 'N/A')}")
-        lines.append(f"  Allocation: {td.get('allocation_pct', 'N/A')}%")
-        lines.append(f"  Holdings: {len(td.get('_holdings', []))} positions")
-        lines.append(f"  News: {td.get('_news_summary', 'N/A')}")
+        lines.append(f"- {td.get('username', '?')}:")
+        lines.append(f"  allocation={td.get('allocation_pct', 'N/A')}%")
+        lines.append(f"  return={td.get('total_return_pct', 'N/A')}%")
+        lines.append(f"  risk={td.get('risk_score', 'N/A')}")
+        lines.append(f"  dd={td.get('max_drawdown', 'N/A')}%")
+        lines.append(f"  holdings={len(td.get('_holdings', []))}")
+        lines.append(f"  news={td.get('_news_summary', 'N/A')}")
         lines.append("")
     return "\n".join(lines)
 
@@ -122,7 +119,7 @@ def _parse_ai_response(text: str) -> Optional[List[Dict]]:
     return None
 
 
-async def ai_analyze_traders(traders_data: List[Dict]) -> Optional[List[Dict]]:
+async def ai_analyze_traders(traders_data: List[Dict], portfolio_summary: Optional[Dict] = None) -> Optional[List[Dict]]:
     """Analyze all traders via OpenAI/OpenRouter/Groq. Returns list of result dicts or None on failure."""
     if not AI_AVAILABLE:
         logger.info("AI engine unavailable (no API key)")
@@ -160,7 +157,7 @@ async def ai_analyze_traders(traders_data: List[Dict]) -> Optional[List[Dict]]:
         client_kwargs["base_url"] = base_url
     client = OpenAI(**client_kwargs)
 
-    trader_text = _build_trader_text(traders_data)
+    trader_text = _build_trader_text(traders_data, portfolio_summary)
 
     # Groq supports JSON mode
     kwargs = {

@@ -452,6 +452,7 @@ class EToroAPIClient:
             "copiers": None,
             "positions_count": None,
             "peak_to_valley": None,
+            "yearly_dd": None,
             "profitable_months_pct": None,
             "win_ratio": None,
             "trades_count": None,
@@ -624,12 +625,13 @@ class EToroAPIClient:
             gain_raw = tradeinfo.get("gainPerc") or tradeinfo.get("gain")
             risk_raw = tradeinfo.get("riskScore")
             # Drawdown fields from eToro tradeinfo API:
-            #   dailyDd   — daily max drawdown
-            #   weeklyDd  — weekly max drawdown
+            #   yearlyDd    — rolling 12-month max drawdown
             #   peakToValley — peak-to-valley over the query period (LastTwoYears)
+            #   weeklyDd    — weekly max drawdown
+            #   dailyDd     — daily max drawdown
             dd_raw = None
             dd_field_name = None
-            for dd_field in ("peakToValley", "weeklyDd", "dailyDd"):
+            for dd_field in ("yearlyDd", "peakToValley", "weeklyDd", "dailyDd"):
                 v = tradeinfo.get(dd_field)
                 if v is not None:
                     dd_raw = v
@@ -714,6 +716,7 @@ class EToroAPIClient:
                 "copiers": int(copiers_raw) if copiers_raw is not None else None,
                 "positions_count": int(positions_raw) if positions_raw is not None else None,
                 "peak_to_valley": float(peak_raw) if peak_raw is not None else None,
+                "yearly_dd": float(tradeinfo.get("yearlyDd")) if tradeinfo.get("yearlyDd") is not None else None,
                 "profitable_months_pct": float(prof_months_raw) if prof_months_raw is not None else None,
                 "win_ratio": float(win_raw) if win_raw is not None else None,
                 "trades_count": int(trades_raw) if trades_raw is not None else None,
