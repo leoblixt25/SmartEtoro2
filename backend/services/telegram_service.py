@@ -817,7 +817,128 @@ class TelegramBot:
             logger.exception("Health analysis failed")
             await self._reply(update, f"Health analysis failed: {e}")
 
-    async def _generate_health_report(self) -> str:
+    async def _ai_reallocate(self, results: list[dict]) -> str:
+        """Ask AI for portfolio reallocation suggestions. Returns formatted block or empty string."""
+        from backend.monitoring.ai_health_engine import AI_AVAILABLE
+
+        if not AI_AVAILABLE or not results:
+            return ""
+
+        api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("GROQ_API_KEY") or ""
+        if not api_key:
+            return ""
+
+        from backend.monitoring.ai_health_engine import PROVIDERS
+
+        provider = "openai"
+        for name, cfg in PROVIDERS.items():
+            if api_key.startswith(cfg["key_prefix"]):
+                provider = name
+                break
+
+        extra_headers = {}
+        if provider == "groq":
+            base_url = PROVIDERS["groq"]["base_url"]
+            model = "llama-3.3-70b-versatile"
+        elif provider == "openrouter":
+            base_url = PROVIDERS["openrouter"]["base_url"]
+            model = "openai/gpt-4o-mini"
+            extra_headers = {
+                "HTTP-Referer": "https://github.com/leoblixt25/SmartEtoro2",
+                "X-Title": "SmartEtoro2",
+            }
+        else:
+            base_url = None
+            model = "gpt-4o-mini"
+
+        from openai import OpenAI
+        client_kwargs = {"api_key": api_key}
+        if base_url:
+            client_kwargs["base_url"] = base_url
+        client = OpenAI(**client_kwargs)
+
+        total_alloc = sum(r.get("allocation_pct") or 0 for r in results)
+
+        lines = ["Analyse this portfolio for reallocation. Recommend how to redistribute allocation % to maximise risk-adjusted returns.", ""]
+        for r in results:
+            name = r.get("trader") or r.get("name")
+            alloc = r.get("allocation_pct") or 0
+            ret = r.get("total_return_pct") or 0
+            risk = r.get("real_risk") or r.get("risk_score") or "N/A"
+            dd = r.get("real_dd")
+            peak_dd = r.get("dd_yearly") or dd
+            consistency = r.get("profitable_months_pct") or "N/A"
+            lines.append(f"- {name}: alloc={alloc:.0f}% return={ret:+.1f}% risk={risk} dd={dd if dd else 'N/A'}% peak_dd={peak_dd if peak_dd else 'N/A'}% consistency={consistency}")
+        lines.append("")
+        lines.append(f"Total allocation currently: {total_alloc:.0f}%. Keep total at {total_alloc:.0f}% after reallocation.")
+        lines.append("Base decisions on multi-month return trends, consistency, drawdown history, and risk score. Ignore single-day movements.")
+        lines.append("Return ONLY valid JSON array: [{\"name\":\"...\",\"from\":N,\"to\":N,\"reason\":\"...\"}]")
+        lines.append("Set to=from for no change, to>from to increase, to<from to decrease. Max 80 chars per reason.")
+
+        prompt = "\n".join(lines)
+
+        kwargs = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": "You are a portfolio allocation expert for eToro copy trading. Return ONLY valid JSON."},
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": 0.2,
+            "max_tokens": 1500,
+        }
+        if extra_headers:
+            kwargs["extra_headers"] = extra_headers
+        if provider == "groq":
+            kwargs["response_format"] = {"type": "json_object"}
+
+        try:
+            response = client.chat.completions.create(**kwargs)
+            raw = response.choices[0].message.content
+            raw = raw.strip()
+            if raw.startswith("```"):
+                parts = raw.split("```")
+                raw = parts[1] if len(parts) >= 2 else raw
+                if raw.startswith("json"):
+                    raw = raw[4:]
+                raw = raw.strip()
+            raw = raw.split("```")[0].strip()
+
+            import json
+            data = json.loads(raw)
+            if isinstance(data, dict) and "suggestions" in data:
+                suggestions = data["suggestions"]
+            elif isinstance(data, list):
+                suggestions = data
+            else:
+                logger.error(f"AI reallocation: unexpected JSON format: {raw[:200]}")
+                return ""
+
+            NAME_W = max(len(s["name"][:10]) for s in suggestions) if suggestions else 10
+            NAME_W = max(NAME_W, 4)
+
+            block = [
+                "\n\U0001f4ca <b>Reallocation Suggestion (AI)</b>",
+                "\u2500" * 36,
+            ]
+            for s in suggestions:
+                name = s.get("name", "?")
+                fr = s.get("from", 0)
+                to = s.get("to", 0)
+                reason = s.get("reason", "")
+                if to > fr:
+                    icon = "\u2b06\ufe0f"
+                elif to < fr:
+                    icon = "\u2b07\ufe0f"
+                else:
+                    icon = "\u27a1\ufe0f"
+                block.append(f"{icon} {name[:10]:<{NAME_W}} {fr:.0f}%\u2192{to:.0f}%  ({reason})")
+            return "\n".join(block)
+
+        except Exception as e:
+            logger.exception(f"AI reallocation failed: {e}")
+            return ""
+
+    async def _generate_health_report(self, show_reallocation: bool = False) -> str:
         """Run full health analysis and return the summary text.
 
         Shared between /health command and scheduled 12-hour report.
@@ -982,6 +1103,11 @@ class TelegramBot:
                         ct.watch_consecutive = 0
             db.commit()
             logger.info(f"Health: watch_consecutive updated for {len(results)} traders")
+
+        if show_reallocation:
+            realloc = await self._ai_reallocate(results)
+            if realloc:
+                summary += realloc
 
         return summary
 
@@ -1420,8 +1546,19 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
             rss = "-"
         return f"{dds}/{rss}"
 
+    # Fixed column widths for monospace alignment in Telegram ``` blocks.
+    # Icon is 2 chars wide in monospace (emojis render double-width).
+    ICON_W = 2
+    NAME_W = 10
+    RET_W = 7
+    ALLOC_W = 4
+    DDR_W = 5
+    SC_W = 3
+    COL_GAP = 1
+    TABLE_W = ICON_W + COL_GAP + NAME_W + COL_GAP + RET_W + COL_GAP + ALLOC_W + COL_GAP + DDR_W + COL_GAP + SC_W
+
     def row(icon, name, ret_s, alloc_s, ddr_s, score_s):
-        return f"{icon} {name:<10.10} {ret_s:>5} {alloc_s:>4} {ddr_s:>4} {score_s:>3}"
+        return f"{icon:<{ICON_W}} {name[:NAME_W]:<{NAME_W}} {ret_s:>{RET_W}} {alloc_s:>{ALLOC_W}} {ddr_s:>{DDR_W}} {score_s:>{SC_W}}"
 
     uncopy = []
     keep = []
@@ -1460,28 +1597,28 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
     lines = [f"\U0001f4ca <b>Health \u2014 {total} traders</b> ({source_tag}{ai_tag})"]
     lines.append(f"\u2705 {pos} good  \u274c {neg} bad  \u26aa {flat} flat\n")
 
-    tbl = [row("", "Name", "Ret", "Al%", "D/R", "Sc")]
-    tbl.append("\u2500" * 32)
+    tbl = [row("  ", "Name", "Ret", "Al%", "D/R", "Sc")]
+    tbl.append("\u2500" * TABLE_W)
 
     if uncopy:
-        tbl.append(f"\u274c <b>UNCOPY</b>")
+        tbl.append(f"\u274c UNCOPY")
         for name, ret, alloc, risk, r, hs in uncopy:
             tbl.append(row("\U0001f534", name, ret_str(ret), fmt_alloc(alloc), fmt_dd_rs(r), str(hs)))
             logger.info(f"  UNCOPY {name}: ret={ret:.2f}%, score={hs}")
 
     if keep:
-        tbl.append(f"\u2705 <b>KEEP</b>")
+        tbl.append(f"\u2705 KEEP")
         for name, ret, alloc, risk, r, hs in keep:
             tbl.append(row("\U0001f7e2", name, ret_str(ret), fmt_alloc(alloc), fmt_dd_rs(r), str(hs)))
             logger.info(f"  KEEP {name}: ret={ret:.2f}%, score={hs}")
 
     if watch:
-        tbl.append(f"\U0001f50d <b>WATCH</b>")
+        tbl.append(f"\U0001f50d WATCH")
         for name, ret, alloc, risk, r, hs in watch:
             tbl.append(row("\U0001f7e1", name, ret_str(ret), fmt_alloc(alloc), fmt_dd_rs(r), str(hs)))
             logger.info(f"  WATCH {name}: ret={ret:.2f}%, score={hs}")
 
-    lines.append(f"<code>{chr(10).join(tbl)}</code>")
+    lines.append(f"```{chr(10).join(tbl)}```")
 
     # ── Reasons for WATCH and UNCOPY ──
     watch_reasons = []

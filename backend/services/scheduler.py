@@ -212,7 +212,7 @@ class SchedulerService:
                 return
 
             logger.info("Health report: starting scheduled analysis")
-            text = await bot._generate_health_report()
+            text = await bot._generate_health_report(show_reallocation=True)
             if text:
                 await bot.send_message(
                     f"<b>📊 Scheduled Health Report</b>\n{text}",
