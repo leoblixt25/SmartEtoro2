@@ -1586,7 +1586,7 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
     lines = [f"\U0001f4ca <b>Health \u2014 {total} traders</b> ({source_tag}{ai_tag})"]
     lines.append(f"\u2705 {pos} good  \u274c {neg} bad  \u26aa {flat} flat\n")
 
-    tbl = [row("", "Name", "Ret", "Al%", "D/R", "Sc")]
+    tbl = [row(" ", "Name", "Ret", "Al%", "D/R", "Sc")]
     tbl.append("\u2500" * 32)
 
     if uncopy:
@@ -1639,6 +1639,8 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
         name = r.get("trader", "?")
         if ds == "missing":
             dd_warnings.append(f"\u26a0\ufe0f {name}: DD source unavailable")
+        elif ds in ("weeklyDd", "dailyDd") and dy is None:
+            dd_warnings.append(f"\U0001f7e1 {name}: DD from {ds} (2-year peak data unavailable)")
         elif ds in ("weeklyDd", "dailyDd") and dy is not None and dy > abs(r.get("real_dd") or 0) * 1.5 and dy > 15:
             dd_warnings.append(f"\U0001f7e1 {name}: Current DD {abs(r.get('real_dd') or 0):.0f}%, 2-year peak {dy:.0f}%")
     if dd_warnings:
