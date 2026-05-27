@@ -701,6 +701,9 @@ class EToroAPIClient:
                     except (ValueError, TypeError):
                         continue
 
+            yearly_dd_raw = tradeinfo.get("yearlyDd")
+            if yearly_dd_raw is None:
+                yearly_dd_raw = tradeinfo.get("maxMonthlyDrawdown")
             result.update({
                 "avg_return": float(avg_raw) if avg_raw is not None else None,
                 "risk_score": float(risk_raw) if risk_raw is not None and risk_raw != 0 else None,
@@ -716,7 +719,7 @@ class EToroAPIClient:
                 "copiers": int(copiers_raw) if copiers_raw is not None else None,
                 "positions_count": int(positions_raw) if positions_raw is not None else None,
                 "peak_to_valley": float(peak_raw) if peak_raw is not None else None,
-                "yearly_dd": float(tradeinfo.get("yearlyDd") or tradeinfo.get("maxMonthlyDrawdown") or 0) if (tradeinfo.get("yearlyDd") is not None or tradeinfo.get("maxMonthlyDrawdown") is not None) else None,
+                "yearly_dd": float(yearly_dd_raw) if yearly_dd_raw is not None else None,
                 "profitable_months_pct": float(prof_months_raw) if prof_months_raw is not None else None,
                 "win_ratio": float(win_raw) if win_raw is not None else None,
                 "trades_count": int(trades_raw) if trades_raw is not None else None,
