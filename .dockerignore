@@ -1,0 +1,16 @@
+.git
+.gitignore
+.venv
+.env
+__pycache__
+*.pyc
+.pytest_cache
+tests
+frontend
+node_modules
+README.md
+system_context.md
+*.db
+.vercelignore
+vercel.json
+run_ranking.py
