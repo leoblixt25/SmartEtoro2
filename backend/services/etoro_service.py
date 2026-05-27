@@ -1547,30 +1547,31 @@ class EToroSyncService:
             closed_pnl = m.get("closedPositionsNetProfit", 0.0)
             total_pnl = closed_pnl + unrealized_pnl_mirror
 
-            # Compute original invested amount — try API mirror-level fields first.
-            # These represent the actual capital put into this trader copy, which is
-            # the correct denominator for P/L%. Fall back to current position amounts
-            # only when the API fields are missing (e.g. data migration edge case).
-            api_invested = (
-                m.get("investedAmount")
+            # Invested amount from actual position data — this is the current exposure
+            # which matches eToro's P/L% denominator (original copy investment).
+            # The API mirror-level fields like investedAmount are stale/per-mirror values
+            # that don't reflect the actual user-level position amounts.
+            invested_from_positions = sum(pos.get("amount", 0.0) for pos in positions)
+            initial_investment = invested_from_positions if invested_from_positions > 0 else (
+                m.get("currentInvestment")
+                or m.get("investedAmount")
                 or m.get("netInvestment")
                 or m.get("initialInvestment")
+                or 1.0
             )
-            if api_invested is not None:
-                try:
-                    original_investment = float(api_invested)
-                except (ValueError, TypeError):
-                    original_investment = 0.0
-            else:
-                invested_from_positions = sum(pos.get("amount", 0.0) for pos in positions)
-                original_investment = invested_from_positions if invested_from_positions > 0 else 1.0
+            try:
+                initial_investment = float(initial_investment)
+            except (ValueError, TypeError):
+                initial_investment = 1.0
 
-            # Mirror equity = invested + unrealized PnL (matches eToro UI Net Value column).
-            # Used for allocation_pct and stop-loss sizing, NOT for P/L% calculation.
-            mirror_equity = original_investment + unrealized_pnl_mirror
+            # Mirror equity = invested + unrealized PnL (matches eToro UI Net Value column)
+            mirror_equity = initial_investment + unrealized_pnl_mirror
 
-            # eToro P/L % = P/L / originalInvestment * 100  (matches My Portfolio column)
-            total_return_pct = (total_pnl / max(original_investment, 1.0)) * 100
+            # eToro P/L % = P/L / Net Value * 100 (matches eToro UI P/L(%) column)
+            # Net Value = initialInvestment + unrealizedPnL = mirror_equity
+            total_return_pct = (total_pnl / max(mirror_equity, 1.0)) * 100
+
+            # Clamp to realistic range
             total_return_pct = max(min(total_return_pct, 1000.0), -200.0)
             import json
             # eToro API mirrorId key can vary by account type (retail vs non-retail).

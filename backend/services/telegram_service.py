@@ -1546,19 +1546,8 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
             rss = "-"
         return f"{dds}/{rss}"
 
-    # Fixed column widths for monospace alignment in Telegram ``` blocks.
-    # Icon is 2 chars wide in monospace (emojis render double-width).
-    ICON_W = 2
-    NAME_W = 10
-    RET_W = 7
-    ALLOC_W = 4
-    DDR_W = 5
-    SC_W = 3
-    COL_GAP = 1
-    TABLE_W = ICON_W + COL_GAP + NAME_W + COL_GAP + RET_W + COL_GAP + ALLOC_W + COL_GAP + DDR_W + COL_GAP + SC_W
-
     def row(icon, name, ret_s, alloc_s, ddr_s, score_s):
-        return f"{icon:<{ICON_W}} {name[:NAME_W]:<{NAME_W}} {ret_s:>{RET_W}} {alloc_s:>{ALLOC_W}} {ddr_s:>{DDR_W}} {score_s:>{SC_W}}"
+        return f"{icon} {name:<10.10} {ret_s:>5} {alloc_s:>4} {ddr_s:>4} {score_s:>3}"
 
     uncopy = []
     keep = []
@@ -1597,8 +1586,8 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
     lines = [f"\U0001f4ca <b>Health \u2014 {total} traders</b> ({source_tag}{ai_tag})"]
     lines.append(f"\u2705 {pos} good  \u274c {neg} bad  \u26aa {flat} flat\n")
 
-    tbl = [row("  ", "Name", "Ret", "Al%", "D/R", "Sc")]
-    tbl.append("\u2500" * TABLE_W)
+    tbl = [row("", "Name", "Ret", "Al%", "D/R", "Sc")]
+    tbl.append("\u2500" * 32)
 
     if uncopy:
         tbl.append(f"\u274c UNCOPY")
