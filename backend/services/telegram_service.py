@@ -1546,8 +1546,8 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
             rss = "-"
         return f"{dds}/{rss}"
 
-    def row(icon, name, ret_s, alloc_s, ddr_s, score_s):
-        return f"{icon} {name:<10.10} {ret_s:>5} {alloc_s:>4} {ddr_s:>4} {score_s:>3}"
+    def row(name, ret_s, alloc_s, ddr_s, score_s):
+        return f" {name:<10.10} {ret_s:>5} {alloc_s:>4} {ddr_s:>4} {score_s:>3}"
 
     uncopy = []
     keep = []
@@ -1586,26 +1586,23 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
     lines = [f"\U0001f4ca <b>Health \u2014 {total} traders</b> ({source_tag}{ai_tag})"]
     lines.append(f"\u2705 {pos} good  \u274c {neg} bad  \u26aa {flat} flat\n")
 
-    tbl = [row(" ", "Name", "Ret", "Al%", "D/R", "Sc")]
-    tbl.append("\u2500" * 32)
-
-    if uncopy:
-        tbl.append(f"\u274c UNCOPY")
-        for name, ret, alloc, risk, r, hs in uncopy:
-            tbl.append(row("\U0001f534", name, ret_str(ret), fmt_alloc(alloc), fmt_dd_rs(r), str(hs)))
-            logger.info(f"  UNCOPY {name}: ret={ret:.2f}%, score={hs}")
+    tbl = [row("Name", "Ret", "Al%", "D/R", "Sc")]
+    tbl.append("\u2500" * 31)
 
     if keep:
         tbl.append(f"\u2705 KEEP")
         for name, ret, alloc, risk, r, hs in keep:
-            tbl.append(row("\U0001f7e2", name, ret_str(ret), fmt_alloc(alloc), fmt_dd_rs(r), str(hs)))
-            logger.info(f"  KEEP {name}: ret={ret:.2f}%, score={hs}")
+            tbl.append(row(name, ret_str(ret), fmt_alloc(alloc), fmt_dd_rs(r), str(hs)))
 
     if watch:
         tbl.append(f"\U0001f50d WATCH")
         for name, ret, alloc, risk, r, hs in watch:
-            tbl.append(row("\U0001f7e1", name, ret_str(ret), fmt_alloc(alloc), fmt_dd_rs(r), str(hs)))
-            logger.info(f"  WATCH {name}: ret={ret:.2f}%, score={hs}")
+            tbl.append(row(name, ret_str(ret), fmt_alloc(alloc), fmt_dd_rs(r), str(hs)))
+
+    if uncopy:
+        tbl.append(f"\u274c UNCOPY")
+        for name, ret, alloc, risk, r, hs in uncopy:
+            tbl.append(row(name, ret_str(ret), fmt_alloc(alloc), fmt_dd_rs(r), str(hs)))
 
     lines.append(f"```{chr(10).join(tbl)}```")
 
