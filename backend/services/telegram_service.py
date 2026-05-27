@@ -811,7 +811,7 @@ class TelegramBot:
 
     async def _cmd_health(self, update: Update, args: list[str]) -> None:
         try:
-            text = await self._generate_health_report()
+            text = await self._generate_health_report(show_reallocation=True)
             await self._reply(update, text)
         except Exception as e:
             logger.exception("Health analysis failed")
