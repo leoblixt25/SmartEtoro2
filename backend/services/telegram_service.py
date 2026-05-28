@@ -152,11 +152,9 @@ class TelegramBot:
             update = Update.de_json(payload, self._bot)
         except Exception:
             return
-        await self._handle_update(update)
-
-    async def _handle_update(self, update: Update) -> None:
         if not update.message or not update.message.text:
             return
+        # Deduplicate: skip if we already processed this update_id
         update_id = update.update_id
         if hasattr(self, '_processed_updates') and update_id in self._processed_updates:
             logger.debug(f"Skipping duplicate update_id={update_id}")
@@ -164,6 +162,7 @@ class TelegramBot:
         if not hasattr(self, '_processed_updates'):
             self._processed_updates = set()
         self._processed_updates.add(update_id)
+        # Trim old IDs (keep last 100)
         if len(self._processed_updates) > 100:
             self._processed_updates = set(list(self._processed_updates)[-100:])
         user_id = update.effective_user.id if update.effective_user else None
@@ -199,23 +198,6 @@ class TelegramBot:
                 update,
                 "Unknown command. Send /help for available commands.",
             )
-
-    async def start_polling(self):
-        if not self.enabled or not self._bot:
-            return
-        offset = None
-        logger.info("Telegram polling started — listening for commands...")
-        while True:
-            try:
-                updates = await self._bot.get_updates(offset=offset, timeout=30, allowed_updates=["message"])
-                for update in updates:
-                    offset = update.update_id + 1
-                    await self._handle_update(update)
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"Polling error: {e}")
-                await asyncio.sleep(5)
 
     # ── Commands ─────────────────────────────────
 
