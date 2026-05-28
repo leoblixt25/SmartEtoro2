@@ -76,25 +76,41 @@ async def lifespan(app: FastAPI):
 
     scheduler.start()
 
+    polling_task = None
     if telegram_bot.enabled:
-        try:
+        use_polling = os.getenv("TELEGRAM_POLLING", "").lower() in ("1", "true", "yes")
+        if use_polling:
             telegram_bot._started_at = datetime.utcnow()
-            webhook_url = telegram_bot.webhook_url()
-            await telegram_bot._bot.set_webhook(url=webhook_url)
-            logger.info(f"Telegram webhook set to {webhook_url}")
+            polling_task = asyncio.create_task(telegram_bot.start_polling())
             await telegram_bot.setup_commands()
             await telegram_bot.send_message(
-                "Smart Portfolio Assistant started.\n\n"
+                "Smart Portfolio Assistant started (polling mode).\n\n"
                 "Monitoring your copied traders with health analysis, "
                 "news tracking, and smart alerts.\n"
                 "Use the menu below or tap /help for commands.",
                 show_keyboard=True,
             )
-        except Exception as e:
-            logger.error(f"Telegram webhook setup failed: {e}")
+        else:
+            try:
+                telegram_bot._started_at = datetime.utcnow()
+                webhook_url = telegram_bot.webhook_url()
+                await telegram_bot._bot.set_webhook(url=webhook_url)
+                logger.info(f"Telegram webhook set to {webhook_url}")
+                await telegram_bot.setup_commands()
+                await telegram_bot.send_message(
+                    "Smart Portfolio Assistant started.\n\n"
+                    "Monitoring your copied traders with health analysis, "
+                    "news tracking, and smart alerts.\n"
+                    "Use the menu below or tap /help for commands.",
+                    show_keyboard=True,
+                )
+            except Exception as e:
+                logger.error(f"Telegram webhook setup failed: {e}")
 
     yield
 
+    if polling_task:
+        polling_task.cancel()
     scheduler.stop()
     logger.info("Platform shutdown complete.")
 
