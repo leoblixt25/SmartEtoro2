@@ -1561,33 +1561,17 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
             rss = "-"
         return f"{dds}/{rss}"
 
-    def ai_bucket(r):
-        s = r.get("status", "") or ""
-        status_upper = s.upper()
-        if status_upper in ("STRONG", "GOOD", "ELITE"):
-            return "keep"
-        if status_upper in ("WEAK", "AVOID"):
-            return "uncopy"
-        if status_upper == "WATCH":
-            return "watch"
-        return None
-
     def trader_score(r):
-        s = r.get("score") or r.get("health_score")
-        if s is not None:
-            return int(s)
         return _compute_health_score(r)
 
     uncopy = []
     keep = []
     watch = []
     for r in results:
-        bucket = ai_bucket(r)
-        reason = r.get("reason", "")
-        if not bucket:
-            watch_count = r.get("watch_consecutive", 0)
-            bucket, reason, _ = _assess_trader(r, watch_count)
+        watch_count = r.get("watch_consecutive", 0)
+        bucket, reason, confidence = _assess_trader(r, watch_count)
         r["_assessed_reason"] = reason
+        r["_assessed_confidence"] = confidence
         sc = trader_score(r)
         r["_health_score"] = sc
         entry = (r.get("trader", "?"), ret_val(r), r.get("allocation_pct") or 0, r.get("risk_score") or 0, r, sc)
