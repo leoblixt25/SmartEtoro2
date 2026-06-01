@@ -938,6 +938,14 @@ class TelegramBot:
                 else:
                     icon = "\u27a1\ufe0f"
                 block.append(f"{icon} {name[:10]:<{NAME_W}} {fr:.0f}%\u2192{to:.0f}%  ({reason})")
+            sum_from = sum(s.get("from", 0) for s in suggestions)
+            sum_to = sum(s.get("to", 0) for s in suggestions)
+            if abs(sum_to - sum_from) > 1:
+                diff = sum_from - sum_to
+                if diff > 0:
+                    block.append(f"\U0001f4b0 Cash remainder: {diff:.0f}%")
+                else:
+                    block.append(f"\u26a0\ufe0f Over-allocated by {abs(diff):.0f}%")
             return "\n".join(block)
 
         except Exception as e:
@@ -1333,9 +1341,7 @@ def _assess_trader(r: dict, watch_consecutive: int = 0) -> tuple:
         if text not in reasons:
             reasons.append(text)
 
-    if cum_pl > 0:
-        add_reason(f"Return +{cum_pl:.1f}%")
-    elif cum_pl < -2:
+    if cum_pl < -2:
         add_reason(f"Return {cum_pl:.1f}% declining")
 
     if trend_declining:
@@ -1406,6 +1412,8 @@ def _assess_trader(r: dict, watch_consecutive: int = 0) -> tuple:
     elif score >= 75:
         bucket = "keep"
         confidence = "High" if score >= 80 else "Medium"
+        if cum_pl > 0:
+            add_reason(f"Return +{cum_pl:.1f}%")
         if severe_decline:
             bucket = "watch"
             confidence = "Medium"
@@ -1421,6 +1429,8 @@ def _assess_trader(r: dict, watch_consecutive: int = 0) -> tuple:
         elif trend_positive or (consistency >= 60 and not trend_declining):
             bucket = "keep"
             confidence = "Medium"
+            if cum_pl > 0:
+                add_reason(f"Return +{cum_pl:.1f}%")
         elif trend_declining and watch_consecutive >= 2:
             bucket = "watch"
             confidence = "Medium"
@@ -1605,7 +1615,7 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
 
     ai_tag = " \U0001f916" if ai_used else ""
     lines = [f"\U0001f4ca <b>Health \u2014 {total} traders</b> ({source_tag}{ai_tag})"]
-    lines.append(f"\u2705 {pos} good  \u274c {neg} bad  \u26aa {flat} flat\n")
+    lines.append(f"\u2705 {pos} keep  \u274c {neg} uncopy  \U0001f50d {flat} watch\n")
 
     tbl = [f"{'Name':<12} {'Sc':>3} {'Ret':>7} {'Al%':>4} {'D/R':>5}"]
     tbl.append("\u2500" * 34)
