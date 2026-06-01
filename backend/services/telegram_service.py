@@ -1588,9 +1588,9 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
         else:
             watch.append(entry)
 
-    uncopy.sort(key=lambda x: -x[5])
-    keep.sort(key=lambda x: -x[5])
-    watch.sort(key=lambda x: -x[5])
+    uncopy.sort(key=lambda x: -x[1])
+    keep.sort(key=lambda x: -x[1])
+    watch.sort(key=lambda x: -x[1])
 
     total = len(results)
     source_tag = source_label if source_label else ("Live" if live else "Cached")
