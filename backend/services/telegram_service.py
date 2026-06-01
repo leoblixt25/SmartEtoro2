@@ -872,7 +872,7 @@ class TelegramBot:
         lines.append("")
         lines.append(f"Total allocation currently: {total_alloc:.0f}%. Keep total at {total_alloc:.0f}% after reallocation.")
         lines.append("Base decisions on multi-month return trends, consistency, drawdown history, and risk score. Ignore single-day movements.")
-        lines.append("Return ONLY valid JSON array: [{\"name\":\"...\",\"from\":N,\"to\":N,\"reason\":\"...\"}]")
+        lines.append("Return ONLY valid JSON object: {\"reallocations\": [{\"name\":\"...\",\"from\":N,\"to\":N,\"reason\":\"...\"}]}")
         lines.append("Set to=from for no change, to>from to increase, to<from to decrease. Max 80 chars per reason.")
 
         prompt = "\n".join(lines)
@@ -905,8 +905,14 @@ class TelegramBot:
 
             import json
             data = json.loads(raw)
-            if isinstance(data, dict) and "suggestions" in data:
-                suggestions = data["suggestions"]
+            if isinstance(data, dict):
+                for key in ("suggestions", "reallocations", "allocations", "items"):
+                    if key in data:
+                        suggestions = data[key]
+                        break
+                else:
+                    logger.error(f"AI reallocation: unexpected JSON format: {raw[:200]}")
+                    return ""
             elif isinstance(data, list):
                 suggestions = data
             else:
