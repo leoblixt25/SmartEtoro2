@@ -1155,7 +1155,7 @@ class TelegramBot:
             logger.info(f"Health: watch_consecutive updated for {len(results)} traders")
 
         if show_reallocation:
-            total_value = portfolio_summary.get("total_portfolio_value", 0)
+            total_value = portfolio_summary.get("total_portfolio_value") or portfolio_summary.get("total_invested_capital") or 0
             realloc = await self._ai_reallocate(results, total_value)
             if realloc:
                 summary += realloc
@@ -1649,13 +1649,13 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
     # ── Reasons for WATCH and UNCOPY ──
     watch_reasons = []
     for name, ret, alloc, risk, r, sc in watch:
-        reason = r.get("reason") or r.get("_assessed_reason", "")
+        reason = r.get("_assessed_reason") or r.get("reason", "")
         if reason:
             watch_reasons.append(f"\U0001f7e1 <b>{name}</b>: {reason}")
 
     uncopy_reasons = []
     for name, ret, alloc, risk, r, sc in uncopy:
-        reason = r.get("reason") or r.get("_assessed_reason", "")
+        reason = r.get("_assessed_reason") or r.get("reason", "")
         if reason:
             uncopy_reasons.append(f"\U0001f916 <b>{name}</b>: {reason}")
 
