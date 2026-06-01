@@ -817,7 +817,7 @@ class TelegramBot:
             logger.exception("Health analysis failed")
             await self._reply(update, f"Health analysis failed: {e}")
 
-    async def _ai_reallocate(self, results: list[dict]) -> str:
+    async def _ai_reallocate(self, results: list[dict], total_value: float = 0) -> str:
         """Ask AI for portfolio reallocation suggestions. Returns formatted block or empty string."""
         from backend.monitoring.ai_health_engine import AI_AVAILABLE
 
@@ -931,19 +931,27 @@ class TelegramBot:
                 fr = s.get("from", 0)
                 to = s.get("to", 0)
                 reason = s.get("reason", "")
+                fr_amt = fr / 100 * total_value if total_value else 0
+                to_amt = to / 100 * total_value if total_value else 0
+                if total_value:
+                    amt_str = f" (${fr_amt:,.0f}\u2192${to_amt:,.0f})"
+                else:
+                    amt_str = ""
                 if to > fr:
                     icon = "\u2b06\ufe0f"
                 elif to < fr:
                     icon = "\u2b07\ufe0f"
                 else:
                     icon = "\u27a1\ufe0f"
-                block.append(f"{icon} {name[:10]:<{NAME_W}} {fr:.0f}%\u2192{to:.0f}%  ({reason})")
+                block.append(f"{icon} {name[:10]:<{NAME_W}} {fr:.0f}%\u2192{to:.0f}%{amt_str}  ({reason})")
             sum_from = sum(s.get("from", 0) for s in suggestions)
             sum_to = sum(s.get("to", 0) for s in suggestions)
             if abs(sum_to - sum_from) > 1:
                 diff = sum_from - sum_to
                 if diff > 0:
-                    block.append(f"\U0001f4b0 Cash remainder: {diff:.0f}%")
+                    cash_amt = diff / 100 * total_value if total_value else 0
+                    cash_str = f" (${cash_amt:,.0f})" if total_value else ""
+                    block.append(f"\U0001f4b0 Cash remainder: {diff:.0f}%{cash_str}")
                 else:
                     block.append(f"\u26a0\ufe0f Over-allocated by {abs(diff):.0f}%")
             return "\n".join(block)
@@ -1147,7 +1155,8 @@ class TelegramBot:
             logger.info(f"Health: watch_consecutive updated for {len(results)} traders")
 
         if show_reallocation:
-            realloc = await self._ai_reallocate(results)
+            total_value = portfolio_summary.get("total_portfolio_value", 0)
+            realloc = await self._ai_reallocate(results, total_value)
             if realloc:
                 summary += realloc
 
