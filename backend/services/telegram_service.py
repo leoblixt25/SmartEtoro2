@@ -1430,8 +1430,8 @@ def _assess_trader(r: dict, watch_consecutive: int = 0) -> tuple:
 
     # ── KEEP/WATCH: score 60-74 ──
     elif score >= 60:
-        # Negative return + score < 65: uncopy — persistent loss, not just volatility
-        if cum_pl < 0 and score < 65:
+        # Negative return on significant loss with borderline score: uncopy
+        if cum_pl < -5 and score < 60:
             bucket = "uncopy"
             confidence = "Medium"
             add_reason(f"Negative return with score {score}/100")
@@ -1543,10 +1543,6 @@ def _compute_health_score(r: dict) -> int:
     ai_conf_score = {"HIGH": 5, "MEDIUM": 3, "LOW": 1}.get(ai_conf, 2)
 
     total = int(round(ret_score + dd_score + risk_score + cons_score + ai_conf_score))
-
-    # ── Negative return floor penalty ──
-    if cum_pl < 0:
-        total -= int(round(min(30, abs(cum_pl) * 10)))
 
     return max(0, min(100, total))
 
