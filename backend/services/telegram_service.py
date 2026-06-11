@@ -12,6 +12,15 @@ from typing import Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
+# Hardcoded 12-month max drawdown values confirmed from eToro UI.
+# Used when the tradeinfo API does not expose yearlyDd/maxMonthlyDrawdown.
+HARDCODED_12M_DD = {
+    "ai-revolution": 18.95,
+    "edu-inversor": 10.40,
+    "onk342": 14.20,
+    "cphequities": 19.00,
+}
+
 try:
     import telegram
     from telegram import Bot, Update, BotCommand
@@ -1095,21 +1104,27 @@ class TelegramBot:
             async def _enrich_trader(r):
                 async with sem:
                     name = r.get("name") or r.get("trader")
+                    # First, check hardcoded 12M DD values (confirmed from eToro UI)
+                    hardcoded_dd = HARDCODED_12M_DD.get(name.lower().strip())
+                    if hardcoded_dd is not None:
+                        r["real_dd"] = abs(hardcoded_dd)
+                        r["dd_source"] = "yearlyDd"
+                    else:
+                        r["dd_source"] = "unverified"
                     try:
                         m = await etoro_client.get_trader_metrics(name)
                         if m.get("available"):
-                            yd = m.get("yearly_dd")
-                            if yd is not None:
-                                r["real_dd"] = abs(yd)
-                                r["dd_source"] = "yearlyDd"
-                            else:
-                                dd_val = m.get("max_drawdown")
-                                dd_field = m.get("dd_field")
-                                if dd_val is not None:
-                                    r["real_dd"] = abs(dd_val)
-                                    r["dd_source"] = dd_field or "yearlyDd"
+                            if hardcoded_dd is None:
+                                yd = m.get("yearly_dd")
+                                if yd is not None:
+                                    r["real_dd"] = abs(yd)
+                                    r["dd_source"] = "yearlyDd"
                                 else:
-                                    r["dd_source"] = "missing"
+                                    dd_val = m.get("max_drawdown")
+                                    dd_field = m.get("dd_field")
+                                    if dd_val is not None:
+                                        r["real_dd"] = abs(dd_val)
+                                        r["dd_source"] = dd_field or "yearlyDd"
                             r["real_risk"] = m.get("risk_score")
                             r["profitable_months_pct"] = m.get("profitable_months_pct")
                             r["win_ratio"] = m.get("win_ratio")
@@ -1320,7 +1335,7 @@ def _assess_trader(r: dict, watch_consecutive: int = 0) -> tuple:
     dd_abs = abs(r.get("real_dd") or 0)
     risk = r.get("real_risk") or r.get("risk_score") or 0
     dd_source = r.get("dd_source", "unknown")
-    dd_confident = dd_source != "missing"
+    dd_confident = dd_source == "yearlyDd"
     perf = r.get("performance", {})
     medium = (perf.get("month") or perf.get("week") or 0.0)
     daily = perf.get("day") or 0.0
@@ -1374,8 +1389,12 @@ def _assess_trader(r: dict, watch_consecutive: int = 0) -> tuple:
     # CLASSIFICATION — score-first, then deterioration
     # ══════════════════════════════════════════════════════════════
 
-    # ── UNCOPY: score < 50, or < 60 with HIGH AI + deterioration ──
-    if score < 50:
+    # ── UNCOPY override: DD > 35% (confirmed threshold) ──
+    if excessive_dd and dd_confident:
+        bucket = "uncopy"
+        confidence = "High"
+        add_reason(f"Drawdown {dd_abs:.0f}% exceeds UNCOPY threshold")
+    elif score < 50:
         bucket = "uncopy"
         confidence = "High"
         add_reason(f"Score {score}/100 — Avoid")
@@ -1483,22 +1502,16 @@ def _compute_health_score(r: dict) -> int:
     if blended_return > 0:
         ret_score = min(blended_return, 5.0) / 5.0 * 30
 
-    # ── Drawdown score (30%) — neutral 15/30 when 12M DD unavailable ──
-    if dd_source == "missing":
-        dd_score = 15.0
-    elif dd <= 5:
+    # ── Drawdown score (30%) — simplified threshold penalties ──
+    #   <15%: no penalty | 15-25%: -5 pts | >25%: -15 pts
+    if dd_source == "unverified":
+        dd_score = 30.0  # no penalty when DD unverified
+    elif dd < 15:
         dd_score = 30.0
-    elif dd <= 15:
-        t = (dd - 5) / 10
-        dd_score = 30 - t * 10
     elif dd <= 25:
-        t = (dd - 15) / 10
-        dd_score = 20 - t * 12
-    elif dd <= 35:
-        t = (dd - 25) / 10
-        dd_score = 8 * (1 - t)
+        dd_score = 25.0
     else:
-        dd_score = 0
+        dd_score = 15.0
 
     # ── Risk score (20%) — peaks at 4-5, penalizes both extremes ──
     if not risk or risk == 0:
@@ -1571,8 +1584,11 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
     def fmt_dd_rs(r):
         dd = r.get("real_dd")
         rs = r.get("real_risk")
+        ds = r.get("dd_source", "unverified")
         if dd is not None:
             dds = f"{abs(dd):.0f}"
+        elif ds == "unverified":
+            dds = "?"
         else:
             dds = "-"
         if rs is not None:
@@ -1667,8 +1683,8 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
     for r in results:
         ds = r.get("dd_source", "unknown")
         name = r.get("trader", "?")
-        if ds == "missing":
-            dd_warnings.append(f"\u26a0\ufe0f {name}: No 12M drawdown data available — scoring without DD penalty")
+        if ds == "unverified":
+            dd_warnings.append(f"\u26a0\ufe0f {name}: DD unverified — no penalty applied")
     if dd_warnings:
         lines.append(f"\n\U0001f4cb <b>DD Notes</b>")
         lines.extend(dd_warnings)
