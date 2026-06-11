@@ -866,9 +866,8 @@ class TelegramBot:
             ret = r.get("total_return_pct") or 0
             risk = r.get("real_risk") or r.get("risk_score") or "N/A"
             dd = r.get("real_dd")
-            peak_dd = r.get("dd_yearly") or dd
             consistency = r.get("profitable_months_pct") or "N/A"
-            lines.append(f"- {name}: alloc={alloc:.0f}% return={ret:+.1f}% risk={risk} dd={dd if dd else 'N/A'}% peak_dd={peak_dd if peak_dd else 'N/A'}% consistency={consistency}")
+            lines.append(f"- {name}: alloc={alloc:.0f}% return={ret:+.1f}% risk={risk} dd={dd if dd else 'N/A'}% consistency={consistency}")
         lines.append("")
         lines.append(f"Total allocation currently: {total_alloc:.0f}%. Keep total at {total_alloc:.0f}% after reallocation.")
         lines.append("Base decisions on multi-month return trends, consistency, drawdown history, and risk score. Ignore single-day movements.")
@@ -1075,6 +1074,7 @@ class TelegramBot:
                         "news_analysis": {"impact": ai_r.get("news_risk", "unknown"), "details": td.get("_news_summary", "")},
                         "holdings_count": len(td.get("_holdings", [])),
                         "total_return_pct": td.get("total_return_pct"),
+                        "return_1m": td.get("return_1m"),
                         "allocation_pct": td.get("allocation_pct"),
                         "holdings_source": td.get("_holdings_source", "unknown"),
                         "data_flags": {},
@@ -1102,19 +1102,12 @@ class TelegramBot:
                             if yd is not None:
                                 r["real_dd"] = abs(yd)
                                 r["dd_source"] = "yearlyDd"
-                                r["dd_yearly"] = None
                             else:
                                 dd_val = m.get("max_drawdown")
                                 dd_field = m.get("dd_field")
-                                yearly_peak = m.get("peak_to_valley")
                                 if dd_val is not None:
                                     r["real_dd"] = abs(dd_val)
-                                    r["dd_source"] = dd_field or "peakToValley"
-                                    r["dd_yearly"] = abs(yearly_peak) if yearly_peak is not None and dd_field != "peakToValley" else None
-                                elif yearly_peak is not None:
-                                    r["real_dd"] = abs(yearly_peak)
-                                    r["dd_source"] = "peakToValley"
-                                    r["dd_yearly"] = None
+                                    r["dd_source"] = dd_field or "yearlyDd"
                                 else:
                                     r["dd_source"] = "missing"
                             r["real_risk"] = m.get("risk_score")
@@ -1322,11 +1315,12 @@ def _assess_trader(r: dict, watch_consecutive: int = 0) -> tuple:
     """
     score = r.get("_health_score") or _compute_health_score(r)
     cum_pl = r.get("total_return_pct") or 0.0
+    ret_1m = r.get("return_1m")
+    blended_pl = 0.50 * cum_pl + 0.50 * ret_1m if ret_1m is not None else cum_pl
     dd_abs = abs(r.get("real_dd") or 0)
     risk = r.get("real_risk") or r.get("risk_score") or 0
     dd_source = r.get("dd_source", "unknown")
     dd_confident = dd_source != "missing"
-    dd_yearly = r.get("dd_yearly")
     perf = r.get("performance", {})
     medium = (perf.get("month") or perf.get("week") or 0.0)
     daily = perf.get("day") or 0.0
@@ -1363,8 +1357,6 @@ def _assess_trader(r: dict, watch_consecutive: int = 0) -> tuple:
         add_reason(f"Drawdown {dd_abs:.0f}% approaching penalty threshold")
     if dd_abs > 0 and not dd_confident:
         add_reason("DD source unavailable — score may be unreliable")
-    if dd_yearly is not None and dd_yearly > dd_abs * 1.5 and dd_yearly > 15:
-        add_reason(f"Past 2-year peak {dd_yearly:.0f}% (recovered)")
     if low_consistency:
         add_reason(f"Consistency {consistency}/100 below threshold")
     if high_risk:
@@ -1431,7 +1423,7 @@ def _assess_trader(r: dict, watch_consecutive: int = 0) -> tuple:
     # ── KEEP/WATCH: score 60-74 ──
     elif score >= 60:
         # Negative return on significant loss with borderline score: uncopy
-        if cum_pl < -5 and score < 60:
+        if blended_pl < -5 and score < 65:
             bucket = "uncopy"
             confidence = "Medium"
             add_reason(f"Negative return with score {score}/100")
@@ -1474,6 +1466,8 @@ def _compute_health_score(r: dict) -> int:
     Components: return 30%, drawdown 30%, risk 20%, consistency 15%, AI 5%.
     """
     cum_pl = r.get("total_return_pct") or 0.0
+    ret_1m = r.get("return_1m")
+    dd_source = r.get("dd_source", "missing")
     dd = abs(r.get("real_dd") or 0)
     risk = r.get("real_risk") or r.get("risk_score") or 0
     prof_months = r.get("profitable_months_pct")
@@ -1481,13 +1475,18 @@ def _compute_health_score(r: dict) -> int:
     trades = r.get("trades_count")
     ai_conf = (r.get("confidence") or "LOW").upper()
 
-    # ── Return score (30%) — capped at +5% "good enough" ceiling ──
+    # ── Return score (30%) — smoothed blend to avoid recency bias ──
+    blended_return = cum_pl
+    if ret_1m is not None:
+        blended_return = 0.50 * cum_pl + 0.50 * ret_1m
     ret_score = 0.0
-    if cum_pl > 0:
-        ret_score = min(cum_pl, 5.0) / 5.0 * 30
+    if blended_return > 0:
+        ret_score = min(blended_return, 5.0) / 5.0 * 30
 
-    # ── Drawdown score (30%) — reward low DD, accelerate penalty >15% ──
-    if dd <= 5:
+    # ── Drawdown score (30%) — neutral 15/30 when 12M DD unavailable ──
+    if dd_source == "missing":
+        dd_score = 15.0
+    elif dd <= 5:
         dd_score = 30.0
     elif dd <= 15:
         t = (dd - 5) / 10
@@ -1667,14 +1666,9 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
     dd_warnings = []
     for r in results:
         ds = r.get("dd_source", "unknown")
-        dy = r.get("dd_yearly")
         name = r.get("trader", "?")
         if ds == "missing":
-            dd_warnings.append(f"\u26a0\ufe0f {name}: DD source unavailable")
-        elif ds in ("weeklyDd", "dailyDd") and dy is None:
-            dd_warnings.append(f"\U0001f7e1 {name}: DD from {ds} (yearly peak data unavailable)")
-        elif ds in ("weeklyDd", "dailyDd") and dy is not None and dy > abs(r.get("real_dd") or 0) * 1.5 and dy > 15:
-            dd_warnings.append(f"\U0001f7e1 {name}: Current DD {abs(r.get('real_dd') or 0):.0f}%, yearly peak {dy:.0f}%")
+            dd_warnings.append(f"\u26a0\ufe0f {name}: No 12M drawdown data available — scoring without DD penalty")
     if dd_warnings:
         lines.append(f"\n\U0001f4cb <b>DD Notes</b>")
         lines.extend(dd_warnings)

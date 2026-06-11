@@ -625,13 +625,12 @@ class EToroAPIClient:
             gain_raw = tradeinfo.get("gainPerc") or tradeinfo.get("gain")
             risk_raw = tradeinfo.get("riskScore")
             # Drawdown fields from eToro tradeinfo API:
-            #   yearlyDd    — rolling 12-month max drawdown
-            #   peakToValley — peak-to-valley over the query period (LastTwoYears)
-            #   weeklyDd    — weekly max drawdown
-            #   dailyDd     — daily max drawdown
+            #   yearlyDd           — rolling 12-month max drawdown (primary)
+            #   maxMonthlyDrawdown — alias for yearly drawdown (some accounts)
+            # NEVER use peakToValley, weeklyDd, dailyDd — they are NOT 12M drawdown.
             dd_raw = None
             dd_field_name = None
-            for dd_field in ("yearlyDd", "maxMonthlyDrawdown", "peakToValley", "weeklyDd", "dailyDd"):
+            for dd_field in ("yearlyDd", "maxMonthlyDrawdown"):
                 v = tradeinfo.get(dd_field)
                 if v is not None:
                     dd_raw = v
@@ -639,12 +638,11 @@ class EToroAPIClient:
                     logger.info("DD for %s: field='%s' value=%s", username, dd_field, v)
                     break
             if dd_raw is None:
-                logger.info("No DD field found for %s. Keys: %s", username, resp_keys)
+                logger.info("No 12M DD field found for %s. Keys: %s", username, resp_keys)
             vol_raw = tradeinfo.get("volatility")
             avg_raw = tradeinfo.get("avgReturn")
 
             # Advanced metrics for professional analysis
-            peak_raw = tradeinfo.get("peakToValley")
             prof_months_raw = tradeinfo.get("profitableMonthsPct")
             win_raw = tradeinfo.get("winRatio")
             trades_raw = tradeinfo.get("trades")
@@ -652,19 +650,19 @@ class EToroAPIClient:
 
             logger.debug(
                 "Tradeinfo extracted for %s: gainPerc=%s riskScore=%s "
-                "maxMonthlyDrawdown=%s volatility=%s avgReturn=%s "
+                "yearlyDd=%s volatility=%s avgReturn=%s "
                 "Copiers=%s NumberOfOpenPositions=%s MinInvestment=%s "
-                "peakToValley=%s profitableMonthsPct=%s winRatio=%s",
+                "profitableMonthsPct=%s winRatio=%s",
                 username, gain_raw, risk_raw, dd_raw, vol_raw,
                 avg_raw, copiers_raw, positions_raw, min_copy,
-                peak_raw, prof_months_raw, win_raw,
+                prof_months_raw, win_raw,
             )
 
             missing_fields = []
             if risk_raw is None or risk_raw == 0:
                 missing_fields.append("riskScore")
             if dd_raw is None:
-                missing_fields.append("maxMonthlyDrawdown")
+                missing_fields.append("yearlyDd")
             if vol_raw is None:
                 missing_fields.append("volatility")
             if avg_raw is None:
@@ -675,8 +673,6 @@ class EToroAPIClient:
                 missing_fields.append("minCopyAmount")
             if copiers_raw is None:
                 missing_fields.append("copiers")
-            if peak_raw is None:
-                missing_fields.append("peakToValley")
             if prof_months_raw is None:
                 missing_fields.append("profitableMonthsPct")
             if win_raw is None:
@@ -701,9 +697,7 @@ class EToroAPIClient:
                     except (ValueError, TypeError):
                         continue
 
-            yearly_dd_raw = tradeinfo.get("yearlyDd")
-            if yearly_dd_raw is None:
-                yearly_dd_raw = tradeinfo.get("maxMonthlyDrawdown")
+            yearly_dd_raw = tradeinfo.get("yearlyDd") or tradeinfo.get("maxMonthlyDrawdown")
             result.update({
                 "avg_return": float(avg_raw) if avg_raw is not None else None,
                 "risk_score": float(risk_raw) if risk_raw is not None and risk_raw != 0 else None,
@@ -718,7 +712,6 @@ class EToroAPIClient:
                 "confidence": 1.0,
                 "copiers": int(copiers_raw) if copiers_raw is not None else None,
                 "positions_count": int(positions_raw) if positions_raw is not None else None,
-                "peak_to_valley": float(peak_raw) if peak_raw is not None else None,
                 "yearly_dd": float(yearly_dd_raw) if yearly_dd_raw is not None else None,
                 "profitable_months_pct": float(prof_months_raw) if prof_months_raw is not None else None,
                 "win_ratio": float(win_raw) if win_raw is not None else None,
