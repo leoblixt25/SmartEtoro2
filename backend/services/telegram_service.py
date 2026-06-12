@@ -1167,7 +1167,7 @@ class TelegramBot:
             tc = portfolio_summary["traders"]
             portfolio_block = (
                 f"<b>Portfolio Summary</b>\n"
-                f"\u2500" * 34 + "\n"
+                "\u2500" * 34 + "\n"
                 f"{'Value':<12} ${val:>10,.2f}\n"
                 f"{'Invested':<12} ${inv:>10,.2f}\n"
                 f"{'P&L':<12} ${pnl_sign}{pnl:>9,.2f}  {pnl_icon}\n"

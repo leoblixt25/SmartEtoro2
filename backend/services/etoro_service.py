@@ -1428,12 +1428,10 @@ class EToroSyncService:
                 available_cash = float(v)
                 break
 
-        # Each mirror has its own availableAmount (uninvested cash per copy).
-        # Portfolio-level credit is often 0 when cash is spread across mirrors.
+        # mirror availableAmount is per-copy buffer, NOT free portfolio cash.
+        # Only use portfolio-level credit field for available_cash.
         mirror_cash = sum(m.get("availableAmount", 0.0) for m in mirrors)
-        if mirror_cash > available_cash:
-            logger.info(f"  Using mirror availableAmount sum ({mirror_cash:.2f}) instead of portfolio credit ({available_cash:.2f})")
-            available_cash = mirror_cash
+        logger.info(f"  portfolio credit={available_cash:.2f}, mirror buffer sum={mirror_cash:.2f} (ignored)")
 
         # ── Log all top-level keys from clientPortfolio for debugging ──
         logger.info(f"RAW CP keys: {list(cp.keys())}")
