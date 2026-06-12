@@ -623,6 +623,7 @@ class EToroAPIClient:
             positions_raw = tradeinfo.get("NumberOfOpenPositions", tradeinfo.get("numOfOpenPositions"))
 
             gain_raw = tradeinfo.get("gainPerc") or tradeinfo.get("gain")
+            weekly_gain_raw = tradeinfo.get("thisWeekGain")
             risk_raw = tradeinfo.get("riskScore")
             # Drawdown fields from eToro tradeinfo API:
             #   yearlyDd           — rolling 12-month max drawdown (primary)
@@ -705,6 +706,7 @@ class EToroAPIClient:
                 "dd_field": dd_field_name,
                 "volatility": float(vol_raw) if vol_raw is not None else None,
                 "total_return_pct": float(gain_raw) if gain_raw is not None else None,
+                "this_week_gain": float(weekly_gain_raw) if weekly_gain_raw is not None else None,
                 "is_copyable": bool(is_copyable),
                 "min_copy_amount": min_copy,
                 "available": True,

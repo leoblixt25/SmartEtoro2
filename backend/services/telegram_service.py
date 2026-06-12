@@ -1042,15 +1042,25 @@ class TelegramBot:
 
                 await asyncio.sleep(0.1)
 
-            # Build portfolio summary for AI
+            # Build portfolio summary
+            total_pnl = (p.unrealized_pnl or 0) + (p.realized_pnl or 0)
             portfolio_summary = {
-                "total_invested_capital": float(p.total_value or 0),
+                "total_value": float(p.total_value or 0),
+                "invested": float(p.invested_amount or 0),
+                "cash": float(p.available_cash or 0),
+                "pnl": float(total_pnl),
+                "traders": len(enriched),
+            }
+
+            # AI portfolio summary (separate — AI expects different field names)
+            ai_portfolio_summary = {
+                "total_invested_capital": float(p.invested_amount or 0),
                 "total_portfolio_value": float(p.total_value or 0),
                 "total_available_cash": float(p.available_cash or 0),
             }
 
             # Try AI analysis on the full batch
-            ai_results = await ai_analyze_traders(enriched, portfolio_summary)
+            ai_results = await ai_analyze_traders(enriched, ai_portfolio_summary)
 
             results = []
             if ai_results:
@@ -1147,6 +1157,25 @@ class TelegramBot:
 
             summary = _build_health_summary(results, live=freshness, source_label=label, ts=ts, ai_used=bool(ai_results))
 
+            # Build portfolio summary block
+            val = portfolio_summary["total_value"]
+            inv = portfolio_summary["invested"]
+            cash = portfolio_summary["cash"]
+            pnl = portfolio_summary["pnl"]
+            pnl_icon = "\u2705" if pnl >= 0 else "\u274c"
+            pnl_sign = "+" if pnl >= 0 else ""
+            tc = portfolio_summary["traders"]
+            portfolio_block = (
+                f"<b>Portfolio Summary</b>\n"
+                f"\u2500" * 34 + "\n"
+                f"{'Value':<12} ${val:>10,.2f}\n"
+                f"{'Invested':<12} ${inv:>10,.2f}\n"
+                f"{'P&L':<12} ${pnl_sign}{pnl:>9,.2f}  {pnl_icon}\n"
+                f"{'Cash':<12} ${cash:>10,.2f}\n"
+                f"{'Traders':<12} {tc:>10}\n"
+            )
+            summary = portfolio_block + "\n" + summary
+
             for r in results:
                 trader_name = r.get("name") or r.get("trader")
                 bucket, _, _ = _assess_trader(r, r.get("watch_consecutive", 0))
@@ -1163,7 +1192,7 @@ class TelegramBot:
             logger.info(f"Health: watch_consecutive updated for {len(results)} traders")
 
         if show_reallocation:
-            total_value = portfolio_summary.get("total_portfolio_value") or portfolio_summary.get("total_invested_capital") or 0
+            total_value = portfolio_summary.get("total_value", 0)
             realloc = await self._ai_reallocate(results, total_value)
             if realloc:
                 summary += realloc
@@ -1575,9 +1604,6 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
             return ov
         return 0.0
 
-    def ret_str(v):
-        return f"{v:+.1f}%" if v else "0.0%"
-
     def fmt_alloc(pct):
         return f"{pct:.0f}%"
 
@@ -1637,23 +1663,42 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
     lines = [f"\U0001f4ca <b>Health \u2014 {total} traders</b> ({source_tag}{ai_tag})"]
     lines.append(f"\u2705 {pos} keep  \u274c {neg} uncopy  \U0001f50d {flat} watch\n")
 
-    tbl = [f"{'Name':<12} {'Sc':>3} {'Ret':>7} {'Al%':>4} {'D/R':>5}"]
-    tbl.append("\u2500" * 34)
+    def fmt_pct(v: float | None, force_sign: bool = False) -> str:
+        if v is None:
+            return "-"
+        sign = "+" if force_sign and v >= 0 else ""
+        return f"{sign}{v:.1f}%"
+
+    def fmt_win(v: float | None) -> str:
+        if v is None:
+            return "-"
+        if v > 1:
+            return f"{v:.0f}%"
+        return f"{v*100:.0f}%"
+
+    def monthly_marker(r: dict) -> str:
+        pm = r.get("profitable_months_pct")
+        if pm is None:
+            return "\u23fa"  # ⏺
+        return "\U0001f817" if pm >= 50 else "\U0001f815"  # ↗ if >=50% profitable, ↘ otherwise
+
+    tbl = [f"{'Name':<12} {'Sc':>3} {'Ret':>7} {'W%':>3} {'Wk':>5} {'Al%':>4} {'D/R':>5}"]
+    tbl.append("\u2500" * 43)
 
     if keep:
         tbl.append(f"\u2705 KEEP")
         for name, ret, alloc, risk, r, sc in keep:
-            tbl.append(f"{name[:12]:<12} {sc:>3} {ret_str(ret):>7} {fmt_alloc(alloc):>4} {fmt_dd_rs(r):>5}")
+            tbl.append(f"{name[:12]:<12} {sc:>3} {fmt_pct(ret, True):>7} {fmt_win(r.get('win_ratio')):>3} {fmt_pct(r.get('this_week_gain'), True):>5} {fmt_alloc(alloc):>4} {fmt_dd_rs(r):>5}")
 
     if watch:
         tbl.append(f"\U0001f50d WATCH")
         for name, ret, alloc, risk, r, sc in watch:
-            tbl.append(f"{name[:12]:<12} {sc:>3} {ret_str(ret):>7} {fmt_alloc(alloc):>4} {fmt_dd_rs(r):>5}")
+            tbl.append(f"{name[:12]:<12} {sc:>3} {fmt_pct(ret, True):>7} {fmt_win(r.get('win_ratio')):>3} {fmt_pct(r.get('this_week_gain'), True):>5} {fmt_alloc(alloc):>4} {fmt_dd_rs(r):>5}")
 
     if uncopy:
         tbl.append(f"\u274c UNCOPY")
         for name, ret, alloc, risk, r, sc in uncopy:
-            tbl.append(f"{name[:12]:<12} {sc:>3} {ret_str(ret):>7} {fmt_alloc(alloc):>4} {fmt_dd_rs(r):>5}")
+            tbl.append(f"{name[:12]:<12} {sc:>3} {fmt_pct(ret, True):>7} {fmt_win(r.get('win_ratio')):>3} {fmt_pct(r.get('this_week_gain'), True):>5} {fmt_alloc(alloc):>4} {fmt_dd_rs(r):>5}")
 
     lines.append(f"<code>{chr(10).join(tbl)}</code>")
 
@@ -1689,17 +1734,46 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
         lines.append(f"\n\U0001f4cb <b>DD Notes</b>")
         lines.extend(dd_warnings)
 
+    # ── Alerts ──
+    results_flat = keep + watch + uncopy
+    loss_alerts = []
+    profit_alerts = []
+    weekly_warnings = []
+    for name, ret, alloc, risk, r, sc in results_flat:
+        wk = r.get("this_week_gain")
+        if wk is not None and wk < -3:
+            weekly_warnings.append(f"{name}: {wk:+.1f}% this week")
+        if ret <= -10:
+            loss_alerts.append(f"\U0001f534 <b>{name}</b>: {ret:+.1f}% loss  \U0001f6a8")
+        elif ret >= 10:
+            profit_alerts.append(f"\U0001f7e2 <b>{name}</b>: {ret:+.1f}% profit  \U0001f389")
+
+    if profit_alerts:
+        lines.append(f"\n\U0001f389 <b>Profit Alert</b>")
+        lines.extend(profit_alerts)
+    if loss_alerts:
+        lines.append(f"\n\U0001f6a8 <b>Loss Alert</b>")
+        lines.extend(loss_alerts)
+    if weekly_warnings:
+        lines.append(f"\n\u26a0\ufe0f <b>Weekly Warning</b>")
+        lines.extend(weekly_warnings)
+
     # ── Action ──
     high_conf_uncopy = [e for e in uncopy if e[4].get("_assessed_confidence") == "High"]
+    med_uncopy = [e for e in uncopy if e[4].get("_assessed_confidence") in ("Medium",)]
+    pause_candidates = [e for e in watch if e[4].get("_assessed_reason", "").lower().find("declin") >= 0 or (e[1] < -5)]
     if high_conf_uncopy:
         target = next((e for e in high_conf_uncopy if e[2] >= 1.0), high_conf_uncopy[0])
         lines.append(f"\n\U0001f6a8 <b>Action:</b> UNCOPY <b>{target[0]}</b> ({target[1]:+.1f}% at {target[2]:.1f}%)")
     elif uncopy:
-        lines.append(f"\n\u26a0\ufe0f <b>Review needed</b> \u2014 potential UNCOPY candidates flagged")
+        lines.append(f"\n\u26a0\ufe0f <b>Review needed</b> \u2014 {len(uncopy)} UNCOPY candidate(s)")
     elif not keep:
         lines.append(f"\n\U0001f6a8 <b>No traders making money</b> \u2014 review entire portfolio")
-    elif len(keep) >= total * 0.6:
+    elif len(keep) >= total * 0.6 and not loss_alerts:
         lines.append(f"\n\U0001f535 <b>Portfolio healthy</b> \u2014 {pos}/{total} profitable")
+    if pause_candidates and not high_conf_uncopy:
+        pause_target = pause_candidates[0]
+        lines.append(f"\U0001f504 <b>Pause & Reinvest:</b> Stop copying <b>{pause_target[0]}</b> ({pause_target[1]:+.1f}%), move capital to KEEP traders")
 
     if ts:
         lines.append(f"\n\U0001f4c5 {ts} ({source_tag})")
