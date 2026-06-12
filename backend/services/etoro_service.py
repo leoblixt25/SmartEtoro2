@@ -1390,13 +1390,11 @@ class EToroSyncService:
 
         Total Value priority:
           1. Direct API equity field (try multiple field names)
-          2. Sum of ACTIVE mirror current values + available_cash
-             (mirror current value = initialInvestment + unrealizedPnL,
-              NOT including closedPositionsNetProfit which is already
-              paid out to the account)
+          2. Sum of ACTIVE mirror current values + direct positions +
+             available_cash + realized PnL from closed copy positions
 
-        Never adds realized PnL to total_value — it is already reflected
-        in the mirror current values and/or available cash.
+        realized_pnl must be added explicitly — the eToro API /portfolio
+        endpoint does not reflect closed position profits in availableCash.
         """
         cp = raw.get("clientPortfolio", {})
         positions = cp.get("positions", [])
@@ -1458,9 +1456,11 @@ class EToroSyncService:
             total_value = api_equity
             equity_source = f"api_{equity_field}"
         else:
-            # Fallback: sum of mirror current values + direct positions + cash
+            # Fallback: sum of mirror current values + direct positions + cash + realized PnL
             # Mirror current value = position amounts + unrealizedPnL only
             # (NOT using API initialInvestment — it's stale for added funds)
+            # Realized PnL from closed copy positions is NOT reflected in
+            # availableCash on this endpoint — must be added explicitly.
             sum_mirror_current = 0.0
             for m in mirrors:
                 mirror_amounts = sum(
@@ -1478,7 +1478,7 @@ class EToroSyncService:
             for p in positions:
                 sum_direct_current += p.get("amount", 0.0) + p.get("unrealizedPnL", {}).get("pnL", 0.0)
 
-            total_value = sum_mirror_current + sum_direct_current + available_cash
+            total_value = sum_mirror_current + sum_direct_current + available_cash + realized_pnl
             equity_source = "mirror_sum"
 
         currency = "EUR" if cp.get("accountCurrencyId") == 2 else "USD"
