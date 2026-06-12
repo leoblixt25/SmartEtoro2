@@ -1456,11 +1456,13 @@ class EToroSyncService:
             total_value = api_equity
             equity_source = f"api_{equity_field}"
         else:
-            # Fallback: sum of mirror current values + direct positions + cash + realized PnL
-            # Mirror current value = position amounts + unrealizedPnL only
-            # (NOT using API initialInvestment — it's stale for added funds)
-            # Realized PnL from closed copy positions is NOT reflected in
-            # availableCash on this endpoint — must be added explicitly.
+            # Fallback: sum of mirror current values + direct positions +
+            # portfolio cash + per-copy cash buffers
+            # Mirror current value = position amounts + unrealizedPnL
+            # Per-copy cash buffer = availableAmount (uninvested copy cash,
+            # includes proceeds from closed positions).
+            # The eToro /portfolio endpoint does not reflect per-copy buffers
+            # in the portfolio-level credit field — they must be added.
             sum_mirror_current = 0.0
             for m in mirrors:
                 mirror_amounts = sum(
@@ -1478,7 +1480,10 @@ class EToroSyncService:
             for p in positions:
                 sum_direct_current += p.get("amount", 0.0) + p.get("unrealizedPnL", {}).get("pnL", 0.0)
 
-            total_value = sum_mirror_current + sum_direct_current + available_cash + realized_pnl
+            # Per-copy cash buffers — part of portfolio equity but not free cash
+            mirror_cash = sum(m.get("availableAmount", 0.0) for m in mirrors)
+
+            total_value = sum_mirror_current + sum_direct_current + available_cash + mirror_cash
             equity_source = "mirror_sum"
 
         currency = "EUR" if cp.get("accountCurrencyId") == 2 else "USD"
