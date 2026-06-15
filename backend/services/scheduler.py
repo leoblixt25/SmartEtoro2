@@ -27,6 +27,10 @@ class SchedulerService:
     def __init__(self):
         self._scheduler: Optional[object] = None
 
+    @staticmethod
+    def _is_weekend() -> bool:
+        return datetime.utcnow().weekday() >= 5  # 5=Sat, 6=Sun
+
     def start(self):
         if not SCHEDULER_AVAILABLE:
             return
@@ -120,9 +124,10 @@ class SchedulerService:
                     success = await sync_service.sync_portfolio_data(db, portfolio.id)
                     if success:
                         logger.info(f"eToro sync successful for portfolio {portfolio.id}")
-                        triggered = await check_return_thresholds(db, portfolio.id, bot=bot)
-                        if triggered:
-                            logger.info(f"Threshold alerts triggered: {[a['title'] for a in triggered]}")
+                        if not self._is_weekend():
+                            triggered = await check_return_thresholds(db, portfolio.id, bot=bot)
+                            if triggered:
+                                logger.info(f"Threshold alerts triggered: {[a['title'] for a in triggered]}")
                     else:
                         logger.debug(f"eToro sync skipped for portfolio {portfolio.id}")
         except Exception as e:
@@ -130,6 +135,9 @@ class SchedulerService:
 
     async def _trader_monitor_job(self):
         """Run Trader Health Monitor — evaluate active traders' holdings and news."""
+        if self._is_weekend():
+            logger.info("Weekend — skipping trader monitor")
+            return
         from backend.database.connection import db_session
         from backend.database.models import Portfolio, Alert, AlertType
         from backend.services.etoro_service import EToroSyncService
@@ -182,6 +190,9 @@ class SchedulerService:
 
     async def _daily_discovery_job(self):
         """Daily discovery report — 5-stage mass scan, send top results."""
+        if self._is_weekend():
+            logger.info("Weekend — skipping daily discovery")
+            return
         from backend.services.telegram_service import TelegramBot
         from backend.services.screener_service import run_screener_and_wait
 
@@ -204,6 +215,9 @@ class SchedulerService:
 
     async def _health_report_job(self):
         """Scheduled health report — runs _generate_health_report and sends to Telegram."""
+        if self._is_weekend():
+            logger.info("Weekend — skipping health report")
+            return
         from backend.services.telegram_service import TelegramBot
 
         try:
