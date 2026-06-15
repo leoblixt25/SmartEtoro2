@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -197,6 +197,7 @@ class TelegramBot:
             "/settings": self._cmd_settings,
             "/news": self._cmd_news,
             "/allocate": self._cmd_allocate,
+            "/chart": self._cmd_chart,
             "/help": self._cmd_help,
         }
         handler = handlers.get(command)
@@ -432,6 +433,7 @@ class TelegramBot:
             "/watchlist \u2013 Monitored traders\n"
             "/settings \u2013 Current limits and preferences\n"
             "/news \u2013 Latest market news\n"
+            "/chart [days] \u2013 Equity curve & P&L chart (default 30d)\n"
             "/allocate &lt;name&gt; &lt;amount&gt; \u2013 Change copy amount\n"
             "/help \u2013 Show this message"
         )
@@ -971,6 +973,95 @@ class TelegramBot:
         except Exception as e:
             logger.exception(f"AI reallocation failed: {e}")
             return ""
+
+    async def _cmd_chart(self, update: Update, args: list[str]) -> None:
+        """Equity curve + daily P&L chart."""
+        from backend.database.connection import db_session
+        from backend.database.models import Portfolio, PortfolioSnapshot
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        import matplotlib.dates as mdates
+        from io import BytesIO
+
+        try:
+            days = 30
+            if args and args[0].isdigit():
+                days = min(int(args[0]), 365)
+
+            with db_session() as db:
+                p = db.query(Portfolio).first()
+                if not p:
+                    await self._reply(update, "No portfolio found.")
+                    return
+
+                since = datetime.utcnow() - timedelta(days=days)
+                snaps = (
+                    db.query(PortfolioSnapshot)
+                    .filter(
+                        PortfolioSnapshot.portfolio_id == p.id,
+                        PortfolioSnapshot.recorded_at >= since,
+                    )
+                    .order_by(PortfolioSnapshot.recorded_at.asc())
+                    .all()
+                )
+
+                if len(snaps) < 2:
+                    await self._reply(update, f"Not enough data ({len(snaps)} snapshots). Sync more days first.")
+                    return
+
+                dates = [s.recorded_at for s in snaps]
+                values = [s.total_value for s in snaps]
+                pnl = [0.0]
+                for i in range(1, len(values)):
+                    pnl.append(values[i] - values[i - 1])
+
+            plt.style.use("dark_background")
+            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 6), gridspec_kw={"height_ratios": [3, 1]})
+            fig.patch.set_facecolor("#1a1a2e")
+
+            for ax in (ax1, ax2):
+                ax.set_facecolor("#1a1a2e")
+                ax.tick_params(colors="#888888")
+                ax.spines["bottom"].set_color("#333333")
+                ax.spines["left"].set_color("#333333")
+                ax.spines["top"].set_visible(False)
+                ax.spines["right"].set_visible(False)
+
+            ax1.plot(dates, values, color="#00d4aa", linewidth=2, label="Equity")
+            ax1.fill_between(dates, values[0], values, alpha=0.1, color="#00d4aa")
+            start_val = values[0] if values else 0
+            end_val = values[-1] if values else 0
+            pnl_total = end_val - start_val
+            color = "#00d4aa" if pnl_total >= 0 else "#ff6b6b"
+            s = self._sym(p.currency or "USD")
+            ax1.set_title(f"Portfolio ({days}d)", color="#ffffff", fontsize=14, fontweight="bold")
+            ax1.set_ylabel(f"Value ({s})", color="#888888")
+            ax1.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{s}{x:,.0f}"))
+            ax1.xaxis.set_major_formatter(mdates.DateFormatter("%b %d"))
+            ax1.legend([f"Equity  ({pnl_total:+.2f}{s})"], loc="upper left", facecolor="#1a1a2e", labelcolor="#cccccc")
+
+            colors = ["#00d4aa" if v >= 0 else "#ff6b6b" for v in pnl]
+            ax2.bar(dates, pnl, color=colors, width=max(0.5, days * 0.02))
+            ax2.axhline(y=0, color="#555555", linewidth=0.5)
+            ax2.set_ylabel(f"Daily P&L ({s})", color="#888888")
+            ax2.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{s}{x:+,.0f}"))
+            ax2.xaxis.set_major_formatter(mdates.DateFormatter("%b %d"))
+
+            plt.tight_layout()
+            buf = BytesIO()
+            fig.savefig(buf, format="png", dpi=120, bbox_inches="tight")
+            plt.close(fig)
+            buf.seek(0)
+
+            caption = (
+                f"\U0001f4c8 <b>Portfolio Equity</b>  |  {days}d\n"
+                f"{s}{start_val:,.2f} \u2192 {s}{end_val:,.2f}  ({pnl_total:+.2f}{s})"
+            )
+            await update.message.reply_photo(photo=buf, caption=caption, parse_mode=ParseMode.HTML)
+        except Exception as e:
+            logger.exception("Chart generation failed")
+            await self._reply(update, f"\u274c Chart error: {e}")
 
     async def _generate_health_report(self, show_reallocation: bool = False) -> str:
         """Run full health analysis and return the summary text.
