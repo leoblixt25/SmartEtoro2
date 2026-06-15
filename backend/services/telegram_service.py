@@ -1015,6 +1015,7 @@ class TelegramBot:
                 pnl = [0.0]
                 for i in range(1, len(values)):
                     pnl.append(values[i] - values[i - 1])
+                currency = p.currency or "USD"
 
             plt.style.use("dark_background")
             fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 6), gridspec_kw={"height_ratios": [3, 1]})
@@ -1034,7 +1035,7 @@ class TelegramBot:
             end_val = values[-1] if values else 0
             pnl_total = end_val - start_val
             color = "#00d4aa" if pnl_total >= 0 else "#ff6b6b"
-            s = self._sym(p.currency or "USD")
+            s = self._sym(currency)
             ax1.set_title(f"Portfolio ({days}d)", color="#ffffff", fontsize=14, fontweight="bold")
             ax1.set_ylabel(f"Value ({s})", color="#888888")
             ax1.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{s}{x:,.0f}"))
