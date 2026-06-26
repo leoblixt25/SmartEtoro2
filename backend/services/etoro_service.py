@@ -1337,7 +1337,8 @@ class EToroSyncService:
                 profitable = sum(1 for t in active_traders if (t.total_return_pct or 0) > 0)
                 profit_pct = (profitable / len(active_traders)) * 100
                 score = profit_pct * 0.50
-                total_ret = (portfolio.unrealized_pnl + portfolio.realized_pnl) / max(portfolio.invested_amount, 1) * 100
+                # CHANGED: P&L = total_value - invested_amount (was unrealized+realized, which was wrong)
+                total_ret = (portfolio.total_value - portfolio.invested_amount) / max(portfolio.invested_amount, 1) * 100
                 ret_score = max(0, min(100, 50 + total_ret * 5))
                 score += ret_score * 0.30
                 div_score = min(100, len(active_traders) * 10)

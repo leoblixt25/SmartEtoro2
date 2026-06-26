@@ -30,6 +30,93 @@ try:
 except ImportError:
     TELEGRAM_AVAILABLE = False
 
+# ── Score history helpers ───────────────────────────────────────────
+SCORE_HISTORY_PATH = "score_history.json"
+
+def _load_score_history():
+    """Load score history dict {username: [(timestamp_iso, score), ...]}."""
+    import json
+    try:
+        with open(SCORE_HISTORY_PATH) as f:
+            data = json.load(f)
+            # Prune entries older than 30 days
+            cutoff = (datetime.utcnow() - timedelta(days=30)).isoformat()
+            pruned = {}
+            for user, entries in data.items():
+                fresh = [(ts, s) for ts, s in entries if ts >= cutoff]
+                if fresh:
+                    pruned[user] = fresh
+            return pruned
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+def _save_score_history(user_scores: dict):
+    """Save score history dict, keyed by username, each with [(timestamp_iso, score)]."""
+    import json
+    history = _load_score_history()
+    now_iso = datetime.utcnow().isoformat()
+    for username, score in user_scores.items():
+        if username not in history:
+            history[username] = []
+        history[username].append((now_iso, score))
+    with open(SCORE_HISTORY_PATH, "w") as f:
+        json.dump(history, f, indent=2)
+
+def _score_trend(username: str, current_score: int) -> str:
+    """Return trend indicator: ↑ ↓ → NEW based on 7-day score change."""
+    history = _load_score_history()
+    entries = history.get(username, [])
+    now = datetime.utcnow()
+    cutoff_7d = (now - timedelta(days=7)).isoformat()
+    # Find oldest entry within 7 days
+    old_entries = [(ts, s) for ts, s in entries if ts >= cutoff_7d]
+    if len(old_entries) < 2:
+        return "NEW"
+    oldest_score = old_entries[0][1]
+    diff = current_score - oldest_score
+    if diff >= 3:
+        return "\u2191"  # ↑
+    if diff <= -3:
+        return "\u2193"  # ↓
+    return "\u2192"  # →
+
+# ── Market context helper ───────────────────────────────────────────
+async def _fetch_market_context() -> str:
+    """Fetch 1-day % change for SPY, QQQ, BTC-USD via yfinance."""
+    try:
+        import yfinance as yf
+        symbols = ["SPY", "QQQ", "BTC-USD"]
+        parts = []
+        for sym in symbols:
+            try:
+                ticker = yf.Ticker(sym)
+                hist = ticker.history(period="2d")
+                if len(hist) >= 2:
+                    close_today = hist["Close"].iloc[-1]
+                    close_yesterday = hist["Close"].iloc[-2]
+                    change_pct = (close_today - close_yesterday) / close_yesterday * 100
+                    sign = "+" if change_pct >= 0 else ""
+                    label = "BTC" if sym == "BTC-USD" else sym
+                    parts.append(f"{label} {sign}{change_pct:.1f}%")
+            except Exception:
+                pass
+        if parts:
+            return f"\U0001f30d Market: {' | '.join(parts)}"
+    except Exception:
+        pass
+    return ""
+
+# ── Watchlist helper ────────────────────────────────────────────────
+def _load_watchlist() -> list:
+    """Load replacement candidate usernames from watchlist.json."""
+    import json
+    try:
+        with open("watchlist.json") as f:
+            data = json.load(f)
+            return data if isinstance(data, list) else []
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+
 
 class TelegramBot:
 
@@ -1139,12 +1226,17 @@ class TelegramBot:
                 await asyncio.sleep(0.1)
 
             # Build portfolio summary
-            total_pnl = (p.unrealized_pnl or 0) + (p.realized_pnl or 0)
+            val = float(p.total_value or 0)
+            inv = float(p.invested_amount or 0)
+            old_pnl = float((p.unrealized_pnl or 0) + (p.realized_pnl or 0))
+            new_pnl = val - inv
+            logger.info(f"P&L DEBUG: value={val:.2f} invested={inv:.2f} old_pnl(unrealized+realized)={old_pnl:.2f} new_pnl(value-invested)={new_pnl:.2f}")
+            total_pnl = new_pnl  # CHANGED: P&L = value - invested (was unrealized+realized)
             portfolio_summary = {
-                "total_value": float(p.total_value or 0),
-                "invested": float(p.invested_amount or 0),
+                "total_value": val,
+                "invested": inv,
                 "cash": float(p.available_cash or 0),
-                "pnl": float(total_pnl),
+                "pnl": total_pnl,
                 "traders": len(enriched),
             }
 
@@ -1190,6 +1282,7 @@ class TelegramBot:
                         "holdings_count": len(td.get("_holdings", [])),
                         "total_return_pct": td.get("total_return_pct"),
                         "return_1m": td.get("return_1m"),
+                        "this_week_gain": td.get("return_1w"),  # CHANGED: populate weekly return from trader data
                         "allocation_pct": td.get("allocation_pct"),
                         "holdings_source": td.get("_holdings_source", "unknown"),
                         "data_flags": {},
@@ -1236,6 +1329,7 @@ class TelegramBot:
                             r["win_ratio"] = m.get("win_ratio")
                             r["trades_count"] = m.get("trades_count")
                             r["weeks_since_registration"] = m.get("weeks_since_registration")
+                            r["this_week_gain"] = m.get("this_week_gain")  # CHANGED: populate weekly return from tradeinfo API
                     except Exception:
                         pass
             await asyncio.gather(*[_enrich_trader(r) for r in results])
@@ -1271,6 +1365,23 @@ class TelegramBot:
                 f"{'Traders':<12} {tc:>10}\n"
             )
             summary = portfolio_block + "\n" + summary
+
+            # CHANGED: Save scores to history and prepend market context
+            market_line = await _fetch_market_context()
+            if market_line:
+                summary = market_line + "\n\n" + summary
+            # Save each trader's health score to rolling history
+            try:
+                scores = {}
+                for r in results:
+                    name = r.get("name") or r.get("trader")
+                    sc = r.get("_health_score")
+                    if name and sc is not None:
+                        scores[name] = sc
+                if scores:
+                    _save_score_history(scores)
+            except Exception:
+                logger.exception("Failed to save score history")
 
             for r in results:
                 trader_name = r.get("name") or r.get("trader")
@@ -1778,23 +1889,29 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
             return "\u23fa"  # ⏺
         return "\U0001f817" if pm >= 50 else "\U0001f815"  # ↗ if >=50% profitable, ↘ otherwise
 
-    tbl = [f"{'Name':<12} {'Sc':>3} {'Ret':>7} {'W%':>3} {'Wk':>5} {'Al%':>4} {'D/R':>5}"]
-    tbl.append("\u2500" * 43)
+    def trend(sc: int, r: dict) -> str:  # CHANGED: score trend indicator
+        return _score_trend(r.get("trader", "?"), sc)
+
+    tbl = [f"{'Name':<12} {'Sc':>3} {'T':>2} {'Ret':>7} {'W%':>3} {'Wk':>5} {'Al%':>4} {'D/R':>5}"]  # CHANGED: added T column for trend
+    tbl.append("\u2500" * 46)  # CHANGED: extended separator
 
     if keep:
         tbl.append(f"\u2705 KEEP")
         for name, ret, alloc, risk, r, sc in keep:
-            tbl.append(f"{name[:12]:<12} {sc:>3} {fmt_pct(ret, True):>7} {fmt_win(r.get('win_ratio')):>3} {fmt_pct(r.get('this_week_gain'), True):>5} {fmt_alloc(alloc):>4} {fmt_dd_rs(r):>5}")
+            tr = trend(sc, r)  # CHANGED
+            tbl.append(f"{name[:12]:<12} {sc:>3} {tr:>2} {fmt_pct(ret, True):>7} {fmt_win(r.get('win_ratio')):>3} {fmt_pct(r.get('this_week_gain'), True):>5} {fmt_alloc(alloc):>4} {fmt_dd_rs(r):>5}")  # CHANGED: added trend
 
     if watch:
         tbl.append(f"\U0001f50d WATCH")
         for name, ret, alloc, risk, r, sc in watch:
-            tbl.append(f"{name[:12]:<12} {sc:>3} {fmt_pct(ret, True):>7} {fmt_win(r.get('win_ratio')):>3} {fmt_pct(r.get('this_week_gain'), True):>5} {fmt_alloc(alloc):>4} {fmt_dd_rs(r):>5}")
+            tr = trend(sc, r)  # CHANGED
+            tbl.append(f"{name[:12]:<12} {sc:>3} {tr:>2} {fmt_pct(ret, True):>7} {fmt_win(r.get('win_ratio')):>3} {fmt_pct(r.get('this_week_gain'), True):>5} {fmt_alloc(alloc):>4} {fmt_dd_rs(r):>5}")  # CHANGED: added trend
 
     if uncopy:
         tbl.append(f"\u274c UNCOPY")
         for name, ret, alloc, risk, r, sc in uncopy:
-            tbl.append(f"{name[:12]:<12} {sc:>3} {fmt_pct(ret, True):>7} {fmt_win(r.get('win_ratio')):>3} {fmt_pct(r.get('this_week_gain'), True):>5} {fmt_alloc(alloc):>4} {fmt_dd_rs(r):>5}")
+            tr = trend(sc, r)  # CHANGED
+            tbl.append(f"{name[:12]:<12} {sc:>3} {tr:>2} {fmt_pct(ret, True):>7} {fmt_win(r.get('win_ratio')):>3} {fmt_pct(r.get('this_week_gain'), True):>5} {fmt_alloc(alloc):>4} {fmt_dd_rs(r):>5}")  # CHANGED: added trend
 
     lines.append(f"<code>{chr(10).join(tbl)}</code>")
 
@@ -1814,6 +1931,14 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
     if uncopy_reasons:
         lines.append(f"\n\u274c <b>Why UNCOPY</b>")
         lines.extend(uncopy_reasons)
+
+    # CHANGED: Replacement suggestions for UNCOPY traders
+    if uncopy:
+        watchlist = _load_watchlist()
+        copied_usernames = {r.get("trader") or r.get("name") for r in results}
+        replacements = [u for u in watchlist if u not in copied_usernames]
+        if replacements:
+            lines.append(f"\U0001f501 <b>Replacement candidates:</b> {', '.join(replacements[:5])}")
 
     if watch_reasons:
         lines.append(f"\n\U0001f50d <b>Why WATCH</b>")
@@ -1869,7 +1994,10 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
         lines.append(f"\n\U0001f535 <b>Portfolio healthy</b> \u2014 {pos}/{total} profitable")
     if pause_candidates and not high_conf_uncopy:
         pause_target = pause_candidates[0]
-        lines.append(f"\U0001f504 <b>Pause & Reinvest:</b> Stop copying <b>{pause_target[0]}</b> ({pause_target[1]:+.1f}%), move capital to KEEP traders")
+        if keep:  # CHANGED: only suggest moving to KEEP if KEEP traders exist
+            lines.append(f"\U0001f504 <b>Pause & Reinvest:</b> Stop copying <b>{pause_target[0]}</b> ({pause_target[1]:+.1f}%), move capital to KEEP traders")
+        else:  # CHANGED: no KEEP traders — hold as cash
+            lines.append(f"\U0001f504 <b>Pause & Reinvest:</b> Stop copying <b>{pause_target[0]}</b> ({pause_target[1]:+.1f}%). \u26a0\ufe0f No KEEP traders available \u2014 hold reallocation capital as cash until a trader qualifies")
 
     if ts:
         lines.append(f"\n\U0001f4c5 {ts} ({source_tag})")
