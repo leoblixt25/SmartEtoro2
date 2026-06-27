@@ -1892,26 +1892,26 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
     def trend(sc: int, r: dict) -> str:  # CHANGED: score trend indicator
         return _score_trend(r.get("trader", "?"), sc)
 
-    tbl = [f"{'Name':<12} {'Sc':>3} {'T':>2} {'Ret':>7} {'W%':>3} {'Wk':>5} {'Al%':>4} {'D/R':>5}"]  # CHANGED: added T column for trend
-    tbl.append("\u2500" * 46)  # CHANGED: extended separator
+    tbl = [f"{'Name':<10} {'Sc':>4} {'Ret':>7} {'Wk':>5} {'Al%':>4} {'D/R':>5}"]  # CHANGED: merged T into Sc, removed W%
+    tbl.append("\u2500" * 40)
 
     if keep:
         tbl.append(f"\u2705 KEEP")
         for name, ret, alloc, risk, r, sc in keep:
-            tr = trend(sc, r)  # CHANGED
-            tbl.append(f"{name[:12]:<12} {sc:>3} {tr:>2} {fmt_pct(ret, True):>7} {fmt_win(r.get('win_ratio')):>3} {fmt_pct(r.get('this_week_gain'), True):>5} {fmt_alloc(alloc):>4} {fmt_dd_rs(r):>5}")  # CHANGED: added trend
+            _sc = f"{sc}{trend(sc, r)}"
+            tbl.append(f"{name[:10]:<10} {_sc:>4} {fmt_pct(ret, True):>7} {fmt_pct(r.get('this_week_gain'), True):>5} {fmt_alloc(alloc):>4} {fmt_dd_rs(r):>5}")
 
     if watch:
         tbl.append(f"\U0001f50d WATCH")
         for name, ret, alloc, risk, r, sc in watch:
-            tr = trend(sc, r)  # CHANGED
-            tbl.append(f"{name[:12]:<12} {sc:>3} {tr:>2} {fmt_pct(ret, True):>7} {fmt_win(r.get('win_ratio')):>3} {fmt_pct(r.get('this_week_gain'), True):>5} {fmt_alloc(alloc):>4} {fmt_dd_rs(r):>5}")  # CHANGED: added trend
+            _sc = f"{sc}{trend(sc, r)}"
+            tbl.append(f"{name[:10]:<10} {_sc:>4} {fmt_pct(ret, True):>7} {fmt_pct(r.get('this_week_gain'), True):>5} {fmt_alloc(alloc):>4} {fmt_dd_rs(r):>5}")
 
     if uncopy:
         tbl.append(f"\u274c UNCOPY")
         for name, ret, alloc, risk, r, sc in uncopy:
-            tr = trend(sc, r)  # CHANGED
-            tbl.append(f"{name[:12]:<12} {sc:>3} {tr:>2} {fmt_pct(ret, True):>7} {fmt_win(r.get('win_ratio')):>3} {fmt_pct(r.get('this_week_gain'), True):>5} {fmt_alloc(alloc):>4} {fmt_dd_rs(r):>5}")  # CHANGED: added trend
+            _sc = f"{sc}{trend(sc, r)}"
+            tbl.append(f"{name[:10]:<10} {_sc:>4} {fmt_pct(ret, True):>7} {fmt_pct(r.get('this_week_gain'), True):>5} {fmt_alloc(alloc):>4} {fmt_dd_rs(r):>5}")
 
     lines.append(f"<code>{chr(10).join(tbl)}</code>")
 
@@ -1959,11 +1959,7 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
     results_flat = keep + watch + uncopy
     loss_alerts = []
     profit_alerts = []
-    weekly_warnings = []
     for name, ret, alloc, risk, r, sc in results_flat:
-        wk = r.get("this_week_gain")
-        if wk is not None and wk < -3:
-            weekly_warnings.append(f"{name}: {wk:+.1f}% this week")
         if ret <= -10:
             loss_alerts.append(f"\U0001f534 <b>{name}</b>: {ret:+.1f}% loss  \U0001f6a8")
         elif ret >= 10:
@@ -1975,9 +1971,6 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
     if loss_alerts:
         lines.append(f"\n\U0001f6a8 <b>Loss Alert</b>")
         lines.extend(loss_alerts)
-    if weekly_warnings:
-        lines.append(f"\n\u26a0\ufe0f <b>Weekly Warning</b>")
-        lines.extend(weekly_warnings)
 
     # ── Action ──
     high_conf_uncopy = [e for e in uncopy if e[4].get("_assessed_confidence") == "High"]
