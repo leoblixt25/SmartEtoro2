@@ -555,7 +555,7 @@ class TelegramBot:
                         CopiedTrader.is_paused.is_(False),
                     ).count()
                     s = self._sym(p.currency or "USD")
-                    total_pnl = (p.unrealized_pnl or 0) + (p.realized_pnl or 0)
+                    total_pnl = float(p.total_value or 0) - float(p.invested_amount or 0)  # CHANGED: P&L = value - invested
                     pnl_sign = "+" if total_pnl >= 0 else ""
                     tbl = [
                         f"{'Metric':<12} {'Value':>14}",
