@@ -1702,17 +1702,22 @@ def _assess_trader(r: dict, watch_consecutive: int = 0) -> tuple:
 def _compute_dimension_scores(r: dict) -> dict:
     """Five-dimension score breakdown per the institutional framework.
 
-    Returns {holds_quality, risk_mgmt, manager_skill, market_context, alloc_efficiency, total}.
+    Returns {holds_quality, risk_mgmt, manager_skill, market_context, alloc_efficiency,
+             total, has_holdings, has_news, confidence}.
+    Dimensions without data return None and are excluded from the total with reweighting.
     """
     holdings = r.get("_holdings") or []
     dd = abs(r.get("real_dd") or 0)
     rs = r.get("real_risk") or r.get("risk_score") or 0
     pm = r.get("profitable_months_pct")
     ret = r.get("total_return_pct") or 0
+    has_holdings = bool(holdings)
+    news = r.get("_news_by_symbol") or {}
+    has_news = bool(news)
 
-    # ── Portfolio Quality (30%) — holdings depth, concentration, sector diversity ──
-    hq = 12  # neutral baseline
-    if holdings:
+    # ── Portfolio Quality (30%) — requires holdings data ──
+    if has_holdings:
+        hq = 12
         count = len(holdings)
         top_w = max(h.get("weight", 0) for h in holdings) or 100
         types = set(h.get("type", "other") for h in holdings)
@@ -1727,9 +1732,11 @@ def _compute_dimension_scores(r: dict) -> dict:
         quality_stocks = {"NVDA", "MSFT", "AAPL", "GOOGL", "GOOG", "AMZN", "META", "TSLA"}
         if any(h.get("symbol", "").upper() in quality_stocks for h in holdings):
             hq = min(30, hq + 2)
-    holds_quality = min(30, max(6, hq))
+        holds_quality = min(30, max(6, hq))
+    else:
+        holds_quality = None
 
-    # ── Risk Management (25%) — drawdown + risk score + concentration ──
+    # ── Risk Management (25%) — always computable (drawdown + risk score) ──
     dd_part = 12
     if dd < 10: dd_part = 14
     elif dd < 15: dd_part = 12
@@ -1743,7 +1750,7 @@ def _compute_dimension_scores(r: dict) -> dict:
     else: rs_part = 4
     risk_mgmt = min(25, max(5, dd_part + rs_part))
 
-    # ── Manager Skill (20%) — profitable months, consistency, return ──
+    # ── Manager Skill (20%) — always computable (profitable months, return) ──
     ms = 8
     if pm is not None:
         if pm >= 70: ms += 8
@@ -1756,9 +1763,8 @@ def _compute_dimension_scores(r: dict) -> dict:
     elif ret >= 3: ms += 4
     manager_skill = min(20, max(4, ms))
 
-    # ── Market Context (15%) — news sentiment, sector alignment ──
+    # ── Market Context (15%) — news available; sector bonus only with holdings ──
     mc = 8
-    news = r.get("_news_by_symbol") or {}
     pos = sum(1 for v in news.values() for a in v if a.get("sentiment") == "positive")
     neg = sum(1 for v in news.values() for a in v if a.get("sentiment") == "negative")
     total_n = pos + neg
@@ -1767,27 +1773,56 @@ def _compute_dimension_scores(r: dict) -> dict:
         if ratio >= 0.6: mc += 5
         elif ratio >= 0.4: mc += 3
         else: mc += 1
-    if any(h.get("type") == "stock" for h in holdings):
+    if has_holdings and any(h.get("type") == "stock" for h in holdings):
         mc += 2
     market_context = min(15, max(3, mc))
 
-    # ── Capital Allocation Efficiency (10%) — risk-adjusted return sustainability ──
+    # ── Capital Allocation Efficiency (10%) — return + drawdown; concentration bonus only with holdings ──
     ae = 5
     if ret > 5: ae += 3
     elif ret > 0: ae += 2
     elif ret > -5: ae += 1
     if dd < 15 and ret > 0: ae += 2
     elif dd < 20: ae += 1
+    if has_holdings:
+        top_w = max(h.get("weight", 0) for h in holdings) or 100
+        if top_w < 30: ae += 1
     alloc_efficiency = min(10, max(2, ae))
 
-    total_score = holds_quality + risk_mgmt + manager_skill + market_context + alloc_efficiency
+    # ── Total — reweight available dimensions ──
+    dims = [
+        (holds_quality, 30),
+        (risk_mgmt, 25),
+        (manager_skill, 20),
+        (market_context, 15),
+        (alloc_efficiency, 10),
+    ]
+    avail_scores = [(s, w) for s, w in dims if s is not None]
+    avail_weight = sum(w for _, w in avail_scores)
+    if avail_weight > 0:
+        total_score = sum(s * w / avail_weight * 100 for s, w in avail_scores)
+    else:
+        total_score = 50
+
+    # ── Confidence level ──
+    na_count = sum(1 for s, _ in dims if s is None)
+    if na_count == 0:
+        confidence = "High"
+    elif na_count <= 2:
+        confidence = "Medium"
+    else:
+        confidence = "Low"
+
     return {
         "holds_quality": holds_quality,
         "risk_mgmt": risk_mgmt,
         "manager_skill": manager_skill,
         "market_context": market_context,
         "alloc_efficiency": alloc_efficiency,
-        "total": min(100, max(0, total_score)),
+        "total": min(100, max(0, int(round(total_score)))),
+        "has_holdings": has_holdings,
+        "has_news": has_news,
+        "confidence": confidence,
     }
 
 
@@ -1842,9 +1877,18 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
     else:
         status = "\U0001f534 Review Required"
 
+    # Determine overall confidence level
+    confs = [r["_dim_scores"]["confidence"] for r in results]
+    if "Low" in confs:
+        overall_confidence = "Low"
+    elif "Medium" in confs:
+        overall_confidence = "Medium"
+    else:
+        overall_confidence = "High"
+
     lines = [f"\U0001f4ca <b>PORTFOLIO HEALTH REPORT</b>"]
     lines.append(f"\n<b>Overall Health Score: {overall_score}/100</b>")
-    lines.append(f"Status: {status}")
+    lines.append(f"Status: {status}  |  Confidence: {overall_confidence}")
 
     # ── Portfolio Summary ──
     core_count = sum(1 for r in results if _assess_trader(r, r.get("watch_consecutive", 0))[0] == "keep")
@@ -1918,8 +1962,19 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
         lines.append(f"\n<b>{name}</b> \u2014 {classification} {decl} <i>{tr}</i>")
         lines.append(f"Score: {sc}/100 | Alloc: {alloc:.0f}%")
 
-        # Score breakdown
-        lines.append(f"Quality:{ds['holds_quality']}/30 Risk:{ds['risk_mgmt']}/25 Skill:{ds['manager_skill']}/20 Mkt:{ds['market_context']}/15 Eff:{ds['alloc_efficiency']}/10")
+        # Score breakdown — show N/A for unavailable dimensions
+        def _fmt_dim(label: str, val, max_v: int) -> str:
+            if val is None:
+                return f"{label}:N/A"
+            return f"{label}:{val}/{max_v}"
+        parts = [
+            _fmt_dim("Quality", ds["holds_quality"], 30),
+            _fmt_dim("Risk", ds["risk_mgmt"], 25),
+            _fmt_dim("Skill", ds["manager_skill"], 20),
+            _fmt_dim("Mkt", ds["market_context"], 15),
+            _fmt_dim("Eff", ds["alloc_efficiency"], 10),
+        ]
+        lines.append(" ".join(parts))
 
         # Holdings analysis
         holdings = r.get("_holdings") or []
@@ -1940,6 +1995,8 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
                 conc_note.append(f"{', '.join(sorted(types))} exposure")
             if conc_note:
                 lines.append(" | ".join(conc_note))
+        else:
+            lines.append("Holdings data: UNAVAILABLE")
 
         # Performance context (secondary)
         parts = []
@@ -1991,9 +2048,8 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
     if sector_map:
         top_sectors = sorted(sector_map.items(), key=lambda x: -x[1])[:3]
         lines.append("Sector: " + " | ".join(f"{k} {v:.0f}%" for k, v in top_sectors))
-    lines.append(f"Total unique symbols: {len(all_symbols)}")
-    if len(all_symbols) < 5:
-        lines.append("Concentrated holdings base \u2014 limited diversification benefit")
+    else:
+        lines.append("Holdings data: UNAVAILABLE \u2014 cannot evaluate sector exposure or concentration risk")
 
     # ── Rebalancing Decision ──
     lines.append("\n" + "\u2500" * 35)
@@ -2047,10 +2103,15 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
     elif overall_score >= 50:
         conclusion = f"Portfolio is stable ({overall_score}/100) but below optimal threshold."
         conclusion += f" {improving_ct}/{total} traders improving, {declining_ct} declining."
-        conclusion += " Holdings quality is primary driver; performance is secondary."
+        if any(r["_dim_scores"]["has_holdings"] for r in results):
+            conclusion += " Holdings quality is primary driver; performance is secondary."
+        else:
+            conclusion += " Score driven by risk management and consistency. Holdings data unavailable."
     else:
         conclusion = f"Portfolio score {overall_score}/100 requires attention."
-        conclusion += " Reduce lowest-scoring exposure and prioritize holdings quality over past returns."
+        conclusion += " Reduce lowest-scoring exposure."
+        if not any(r["_dim_scores"]["has_holdings"] for r in results):
+            conclusion += " Holdings data unavailable \u2014 verify underlying positions before making changes."
 
     lines.append(conclusion)
 
