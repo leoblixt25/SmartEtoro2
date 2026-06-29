@@ -1865,7 +1865,7 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
         lines.append("Neutral — no strong directional signals")
 
     # ── Trader Analysis ──
-    lines.append(f"\n\u2500" * 35)
+    lines.append("\n" + "\u2500" * 35)
     lines.append("<b>TRADER ANALYSIS</b>")
 
     for r in results:
@@ -1926,7 +1926,7 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
             lines.append(f"Types: {ts}")
 
     # ── Market Intelligence ──
-    lines.append(f"\n\u2500" * 35)
+    lines.append("\n" + "\u2500" * 35)
     lines.append("\U0001f30d <b>MARKET INTELLIGENCE</b>")
 
     pos_syms, neg_syms = set(), set()
@@ -1954,7 +1954,7 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
         lines.append("Sector: " + " | ".join(f"{k} {v:.0f}%" for k, v in top_sectors))
 
     # ── Rebalancing Decision ──
-    lines.append(f"\n\u2500" * 35)
+    lines.append("\n" + "\u2500" * 35)
     lines.append("\U0001f504 <b>REBALANCING DECISION</b>")
 
     exit_names = [r.get("trader") or r.get("name", "?") for r in results
@@ -1973,7 +1973,7 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
             lines.append("\U0001f7e1 <b>MAINTAIN WITH MONITORING</b> \u2014 no urgent action required")
 
     # ── Investment Committee Conclusion ──
-    lines.append(f"\n\u2500" * 35)
+    lines.append("\n" + "\u2500" * 35)
     lines.append("\U0001f4dc <b>INVESTMENT COMMITTEE CONCLUSION</b>")
 
     improving_ct = sum(1 for r in results if _score_trend(r.get("trader", "?"), r["_health_score"]) == "\u2191")
