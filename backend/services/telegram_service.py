@@ -1789,7 +1789,7 @@ def _compute_dimension_scores(r: dict) -> dict:
         if top_w < 30: ae += 1
     alloc_efficiency = min(10, max(2, ae))
 
-    # ── Total — reweight available dimensions ──
+    # ── Total — penalize missing dimensions (no reweighting) ──
     dims = [
         (holds_quality, 30),
         (risk_mgmt, 25),
@@ -1798,20 +1798,25 @@ def _compute_dimension_scores(r: dict) -> dict:
         (alloc_efficiency, 10),
     ]
     avail_scores = [(s, w) for s, w in dims if s is not None]
-    avail_weight = sum(w for _, w in avail_scores)
-    if avail_weight > 0:
-        total_score = sum(s * w / avail_weight * 100 for s, w in avail_scores)
+    if avail_scores:
+        total_score = sum(s for _, w in avail_scores)
     else:
-        total_score = 50
+        total_score = 30
+    # Cap at 75 when holdings missing — cannot evaluate most important dimension
+    if not has_holdings:
+        total_score = min(total_score, 75)
 
-    # ── Confidence level ──
-    na_count = sum(1 for s, _ in dims if s is None)
-    if na_count == 0:
-        confidence = "High"
-    elif na_count <= 2:
-        confidence = "Medium"
-    else:
+    # ── Confidence level — LOW when holdings unavailable ──
+    if not has_holdings:
         confidence = "Low"
+    else:
+        na_count = sum(1 for s, _ in dims if s is None)
+        if na_count == 0:
+            confidence = "High"
+        elif na_count <= 2:
+            confidence = "Medium"
+        else:
+            confidence = "Low"
 
     return {
         "holds_quality": holds_quality,
@@ -1877,14 +1882,17 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
     else:
         status = "\U0001f534 Review Required"
 
-    # Determine overall confidence level
-    confs = [r["_dim_scores"]["confidence"] for r in results]
-    if "Low" in confs:
+    # Overall confidence: LOW if any trader lacks holdings
+    if any(not r["_dim_scores"]["has_holdings"] for r in results):
         overall_confidence = "Low"
-    elif "Medium" in confs:
-        overall_confidence = "Medium"
     else:
-        overall_confidence = "High"
+        confs = [r["_dim_scores"]["confidence"] for r in results]
+        if "Low" in confs:
+            overall_confidence = "Low"
+        elif "Medium" in confs:
+            overall_confidence = "Medium"
+        else:
+            overall_confidence = "High"
 
     lines = [f"\U0001f4ca <b>PORTFOLIO HEALTH REPORT</b>"]
     lines.append(f"\n<b>Overall Health Score: {overall_score}/100</b>")
@@ -1908,7 +1916,7 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
 
     strengths = []
     weaknesses = []
-    if core_count >= total * 0.5:
+    if core_count >= total * 0.5 and any(r["_dim_scores"]["has_holdings"] for r in results):
         strengths.append(f"{core_count}/{total} CORE HOLD quality")
     if avg_dd < 15:
         strengths.append(f"Avg drawdown {avg_dd:.1f}%")
@@ -1946,7 +1954,8 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
         alloc = r.get("allocation_pct") or 0
         bucket, _, _ = _assess_trader(r, r.get("watch_consecutive", 0))
 
-        if bucket == "keep" and sc >= 75:
+        # CORE HOLD prohibited without holdings data (cannot evaluate quality)
+        if bucket == "keep" and sc >= 75 and ds["has_holdings"]:
             classification = "\U0001f7e2 CORE HOLD"
         elif bucket == "keep":
             classification = "\U0001f7e1 MONITOR"
