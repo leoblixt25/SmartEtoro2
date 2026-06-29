@@ -1799,7 +1799,7 @@ def _compute_dimension_scores(r: dict) -> dict:
     ]
     avail_scores = [(s, w) for s, w in dims if s is not None]
     if avail_scores:
-        total_score = sum(s for _, w in avail_scores)
+        total_score = sum(sc for sc, _ in avail_scores)
     else:
         total_score = 30
     # Cap at 75 when holdings missing — cannot evaluate most important dimension
