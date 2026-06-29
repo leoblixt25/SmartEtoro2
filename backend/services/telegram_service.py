@@ -1763,19 +1763,22 @@ def _compute_dimension_scores(r: dict) -> dict:
     elif ret >= 3: ms += 4
     manager_skill = min(20, max(4, ms))
 
-    # ── Market Context (15%) — news available; sector bonus only with holdings ──
-    mc = 8
-    pos = sum(1 for v in news.values() for a in v if a.get("sentiment") == "positive")
-    neg = sum(1 for v in news.values() for a in v if a.get("sentiment") == "negative")
-    total_n = pos + neg
-    if total_n > 0:
-        ratio = pos / total_n
-        if ratio >= 0.6: mc += 5
-        elif ratio >= 0.4: mc += 3
-        else: mc += 1
-    if has_holdings and any(h.get("type") == "stock" for h in holdings):
-        mc += 2
-    market_context = min(15, max(3, mc))
+    # ── Market Context (15%) — requires holdings (sector alignment otherwise unmeasurable) ──
+    if has_holdings:
+        mc = 8
+        pos = sum(1 for v in news.values() for a in v if a.get("sentiment") == "positive")
+        neg = sum(1 for v in news.values() for a in v if a.get("sentiment") == "negative")
+        total_n = pos + neg
+        if total_n > 0:
+            ratio = pos / total_n
+            if ratio >= 0.6: mc += 5
+            elif ratio >= 0.4: mc += 3
+            else: mc += 1
+        if any(h.get("type") == "stock" for h in holdings):
+            mc += 2
+        market_context = min(15, max(3, mc))
+    else:
+        market_context = None
 
     # ── Capital Allocation Efficiency (10%) — return + drawdown; concentration bonus only with holdings ──
     ae = 5
@@ -1904,6 +1907,7 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
     avg_dd = sum(abs(r.get("real_dd") or 0) for r in results) / max(total, 1)
     avg_ret = sum(r.get("total_return_pct") or 0 for r in results) / max(total, 1)
     declining_count = sum(1 for r in results if _is_declining(r))
+    has_any_holdings = any(r["_dim_scores"]["has_holdings"] for r in results)
 
     sector_map = {}
     all_symbols = set()
@@ -1914,33 +1918,42 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
             all_symbols.add(h.get("symbol", "").upper())
     top_sector = max(sector_map.items(), key=lambda x: x[1]) if sector_map else ("unknown", 0)
 
-    strengths = []
-    weaknesses = []
-    if core_count >= total * 0.5 and any(r["_dim_scores"]["has_holdings"] for r in results):
-        strengths.append(f"{core_count}/{total} CORE HOLD quality")
+    spts = []
+    lpts = []
+    if avg_ret > 0:
+        spts.append("Portfolio profitable")
     if avg_dd < 15:
-        strengths.append(f"Avg drawdown {avg_dd:.1f}%")
-    if len(sector_map) >= 3:
-        strengths.append(f"Diversified across {len(sector_map)} asset types")
-    if len(all_symbols) >= 8:
-        strengths.append(f"{len(all_symbols)} unique holdings across portfolio")
+        spts.append(f"Drawdown controlled ({avg_dd:.1f}%)")
     if declining_count == 0:
-        strengths.append("No deterioration detected across traders")
+        spts.append("No traders in decline")
+    if exit_count == 0:
+        spts.append("No EXIT candidates")
+    if core_count >= total * 0.5 and has_any_holdings:
+        spts.append(f"{core_count}/{total} CORE HOLD")
+
+    if not has_any_holdings:
+        lpts.append("Holdings transparency unavailable")
+        lpts.append("Sector exposure unknown")
+    else:
+        if len(all_symbols) >= 8:
+            spts.append(f"{len(all_symbols)} unique holdings")
+        if top_sector[1] > 50:
+            lpts.append(f"Concentrated in {top_sector[0]} ({top_sector[1]:.0f}%)")
+        if len(all_symbols) < 5:
+            lpts.append("Highly concentrated holdings")
     if exit_count > 0:
-        weaknesses.append(f"{exit_count} trader(s) flagged for EXIT")
-    if top_sector[1] > 50:
-        weaknesses.append(f"Heavy concentration in {top_sector[0]} ({top_sector[1]:.0f}%)")
+        lpts.append(f"{exit_count} trader(s) flagged for EXIT")
     if avg_dd > 20:
-        weaknesses.append(f"Elevated avg drawdown {avg_dd:.1f}%")
+        lpts.append(f"Elevated drawdown {avg_dd:.1f}%")
     if total < 5:
-        weaknesses.append("Limited diversification (&lt;5 traders)")
+        lpts.append(f"Only {total} traders \u2014 limited diversification")
 
     lines.append(f"\n<b>Portfolio Summary</b>")
-    if strengths:
-        lines.append("\U0001f7e2 " + " | ".join(strengths))
-    if weaknesses:
-        lines.append("\U0001f7e1 " + " | ".join(weaknesses))
-    if not strengths and not weaknesses:
+    if spts:
+        lines.append("\U0001f7e2 " + " | ".join(spts))
+    if lpts:
+        lines.append("\U0001f7e1 " + " | ".join(lpts))
+    if not spts and not lpts:
         lines.append("Neutral \u2014 no strong directional signals")
 
     # ── Trader Analysis ──
@@ -2063,6 +2076,21 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
     # ── Rebalancing Decision ──
     lines.append("\n" + "\u2500" * 35)
     lines.append("\U0001f504 <b>REBALANCING DECISION</b>")
+
+    # Low confidence — no holdings transparency; disable allocation changes
+    if overall_confidence == "Low":
+        lines.append("\n\U0001f6a8 <b>No allocation changes recommended.</b>")
+        lines.append("")
+        lines.append("<b>Reason:</b>")
+        lines.append("Insufficient holdings transparency.")
+        lines.append("Current analysis is based on historical risk and consistency metrics.")
+        lines.append("Without visibility into underlying holdings (sector exposure,")
+        lines.append("concentration, valuation, earnings quality), allocation")
+        lines.append("adjustments cannot be reliably justified.")
+        lines.append("")
+        lines.append("Recommendation: Enable holdings synchronization to unlock")
+        lines.append("data-driven rebalancing.")
+        return "\n".join(lines)
 
     exit_names = [r.get("trader") or r.get("name", "?") for r in results
                   if _assess_trader(r, r.get("watch_consecutive", 0))[0] == "uncopy"]
