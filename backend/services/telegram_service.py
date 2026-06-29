@@ -63,48 +63,52 @@ def _save_score_history(user_scores: dict):
         json.dump(history, f, indent=2)
 
 def _score_trend(username: str, current_score: int) -> str:
-    """Return trend indicator: ↑ ↓ → NEW based on 7-day score change."""
+    """Return trend indicator: ↑ ↓ → based on 7-day score change."""
     history = _load_score_history()
     entries = history.get(username, [])
     now = datetime.utcnow()
     cutoff_7d = (now - timedelta(days=7)).isoformat()
-    # Find oldest entry within 7 days
     old_entries = [(ts, s) for ts, s in entries if ts >= cutoff_7d]
     if len(old_entries) < 2:
-        return "NEW"
+        return "\u2192"  # insufficient history → flat
     oldest_score = old_entries[0][1]
     diff = current_score - oldest_score
     if diff >= 3:
-        return "\u2191"  # ↑
+        return "\u2191"
     if diff <= -3:
-        return "\u2193"  # ↓
-    return "\u2192"  # →
+        return "\u2193"
+    return "\u2192"
 
 # ── Market context helper ───────────────────────────────────────────
-async def _fetch_market_context() -> str:
-    """Fetch 1-day % change for SPY, QQQ, BTC-USD via yfinance."""
+async def _fetch_market_data() -> dict:
+    """Fetch 1-day % change for SPY, QQQ, BTC-USD via yfinance. Returns {symbol: pct_change}."""
+    result = {}
     try:
         import yfinance as yf
-        symbols = ["SPY", "QQQ", "BTC-USD"]
-        parts = []
-        for sym in symbols:
+        for sym in ("SPY", "QQQ", "BTC-USD"):
             try:
                 ticker = yf.Ticker(sym)
                 hist = ticker.history(period="2d")
                 if len(hist) >= 2:
-                    close_today = hist["Close"].iloc[-1]
-                    close_yesterday = hist["Close"].iloc[-2]
-                    change_pct = (close_today - close_yesterday) / close_yesterday * 100
-                    sign = "+" if change_pct >= 0 else ""
-                    label = "BTC" if sym == "BTC-USD" else sym
-                    parts.append(f"{label} {sign}{change_pct:.1f}%")
+                    ct = hist["Close"].iloc[-1]
+                    cy = hist["Close"].iloc[-2]
+                    result[sym] = round((ct - cy) / cy * 100, 1)
             except Exception:
                 pass
-        if parts:
-            return f"\U0001f30d Market: {' | '.join(parts)}"
     except Exception:
         pass
-    return ""
+    return result
+
+def _format_market_line(market_data: dict) -> str:
+    """Format market data dict into a one-line string."""
+    parts = []
+    for sym in ("SPY", "QQQ", "BTC-USD"):
+        val = market_data.get(sym)
+        if val is not None:
+            sign = "+" if val >= 0 else ""
+            label = "BTC" if sym == "BTC-USD" else sym
+            parts.append(f"{label} {sign}{val:.1f}%")
+    return f"\U0001f30d Market: {' | '.join(parts)}" if parts else ""
 
 # ── Watchlist helper ────────────────────────────────────────────────
 
@@ -1340,7 +1344,7 @@ class TelegramBot:
             if show_reallocation:
                 _, realloc_suggestions = await self._ai_reallocate(results, portfolio_summary.get("total_value", 0))
 
-            summary = _build_health_summary(results, live=freshness, source_label=label, ts=ts, ai_used=bool(ai_results), realloc_suggestions=realloc_suggestions)
+            summary = _build_health_summary(results, live=freshness, source_label=label, ts=ts, ai_used=bool(ai_results), realloc_suggestions=realloc_suggestions, market_data=market_data)
 
             # Build portfolio preamble
             val = portfolio_summary["total_value"]
@@ -1356,8 +1360,9 @@ class TelegramBot:
             )
             summary = preamble + "\n\n" + summary
 
-            # CHANGED: Save scores to history and prepend market context
-            market_line = await _fetch_market_context()
+            # Fetch market data for context derivation
+            market_data = await _fetch_market_data()
+            market_line = _format_market_line(market_data) if market_data else ""
             if market_line:
                 summary = market_line + "\n\n" + summary
             # Save each trader's health score to rolling history
@@ -1714,12 +1719,11 @@ def _assess_trader(r: dict, watch_consecutive: int = 0) -> tuple:
 
 
 def _compute_dimension_scores(r: dict) -> dict:
-    """Five-dimension score breakdown per the institutional framework.
+    """Three-dimension score: Risk Management (25), Consistency (25), Drawdown Control (20).
 
-    Returns {risk_mgmt, consistency, drawdown_ctrl, transparency, market_alignment,
-             total, has_holdings, has_news, confidence}.
-    Market Alignment returns None without holdings (unmeasurable).
-    Transparency returns 0 without holdings (honest floor).
+    Transparency is a data-access limitation, not a trader quality — excluded from score.
+    Market Alignment is derived as a text label, not a numeric sub-score.
+    Returns {risk_mgmt, consistency, drawdown_ctrl, total, has_holdings, has_news, confidence}.
     """
     holdings = r.get("_holdings") or []
     dd = abs(r.get("real_dd") or 0)
@@ -1730,103 +1734,43 @@ def _compute_dimension_scores(r: dict) -> dict:
     news = r.get("_news_by_symbol") or {}
     has_news = bool(news)
 
-    # ── Risk Management (25%) — drawdown magnitude + risk score ──
-    dd_part = 12
-    if dd < 10: dd_part = 14
-    elif dd < 15: dd_part = 12
-    elif dd < 20: dd_part = 10
-    elif dd < 25: dd_part = 8
-    else: dd_part = 5
-    rs_part = 11
-    if 4 <= rs <= 5: rs_part = 11
-    elif 3 <= rs <= 6: rs_part = 9
-    elif 2 <= rs <= 7: rs_part = 7
-    else: rs_part = 4
-    risk_mgmt = min(25, max(5, dd_part + rs_part))
+    # ── Risk Management (25) — drawdown magnitude + risk score ──
+    dd_p = 14 if dd < 10 else (12 if dd < 15 else (10 if dd < 20 else (8 if dd < 25 else 5)))
+    rs_p = 11 if 4 <= rs <= 5 else (9 if 3 <= rs <= 6 else (7 if 2 <= rs <= 7 else 4))
+    risk_mgmt = min(25, max(5, dd_p + rs_p))
 
-    # ── Consistency (25%) — profitable months + return behavior ──
+    # ── Consistency (25) — profitable months + return behavior ──
     cs = 10
     if pm is not None:
-        if pm >= 70: cs += 10
-        elif pm >= 55: cs += 7
-        elif pm >= 40: cs += 5
-        else: cs += 2
+        cs += (10 if pm >= 70 else (7 if pm >= 55 else (5 if pm >= 40 else 2)))
     else:
         cs += 5
-    if -3 < ret < 3: cs += 3
-    elif ret >= 3: cs += 5
+    cs += 3 if -3 < ret < 3 else (5 if ret >= 3 else 0)
     consistency = min(25, max(5, cs))
 
-    # ── Drawdown Control (20%) — peak-to-trough magnitude ──
-    dc = 10
-    if dd < 10: dc = 18
-    elif dd < 15: dc = 15
-    elif dd < 20: dc = 12
-    elif dd < 25: dc = 8
-    else: dc = 4
+    # ── Drawdown Control (20) — peak-to-trough magnitude ──
+    dc = 18 if dd < 10 else (15 if dd < 15 else (12 if dd < 20 else (8 if dd < 25 else 4)))
     drawdown_ctrl = min(20, max(4, dc))
 
-    # ── Transparency (15%) — requires holdings data ──
-    if has_holdings:
-        tp = 5
-        count = len(holdings)
-        types = set(h.get("type", "other") for h in holdings)
-        if count >= 8: tp += 5
-        elif count >= 5: tp += 4
-        elif count >= 3: tp += 2
-        if len(types) >= 3: tp += 3
-        elif len(types) >= 2: tp += 2
-        if has_news: tp += 2
-        transparency = min(15, max(0, tp))
+    # ── Total — Risk + Cons + DD ──
+    dims = [(risk_mgmt, 25), (consistency, 25), (drawdown_ctrl, 20)]
+    avail = [s for s, _ in dims if s is not None]
+    total_score = sum(avail) if avail else 20
+
+    # ── Confidence: based on signal quality, not data completeness ──
+    has_dd = bool(abs(r.get("real_dd") or 0))
+    has_pm = r.get("profitable_months_pct") is not None
+    if has_dd and has_pm and pm is not None and pm > 0:
+        confidence = "High"
+    elif has_dd:
+        confidence = "Medium"
     else:
-        transparency = 0
-
-    # ── Market Alignment (15%) — requires holdings (sector alignment otherwise unmeasurable) ──
-    if has_holdings:
-        ma = 8
-        pos = sum(1 for v in news.values() for a in v if a.get("sentiment") == "positive")
-        neg = sum(1 for v in news.values() for a in v if a.get("sentiment") == "negative")
-        total_n = pos + neg
-        if total_n > 0:
-            ratio = pos / total_n
-            if ratio >= 0.6: ma += 5
-            elif ratio >= 0.4: ma += 3
-            else: ma += 1
-        if any(h.get("type") == "stock" for h in holdings):
-            ma += 2
-        market_alignment = min(15, max(3, ma))
-    else:
-        market_alignment = None
-
-    # ── Total — sum available dimensions ──
-    dims = [
-        (risk_mgmt, 25),
-        (consistency, 25),
-        (drawdown_ctrl, 20),
-        (transparency, 15),
-        (market_alignment, 15),
-    ]
-    avail_scores = [(s, w) for s, w in dims if s is not None]
-    total_score = sum(sc for sc, _ in avail_scores) if avail_scores else 30
-
-    # ── Confidence level ──
-    if not has_holdings:
         confidence = "Low"
-    else:
-        na_count = sum(1 for s, _ in dims if s is None)
-        if na_count == 0 and has_news:
-            confidence = "High"
-        elif na_count <= 2:
-            confidence = "Medium"
-        else:
-            confidence = "Low"
 
     return {
         "risk_mgmt": risk_mgmt,
         "consistency": consistency,
         "drawdown_ctrl": drawdown_ctrl,
-        "transparency": transparency,
-        "market_alignment": market_alignment,
         "total": min(100, max(0, int(round(total_score)))),
         "has_holdings": has_holdings,
         "has_news": has_news,
@@ -1839,7 +1783,26 @@ def _compute_health_score(r: dict) -> int:
     return _compute_dimension_scores(r)["total"]
 
 
-def _build_health_summary(results: list[dict], live: bool = False, source_label: str = "Cached", ts: str = "", ai_used: bool = False, realloc_suggestions: list | None = None) -> str:
+def _derive_market_context(trader_return: float, md: dict) -> str:
+    """Derive market context label from trader return vs SPY/QQQ/BTC."""
+    if not md:
+        return "Unknown"
+    spy = md.get("SPY")
+    qqq = md.get("QQQ")
+    btc = md.get("BTC-USD")
+    spy_up = spy is not None and spy > 0
+    qqq_up = qqq is not None and qqq > 0
+    btc_up = btc is not None and btc > 0
+    if (spy_up or qqq_up) and trader_return > 0:
+        return "Aligned"
+    if (spy_up or qqq_up) and trader_return <= 0:
+        return "Lagging"
+    if btc_up and trader_return > 0:
+        return "Crypto-correlated"
+    return "Uncorrelated"
+
+
+def _build_health_summary(results: list[dict], live: bool = False, source_label: str = "Cached", ts: str = "", ai_used: bool = False, realloc_suggestions: list | None = None, market_data: dict | None = None) -> str:
     total = len(results)
     source_tag = source_label if source_label else ("Live" if live else "Cached")
 
@@ -1885,26 +1848,23 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
     else:
         status = "\U0001f534 Review Required"
 
-    # Overall confidence per the confidence model:
-    #   HIGH   → holdings available + news available + sector exposure available for ALL traders
-    #   MEDIUM → partial holdings available (any trader missing some data)
-    #   LOW    → holdings unavailable for any trader
-    if any(not r["_dim_scores"]["has_holdings"] for r in results):
+    # Overall confidence based on signal quality, not data completeness
+    confs = [r["_dim_scores"]["confidence"] for r in results]
+    if "Low" in confs:
         overall_confidence = "Low"
-    elif any(not r["_dim_scores"]["has_news"] for r in results):
+    elif "Medium" in confs:
         overall_confidence = "Medium"
     else:
-        confs = [r["_dim_scores"]["confidence"] for r in results]
-        if "Low" in confs:
-            overall_confidence = "Low"
-        elif "Medium" in confs:
-            overall_confidence = "Medium"
-        else:
-            overall_confidence = "High"
+        overall_confidence = "High"
+
+    has_any_holdings = any(r["_dim_scores"]["has_holdings"] for r in results)
 
     lines = [f"\U0001f4ca <b>PORTFOLIO HEALTH REPORT</b>"]
     lines.append(f"\n<b>Overall Health Score: {overall_score}/100</b>")
     lines.append(f"Status: {status}  |  Confidence: {overall_confidence}")
+    # One-line data limitation note at the top (not repeated per trader)
+    if not has_any_holdings:
+        lines.append("\U0001f6a7 Holdings data unavailable \u2014 analysis based on performance metrics only.")
 
     # ── Portfolio Summary ──
     core_count = sum(1 for r in results if _assess_trader(r, r.get("watch_consecutive", 0))[0] == "keep")
@@ -1912,7 +1872,6 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
     avg_dd = sum(abs(r.get("real_dd") or 0) for r in results) / max(total, 1)
     avg_ret = sum(r.get("total_return_pct") or 0 for r in results) / max(total, 1)
     declining_count = sum(1 for r in results if _is_declining(r))
-    has_any_holdings = any(r["_dim_scores"]["has_holdings"] for r in results)
 
     sector_map = {}
     all_symbols = set()
@@ -1965,101 +1924,50 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
     lines.append("\n" + "\u2500" * 35)
     lines.append("<b>TRADER ANALYSIS</b>")
 
+    def _classify(r: dict) -> str:
+        ds, sc, bucket = r["_dim_scores"], r["_health_score"], _assess_trader(r, r.get("watch_consecutive", 0))[0]
+        if not ds["has_holdings"]:
+            return "\U0001f534 EXIT" if bucket == "uncopy" else "\U0001f7e1 MONITOR"
+        if bucket == "keep" and sc >= 75:
+            return "\U0001f7e2 CORE HOLD"
+        if bucket == "keep":
+            return "\U0001f7e1 MONITOR"
+        if bucket == "uncopy":
+            return "\U0001f534 EXIT"
+        return "\U0001f7e1 MONITOR" if sc >= 45 else "\U0001f7e0 REDUCE"
+
     for r in results:
         ds = r["_dim_scores"]
         sc = r["_health_score"]
         name = r.get("trader") or r.get("name", "?")
         alloc = r.get("allocation_pct") or 0
-        bucket, _, _ = _assess_trader(r, r.get("watch_consecutive", 0))
-
-        # Classification per strict rules:
-        #   CORE HOLD  → requires holdings + high/medium confidence + score ≥75 + no major risks
-        #   MONITOR    → default when holdings unavailable or score 45-74
-        #   REDUCE     → evidence-based deterioration
-        #   EXIT       → never based solely on missing holdings data
-        if not ds["has_holdings"]:
-            if bucket == "uncopy":
-                classification = "\U0001f534 EXIT"
-            else:
-                classification = "\U0001f7e1 MONITOR"
-        elif bucket == "keep" and sc >= 75:
-            classification = "\U0001f7e2 CORE HOLD"
-        elif bucket == "keep":
-            classification = "\U0001f7e1 MONITOR"
-        elif bucket == "uncopy":
-            classification = "\U0001f534 EXIT"
-        elif sc >= 50:
-            classification = "\U0001f7e1 MONITOR"
-        else:
-            classification = "\U0001f7e0 REDUCE"
-
-        tr = _score_trend(r.get("trader", "?"), sc)
-        decl = "\U0001f53b" if _is_declining(r) else ""
-        lines.append(f"\n<b>{name}</b> \u2014 {classification} {decl} <i>{tr}</i>")
-        lines.append(f"Score: {sc}/100 | Alloc: {alloc:.0f}%")
-
-        # Score breakdown — show N/A for unavailable dimensions
-        def _fmt_dim(label: str, val, max_v: int) -> str:
-            if val is None:
-                return f"{label}:N/A"
-            return f"{label}:{val}/{max_v}"
-        parts = [
-            _fmt_dim("Risk", ds["risk_mgmt"], 25),
-            _fmt_dim("Cons", ds["consistency"], 25),
-            _fmt_dim("DD", ds["drawdown_ctrl"], 20),
-            _fmt_dim("Trans", ds["transparency"], 15),
-            _fmt_dim("Mkt", ds["market_alignment"], 15),
-        ]
-        lines.append(" ".join(parts))
-
-        # Holdings analysis
-        holdings = r.get("_holdings") or []
-        if holdings:
-            top5 = holdings[:5]
-            hstr = ", ".join(f"{h.get('symbol','?')}({h.get('weight',0):.0f}%)" for h in top5)
-            lines.append(f"Holdings: {hstr}")
-            top_w = max(h.get("weight", 0) for h in holdings)
-            types = set(h.get("type", "other") for h in holdings)
-            conc_note = []
-            if top_w > 40:
-                conc_note.append(f"Top holding {top_w:.0f}% concentrated")
-            if len(holdings) >= 8:
-                conc_note.append(f"{len(holdings)} holdings well diversified")
-            elif len(holdings) <= 3:
-                conc_note.append(f"Only {len(holdings)} holdings \u2014 concentrated")
-            if len(types) >= 2:
-                conc_note.append(f"{', '.join(sorted(types))} exposure")
-            if conc_note:
-                lines.append(" | ".join(conc_note))
-        else:
-            lines.append("Holdings Analysis: UNAVAILABLE")
-            lines.append("Sector Analysis: UNAVAILABLE")
-            lines.append("Fundamental Analysis: UNAVAILABLE")
-            lines.append("Valuation Analysis: UNAVAILABLE")
-            lines.append("Concentration Analysis: UNAVAILABLE")
-
-        # Performance context (secondary)
-        parts = []
-        ret = r.get("total_return_pct")
-        if ret is not None and abs(ret) >= 2:
-            parts.append(f"Ret: {ret:+.1f}%")
+        sig = _classify(r)
+        ret = r.get("total_return_pct") or 0
         dd = abs(r.get("real_dd") or 0)
-        if dd > 0:
-            parts.append(f"DD: {dd:.0f}%")
         rs = r.get("real_risk") or r.get("risk_score") or 0
-        if rs:
-            parts.append(f"Risk: {rs:.0f}/10")
         pm = r.get("profitable_months_pct")
-        if pm is not None:
-            parts.append(f"Profitable: {pm:.0f}% months")
-        if parts:
-            lines.append(" | ".join(parts))
+        mkt_ctx = _derive_market_context(ret, market_data or {})
 
-        assessed = r.get("_assessed_reason") or r.get("reason", "")
-        if assessed and len(assessed) < 120:
-            lines.append(f"\U0001f4ac {assessed}")
-        elif assessed:
-            lines.append(f"\U0001f4ac {assessed[:117]}...")
+        lines.append(f"\n<b>{name}</b> \u2014 {sig}")
+        lines.append(f"Score: {sc}/100 | Alloc: {alloc:.0f}%")
+        lines.append(f"Risk:{ds['risk_mgmt']}/25  Cons:{ds['consistency']}/25  DD:{ds['drawdown_ctrl']}/20 | Mkt: {mkt_ctx}")
+        if not ds["has_holdings"]:
+            lines.append("\u26a0\ufe0f Holdings data unavailable \u2014 analysis based on performance metrics only.")
+        perf_parts = []
+        if abs(ret) >= 1:
+            perf_parts.append(f"Ret: {ret:+.1f}%")
+        if dd > 0:
+            perf_parts.append(f"DD: {dd:.0f}%")
+        if rs:
+            perf_parts.append(f"Risk: {rs:.0f}/10")
+        if pm is not None:
+            perf_parts.append(f"Profitable: {pm:.0f}% months")
+        if perf_parts:
+            lines.append(" | ".join(perf_parts))
+        assessed = r.get("_assessed_reason") or ""
+        if assessed:
+            brief = assessed[:100] if len(assessed) > 100 else assessed
+            lines.append(f"\U0001f4ac {brief}")
 
     # ── Market Intelligence ──
     lines.append("\n" + "\u2500" * 35)
@@ -2099,82 +2007,49 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
     lines.append("\n" + "\u2500" * 35)
     lines.append("\U0001f504 <b>REBALANCING DECISION</b>")
 
-    # Low confidence — no holdings transparency; disable allocation changes
-    if overall_confidence == "Low":
-        lines.append("\n\U0001f6a8 <b>No allocation changes recommended.</b>")
-        lines.append("")
-        lines.append("<b>Reason:</b>")
-        lines.append("Insufficient holdings transparency.")
-        lines.append("Current analysis is based on historical risk and consistency metrics.")
-        lines.append("Without visibility into underlying holdings (sector exposure,")
-        lines.append("concentration, valuation, earnings quality), allocation")
-        lines.append("adjustments cannot be reliably justified.")
-        lines.append("")
-        lines.append("Recommendation: Enable holdings synchronization to unlock")
-        lines.append("data-driven rebalancing.")
-        return "\n".join(lines)
-
-    exit_names = [r.get("trader") or r.get("name", "?") for r in results
-                  if _assess_trader(r, r.get("watch_consecutive", 0))[0] == "uncopy"]
-    reduce_names = [r.get("trader") or r.get("name", "?") for r in results
-                    if _assess_trader(r, r.get("watch_consecutive", 0))[0] != "uncopy" and r["_health_score"] < 50]
-
-    # If AI suggestions exist with actual changes, use them as the recommendation
-    if realloc_suggestions and any(s.get("from", 0) != s.get("to", 0) for s in realloc_suggestions):
-        lines.append("AI-driven allocation adjustment recommended:")
-        for s in realloc_suggestions:
-            name = s.get("name", "?")
-            fr = s.get("from", 0)
-            to = s.get("to", 0)
-            reason = s.get("reason", "")
-            if to > fr:
-                icon = "\u2b06\ufe0f"
-            elif to < fr:
-                icon = "\u2b07\ufe0f"
-            else:
-                continue
-            lines.append(f"{icon} {name}: {fr:.0f}%\u2192{to:.0f}%  ({reason})")
-    elif exit_names:
-        lines.append(f"\U0001f6a8 <b>EXIT:</b> {', '.join(exit_names[:3])} \u2014 capital preservation concern")
-    elif reduce_names:
-        lines.append(f"\U0001f7e0 <b>REDUCE:</b> {', '.join(reduce_names[:3])} \u2014 deteriorating risk/reward")
-    elif overall_score >= 60:
-        lines.append("\U0001f7e2 <b>MAINTAIN CURRENT ALLOCATION</b> \u2014 risk/reward acceptable")
+    # Conditional recommendations based on available metrics
+    rebal_lines = []
+    for r in results:
+        ret = r.get("total_return_pct") or 0
+        dd = abs(r.get("real_dd") or 0)
+        pm = r.get("profitable_months_pct")
+        name = r.get("trader") or r.get("name", "?")
+        declining = _is_declining(r)
+        if ret < 0 and declining:
+            rebal_lines.append(f"\u2b07\ufe0f <b>Reduce {name}</b> \u2014 negative return, declining trend")
+        elif dd >= 18 and ret < 2:
+            rebal_lines.append(f"\u26a0\ufe0f <b>Trim {name}</b> \u2014 drawdown {dd:.0f}%, consider if worsens")
+        elif dd < 10 and ret > 0 and pm is not None and pm > 70:
+            rebal_lines.append(f"\u2b06\ufe0f <b>Increase {name}</b> \u2014 low DD, profitable >70% months")
+    if rebal_lines:
+        lines.extend(rebal_lines)
     else:
-        lines.append("\U0001f7e1 <b>MAINTAIN WITH MONITORING</b> \u2014 no urgent action required")
+        lines.append("\U0001f7e1 <b>MAINTAIN CURRENT ALLOCATION</b> \u2014 no strong directional signals from available data")
 
-    # ── Investment Committee Conclusion ──
+    # ── Bottom Summary — 3 bullets: risk, opportunity, action ──
     lines.append("\n" + "\u2500" * 35)
-    lines.append("\U0001f4dc <b>INVESTMENT COMMITTEE CONCLUSION</b>")
+    lines.append("\U0001f4dc <b>SUMMARY</b>")
 
     improving_ct = sum(1 for r in results if _score_trend(r.get("trader", "?"), r["_health_score"]) == "\u2191")
     declining_ct = sum(1 for r in results if _is_declining(r))
     total_pl = sum(r.get("total_return_pct") or 0 for r in results)
-    risk_trend = "increasing" if declining_ct > improving_ct else ("decreasing" if improving_ct > declining_ct else "stable")
-    dd_status = "acceptable" if avg_dd < 15 else ("elevated" if avg_dd < 25 else "concerning")
 
-    lines.append(f"\n<b>Assessment:</b>")
-    lines.append(f"\U0001f4b0 Is the portfolio profitable? {'Yes' if total_pl > 0 else 'No'}")
-    lines.append(f"\U0001f4c8 Is risk increasing or decreasing? {risk_trend.title()}")
-    dd_label = "Yes" if avg_dd < 15 else ("Moderate" if avg_dd < 25 else "Concerning")
-    lines.append(f"\U0001f4c9 Is drawdown acceptable? {dd_label} ({avg_dd:.1f}%)")
-    lines.append(f"\U0001f4ad Confidence level: {overall_confidence}")
+    risk_bullet = f"\U0001f6a9 <b>Risk:</b> Drawdown avg {avg_dd:.1f}%" if avg_dd > 0 else ""
+    if declining_ct > improving_ct:
+        risk_bullet += f", {declining_ct}/{total} traders declining"
+    if not risk_bullet:
+        risk_bullet = "\U0001f6a9 <b>Risk:</b> No material deterioration detected"
 
-    conclusion = ""
-    if overall_confidence == "Low":
-        conclusion = "Additional holdings data required for deeper analysis."
-        conclusion += " No evidence currently justifies reallocation."
-    elif exit_count > 0:
-        conclusion = f"{exit_count} trader(s) identified for EXIT on capital preservation grounds."
-        conclusion += " Reduce affected positions and monitor remaining allocation."
-    elif overall_score >= 75 and risk_trend != "increasing":
-        conclusion = "Portfolio metrics are strong. Maintain current allocation while monitoring."
-    elif declining_ct > improving_ct:
-        conclusion = f"{declining_ct}/{total} traders declining. Maintain with close monitoring."
+    if total_pl > 0:
+        opp_bullet = f"\U0001f7e2 <b>Opportunity:</b> Portfolio profitable; {'increase' if avg_dd < 15 else 'maintain'} allocation"
     else:
-        conclusion = "Maintain current allocation while monitoring."
+        opp_bullet = f"\U0001f7e2 <b>Opportunity:</b> Market conditions may present entry points"
 
-    lines.append(f"\n<b>Conclusion:</b> {conclusion}")
+    action_bullet = f"\U0001f4a1 <b>Action:</b> Maintain allocation, monitor {declining_ct} declining trader(s)" if declining_ct > 0 else "\U0001f4a1 <b>Action:</b> Maintain current allocation"
+
+    lines.append(risk_bullet)
+    lines.append(opp_bullet)
+    lines.append(action_bullet)
 
     if ts:
         lines.append(f"\n\U0001f4c5 {ts} ({source_tag})")
