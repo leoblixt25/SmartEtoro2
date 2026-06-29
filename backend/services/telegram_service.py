@@ -1854,7 +1854,7 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
     if avg_dd > 20:
         weaknesses.append(f"Elevated avg drawdown {avg_dd:.1f}%")
     if total < 5:
-        weaknesses.append("Limited diversification (<5 traders)")
+        weaknesses.append("Limited diversification (&lt;5 traders)")
 
     lines.append(f"\n<b>Portfolio Summary</b>")
     if strengths:
