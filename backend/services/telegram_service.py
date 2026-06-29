@@ -914,11 +914,11 @@ class TelegramBot:
         from backend.monitoring.ai_health_engine import AI_AVAILABLE
 
         if not AI_AVAILABLE or not results:
-            return ""
+            return "", []
 
         api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("GROQ_API_KEY") or ""
         if not api_key:
-            return ""
+            return "", []
 
         from backend.monitoring.ai_health_engine import PROVIDERS
 
@@ -1003,12 +1003,12 @@ class TelegramBot:
                         break
                 else:
                     logger.error(f"AI reallocation: unexpected JSON format: {raw[:200]}")
-                    return ""
+                    return "", []
             elif isinstance(data, list):
                 suggestions = data
             else:
                 logger.error(f"AI reallocation: unexpected JSON format: {raw[:200]}")
-                return ""
+                return "", []
 
             NAME_W = max(len(s["name"][:10]) for s in suggestions) if suggestions else 10
             NAME_W = max(NAME_W, 4)
@@ -1045,11 +1045,11 @@ class TelegramBot:
                     block.append(f"\U0001f4b0 Cash remainder: {diff:.0f}%{cash_str}")
                 else:
                     block.append(f"\u26a0\ufe0f Over-allocated by {abs(diff):.0f}%")
-            return "\n".join(block)
+            return "\n".join(block), suggestions
 
         except Exception as e:
             logger.exception(f"AI reallocation failed: {e}")
-            return ""
+            return "", []
 
     async def _cmd_chart(self, update: Update, args: list[str]) -> None:
         """Equity curve + daily P&L chart."""
@@ -1335,7 +1335,12 @@ class TelegramBot:
             except Exception:
                 logger.exception("Failed to persist scraped stats")
 
-            summary = _build_health_summary(results, live=freshness, source_label=label, ts=ts, ai_used=bool(ai_results))
+            # Get AI reallocation suggestions first (used in Rebalancing Decision)
+            realloc_suggestions = []
+            if show_reallocation:
+                _, realloc_suggestions = await self._ai_reallocate(results, portfolio_summary.get("total_value", 0))
+
+            summary = _build_health_summary(results, live=freshness, source_label=label, ts=ts, ai_used=bool(ai_results), realloc_suggestions=realloc_suggestions)
 
             # Build portfolio preamble
             val = portfolio_summary["total_value"]
@@ -1382,12 +1387,6 @@ class TelegramBot:
                         ct.watch_consecutive = 0
             db.commit()
             logger.info(f"Health: watch_consecutive updated for {len(results)} traders")
-
-        if show_reallocation:
-            total_value = portfolio_summary.get("total_value", 0)
-            realloc = await self._ai_reallocate(results, total_value)
-            if realloc:
-                summary += realloc
 
         return summary
 
@@ -1700,94 +1699,113 @@ def _assess_trader(r: dict, watch_consecutive: int = 0) -> tuple:
     return bucket, " \u2022 ".join(reasons), confidence
 
 
-def _compute_health_score(r: dict) -> int:
-    """Weighted score 0-100 prioritizing quality & stability over raw return.
+def _compute_dimension_scores(r: dict) -> dict:
+    """Five-dimension score breakdown per the institutional framework.
 
-    Components: return 30%, drawdown 30%, risk 20%, consistency 15%, AI 5%.
+    Returns {holds_quality, risk_mgmt, manager_skill, market_context, alloc_efficiency, total}.
     """
-    cum_pl = r.get("total_return_pct") or 0.0
-    ret_1m = r.get("return_1m")
-    dd_source = r.get("dd_source", "missing")
+    holdings = r.get("_holdings") or []
     dd = abs(r.get("real_dd") or 0)
-    risk = r.get("real_risk") or r.get("risk_score") or 0
-    prof_months = r.get("profitable_months_pct")
-    win_ratio = r.get("win_ratio")
-    trades = r.get("trades_count")
-    ai_conf = (r.get("confidence") or "LOW").upper()
+    rs = r.get("real_risk") or r.get("risk_score") or 0
+    pm = r.get("profitable_months_pct")
+    ret = r.get("total_return_pct") or 0
 
-    # ── Return score (30%) — smoothed blend to avoid recency bias ──
-    blended_return = cum_pl
-    if ret_1m is not None:
-        blended_return = 0.50 * cum_pl + 0.50 * ret_1m
-    ret_score = 0.0
-    if blended_return > 0:
-        ret_score = min(blended_return, 5.0) / 5.0 * 30
+    # ── Portfolio Quality (30%) — holdings depth, concentration, sector diversity ──
+    hq = 12  # neutral baseline
+    if holdings:
+        count = len(holdings)
+        top_w = max(h.get("weight", 0) for h in holdings) or 100
+        types = set(h.get("type", "other") for h in holdings)
+        if count >= 8: hq += 6
+        elif count >= 5: hq += 4
+        elif count >= 3: hq += 2
+        if top_w < 25: hq += 6
+        elif top_w < 40: hq += 4
+        elif top_w < 60: hq += 2
+        if len(types) >= 3: hq += 4
+        elif len(types) >= 2: hq += 2
+        quality_stocks = {"NVDA", "MSFT", "AAPL", "GOOGL", "GOOG", "AMZN", "META", "TSLA"}
+        if any(h.get("symbol", "").upper() in quality_stocks for h in holdings):
+            hq = min(30, hq + 2)
+    holds_quality = min(30, max(6, hq))
 
-    # ── Drawdown score (30%) — simplified threshold penalties ──
-    #   <15%: no penalty | 15-25%: -5 pts | >25%: -15 pts
-    if dd_source == "unverified":
-        dd_score = 30.0  # no penalty when DD unverified
-    elif dd < 15:
-        dd_score = 30.0
-    elif dd <= 25:
-        dd_score = 25.0
+    # ── Risk Management (25%) — drawdown + risk score + concentration ──
+    dd_part = 12
+    if dd < 10: dd_part = 14
+    elif dd < 15: dd_part = 12
+    elif dd < 20: dd_part = 10
+    elif dd < 25: dd_part = 8
+    else: dd_part = 5
+    rs_part = 11
+    if 4 <= rs <= 5: rs_part = 11
+    elif 3 <= rs <= 6: rs_part = 9
+    elif 2 <= rs <= 7: rs_part = 7
+    else: rs_part = 4
+    risk_mgmt = min(25, max(5, dd_part + rs_part))
+
+    # ── Manager Skill (20%) — profitable months, consistency, return ──
+    ms = 8
+    if pm is not None:
+        if pm >= 70: ms += 8
+        elif pm >= 55: ms += 6
+        elif pm >= 40: ms += 4
+        else: ms += 2
     else:
-        dd_score = 15.0
+        ms += 4
+    if -3 < ret < 3: ms += 2
+    elif ret >= 3: ms += 4
+    manager_skill = min(20, max(4, ms))
 
-    # ── Risk score (20%) — peaks at 4-5, penalizes both extremes ──
-    if not risk or risk == 0:
-        risk_score = 10
-    elif 4 <= risk <= 5:
-        risk_score = 20
-    elif 3 <= risk <= 6:
-        risk_score = 16
-    elif 2 <= risk <= 7:
-        risk_score = 12
-    elif 1 <= risk <= 8:
-        risk_score = 8
-    else:
-        risk_score = 4
+    # ── Market Context (15%) — news sentiment, sector alignment ──
+    mc = 8
+    news = r.get("_news_by_symbol") or {}
+    pos = sum(1 for v in news.values() for a in v if a.get("sentiment") == "positive")
+    neg = sum(1 for v in news.values() for a in v if a.get("sentiment") == "negative")
+    total_n = pos + neg
+    if total_n > 0:
+        ratio = pos / total_n
+        if ratio >= 0.6: mc += 5
+        elif ratio >= 0.4: mc += 3
+        else: mc += 1
+    if any(h.get("type") == "stock" for h in holdings):
+        mc += 2
+    market_context = min(15, max(3, mc))
 
-    # High risk (>7) compounding penalty unless top-tier return
-    if risk > 7 and cum_pl <= 5.0:
-        ret_score *= 0.5
-        risk_score *= 0.5
+    # ── Capital Allocation Efficiency (10%) — risk-adjusted return sustainability ──
+    ae = 5
+    if ret > 5: ae += 3
+    elif ret > 0: ae += 2
+    elif ret > -5: ae += 1
+    if dd < 15 and ret > 0: ae += 2
+    elif dd < 20: ae += 1
+    alloc_efficiency = min(10, max(2, ae))
 
-    # ── Consistency score (15%) — stable monthly performance ──
-    cons_score = 7.5  # default neutral
-    if prof_months is not None and prof_months > 0:
-        if prof_months >= 80:
-            cons_score = 15
-        elif prof_months >= 65:
-            cons_score = 12
-        elif prof_months >= 50:
-            cons_score = 10
-        elif prof_months >= 35:
-            cons_score = 7
-        else:
-            cons_score = 4
-    if win_ratio is not None and win_ratio > 0:
-        win_bonus = win_ratio / 100 * 3
-        cons_score = min(15, cons_score + win_bonus)
-    if trades is not None and trades >= 50:
-        cons_score = min(15, cons_score + 2)
-
-    # ── AI confidence score (5%) ──
-    ai_conf_score = {"HIGH": 5, "MEDIUM": 3, "LOW": 1}.get(ai_conf, 2)
-
-    total = int(round(ret_score + dd_score + risk_score + cons_score + ai_conf_score))
-
-    return max(0, min(100, total))
+    total_score = holds_quality + risk_mgmt + manager_skill + market_context + alloc_efficiency
+    return {
+        "holds_quality": holds_quality,
+        "risk_mgmt": risk_mgmt,
+        "manager_skill": manager_skill,
+        "market_context": market_context,
+        "alloc_efficiency": alloc_efficiency,
+        "total": min(100, max(0, total_score)),
+    }
 
 
-def _build_health_summary(results: list[dict], live: bool = False, source_label: str = "Cached", ts: str = "", ai_used: bool = False) -> str:
+def _compute_health_score(r: dict) -> int:
+    """Weighted score 0-100. Delegates to dimension scores for total."""
+    return _compute_dimension_scores(r)["total"]
+
+
+def _build_health_summary(results: list[dict], live: bool = False, source_label: str = "Cached", ts: str = "", ai_used: bool = False, realloc_suggestions: list | None = None) -> str:
     total = len(results)
     source_tag = source_label if source_label else ("Live" if live else "Cached")
 
-    # Compute and cache health scores per trader
+    # Compute and cache dimension scores + health score per trader
     for r in results:
+        if "_dim_scores" not in r:
+            r["_dim_scores"] = _compute_dimension_scores(r)
         if "_health_score" not in r:
-            r["_health_score"] = _compute_health_score(r)
+            r["_health_score"] = r["_dim_scores"]["total"]
     for r in results:
         watch_count = r.get("watch_consecutive", 0)
         bucket, reason, confidence = _assess_trader(r, watch_count)
@@ -1799,6 +1817,14 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
         f"{sum(1 for r in results if _assess_trader(r, r.get('watch_consecutive', 0))[0]=='keep')} core, "
         f"{sum(1 for r in results if _assess_trader(r, r.get('watch_consecutive', 0))[0]=='uncopy')} exit"
     )
+
+    def _is_declining(r: dict) -> bool:
+        """Trader is declining if assess reason says 'declining' OR score trend is down."""
+        if r.get("_assessed_reason", "").find("declining") >= 0:
+            return True
+        if _score_trend(r.get("trader", "?"), r["_health_score"]) == "\u2193":
+            return True
+        return False
 
     # ── Overall Portfolio Health Score ──
     total_alloc = sum(r.get("allocation_pct") or 0 for r in results) or 1
@@ -1825,32 +1851,33 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
     exit_count = sum(1 for r in results if _assess_trader(r, r.get("watch_consecutive", 0))[0] == "uncopy")
     avg_dd = sum(abs(r.get("real_dd") or 0) for r in results) / max(total, 1)
     avg_ret = sum(r.get("total_return_pct") or 0 for r in results) / max(total, 1)
-    improving = sum(1 for r in results if _score_trend(r.get("trader", "?"), r["_health_score"]) == "\u2191")
-    declining = sum(1 for r in results if _score_trend(r.get("trader", "?"), r["_health_score"]) == "\u2193")
+    declining_count = sum(1 for r in results if _is_declining(r))
 
     sector_map = {}
+    all_symbols = set()
     for r in results:
         for h in (r.get("_holdings") or []):
             t = h.get("type", "other")
             sector_map[t] = sector_map.get(t, 0) + h.get("weight", 0)
+            all_symbols.add(h.get("symbol", "").upper())
     top_sector = max(sector_map.items(), key=lambda x: x[1]) if sector_map else ("unknown", 0)
 
     strengths = []
     weaknesses = []
     if core_count >= total * 0.5:
-        strengths.append(f"{core_count}/{total} traders CORE HOLD quality")
+        strengths.append(f"{core_count}/{total} CORE HOLD quality")
     if avg_dd < 15:
-        strengths.append(f"Avg drawdown controlled at {avg_dd:.1f}%")
-    if avg_ret > 0:
-        strengths.append(f"Average return {avg_ret:+.1f}%")
+        strengths.append(f"Avg drawdown {avg_dd:.1f}%")
     if len(sector_map) >= 3:
         strengths.append(f"Diversified across {len(sector_map)} asset types")
-    if declining == 0 and improving > 0:
-        strengths.append("Score trends improving — no deterioration detected")
+    if len(all_symbols) >= 8:
+        strengths.append(f"{len(all_symbols)} unique holdings across portfolio")
+    if declining_count == 0:
+        strengths.append("No deterioration detected across traders")
     if exit_count > 0:
         weaknesses.append(f"{exit_count} trader(s) flagged for EXIT")
     if top_sector[1] > 50:
-        weaknesses.append(f"High concentration in {top_sector[0]} ({top_sector[1]:.0f}%)")
+        weaknesses.append(f"Heavy concentration in {top_sector[0]} ({top_sector[1]:.0f}%)")
     if avg_dd > 20:
         weaknesses.append(f"Elevated avg drawdown {avg_dd:.1f}%")
     if total < 5:
@@ -1862,17 +1889,18 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
     if weaknesses:
         lines.append("\U0001f7e1 " + " | ".join(weaknesses))
     if not strengths and not weaknesses:
-        lines.append("Neutral — no strong directional signals")
+        lines.append("Neutral \u2014 no strong directional signals")
 
     # ── Trader Analysis ──
     lines.append("\n" + "\u2500" * 35)
     lines.append("<b>TRADER ANALYSIS</b>")
 
     for r in results:
+        ds = r["_dim_scores"]
         sc = r["_health_score"]
         name = r.get("trader") or r.get("name", "?")
         alloc = r.get("allocation_pct") or 0
-        bucket, reason, _ = _assess_trader(r, r.get("watch_consecutive", 0))
+        bucket, _, _ = _assess_trader(r, r.get("watch_consecutive", 0))
 
         if bucket == "keep" and sc >= 75:
             classification = "\U0001f7e2 CORE HOLD"
@@ -1886,15 +1914,34 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
             classification = "\U0001f7e0 REDUCE"
 
         tr = _score_trend(r.get("trader", "?"), sc)
-        lines.append(f"\n<b>{name}</b> \u2014 {classification}  <i>{tr}</i>")
+        decl = "\U0001f53b" if _is_declining(r) else ""
+        lines.append(f"\n<b>{name}</b> \u2014 {classification} {decl} <i>{tr}</i>")
         lines.append(f"Score: {sc}/100 | Alloc: {alloc:.0f}%")
 
+        # Score breakdown
+        lines.append(f"Quality:{ds['holds_quality']}/30 Risk:{ds['risk_mgmt']}/25 Skill:{ds['manager_skill']}/20 Mkt:{ds['market_context']}/15 Eff:{ds['alloc_efficiency']}/10")
+
+        # Holdings analysis
         holdings = r.get("_holdings") or []
         if holdings:
-            top3 = holdings[:3]
-            hstr = ", ".join(f"{h.get('symbol','?')}({h.get('weight',0):.0f}%)" for h in top3)
+            top5 = holdings[:5]
+            hstr = ", ".join(f"{h.get('symbol','?')}({h.get('weight',0):.0f}%)" for h in top5)
             lines.append(f"Holdings: {hstr}")
+            top_w = max(h.get("weight", 0) for h in holdings)
+            types = set(h.get("type", "other") for h in holdings)
+            conc_note = []
+            if top_w > 40:
+                conc_note.append(f"Top holding {top_w:.0f}% concentrated")
+            if len(holdings) >= 8:
+                conc_note.append(f"{len(holdings)} holdings well diversified")
+            elif len(holdings) <= 3:
+                conc_note.append(f"Only {len(holdings)} holdings \u2014 concentrated")
+            if len(types) >= 2:
+                conc_note.append(f"{', '.join(sorted(types))} exposure")
+            if conc_note:
+                lines.append(" | ".join(conc_note))
 
+        # Performance context (secondary)
         parts = []
         ret = r.get("total_return_pct")
         if ret is not None and abs(ret) >= 2:
@@ -1916,14 +1963,6 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
             lines.append(f"\U0001f4ac {assessed}")
         elif assessed:
             lines.append(f"\U0001f4ac {assessed[:117]}...")
-
-        types = {}
-        for h in holdings:
-            t = h.get("type", "other")
-            types[t] = types.get(t, 0) + 1
-        if types:
-            ts = ", ".join(f"{k}({v})" for k, v in sorted(types.items(), key=lambda x: -x[1])[:3])
-            lines.append(f"Types: {ts}")
 
     # ── Market Intelligence ──
     lines.append("\n" + "\u2500" * 35)
@@ -1952,6 +1991,9 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
     if sector_map:
         top_sectors = sorted(sector_map.items(), key=lambda x: -x[1])[:3]
         lines.append("Sector: " + " | ".join(f"{k} {v:.0f}%" for k, v in top_sectors))
+    lines.append(f"Total unique symbols: {len(all_symbols)}")
+    if len(all_symbols) < 5:
+        lines.append("Concentrated holdings base \u2014 limited diversification benefit")
 
     # ── Rebalancing Decision ──
     lines.append("\n" + "\u2500" * 35)
@@ -1962,39 +2004,53 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
     reduce_names = [r.get("trader") or r.get("name", "?") for r in results
                     if _assess_trader(r, r.get("watch_consecutive", 0))[0] != "uncopy" and r["_health_score"] < 50]
 
-    if exit_names:
+    # If AI suggestions exist with actual changes, use them as the recommendation
+    if realloc_suggestions and any(s.get("from", 0) != s.get("to", 0) for s in realloc_suggestions):
+        lines.append("AI-driven allocation adjustment recommended:")
+        for s in realloc_suggestions:
+            name = s.get("name", "?")
+            fr = s.get("from", 0)
+            to = s.get("to", 0)
+            reason = s.get("reason", "")
+            if to > fr:
+                icon = "\u2b06\ufe0f"
+            elif to < fr:
+                icon = "\u2b07\ufe0f"
+            else:
+                continue
+            lines.append(f"{icon} {name}: {fr:.0f}%\u2192{to:.0f}%  ({reason})")
+    elif exit_names:
         lines.append(f"\U0001f6a8 <b>EXIT:</b> {', '.join(exit_names[:3])} \u2014 capital preservation concern")
-    if reduce_names:
+    elif reduce_names:
         lines.append(f"\U0001f7e0 <b>REDUCE:</b> {', '.join(reduce_names[:3])} \u2014 deteriorating risk/reward")
-    if not exit_names and not reduce_names:
-        if overall_score >= 60:
-            lines.append("\U0001f7e2 <b>MAINTAIN CURRENT ALLOCATION</b> \u2014 risk/reward acceptable")
-        else:
-            lines.append("\U0001f7e1 <b>MAINTAIN WITH MONITORING</b> \u2014 no urgent action required")
+    elif overall_score >= 60:
+        lines.append("\U0001f7e2 <b>MAINTAIN CURRENT ALLOCATION</b> \u2014 risk/reward acceptable")
+    else:
+        lines.append("\U0001f7e1 <b>MAINTAIN WITH MONITORING</b> \u2014 no urgent action required")
 
     # ── Investment Committee Conclusion ──
     lines.append("\n" + "\u2500" * 35)
     lines.append("\U0001f4dc <b>INVESTMENT COMMITTEE CONCLUSION</b>")
 
     improving_ct = sum(1 for r in results if _score_trend(r.get("trader", "?"), r["_health_score"]) == "\u2191")
-    declining_ct = sum(1 for r in results if _score_trend(r.get("trader", "?"), r["_health_score"]) == "\u2193")
+    declining_ct = sum(1 for r in results if _is_declining(r))
 
     if exit_count > 0:
         conclusion = f"{exit_count} trader(s) identified for EXIT on capital preservation grounds."
-        conclusion += f" Reduce affected positions and hold cash pending replacement opportunities."
+        conclusion += " Reduce affected positions and hold cash pending replacement opportunities."
     elif overall_score >= 75:
-        conclusion = f"Portfolio is strong ({overall_score}/100). {core_count}/{total} traders are CORE HOLD quality."
+        conclusion = f"Portfolio is strong ({overall_score}/100)."
         if declining_ct == 0:
             conclusion += " No deterioration detected \u2014 maintain current allocation."
         else:
             conclusion += f" {declining_ct} trader(s) showing decline \u2014 monitor closely."
     elif overall_score >= 50:
         conclusion = f"Portfolio is stable ({overall_score}/100) but below optimal threshold."
-        conclusion += f" {improving_ct}/{total} traders showing improvement, {declining_ct} declining."
-        conclusion += " Risk/reward is acceptable with monitoring."
+        conclusion += f" {improving_ct}/{total} traders improving, {declining_ct} declining."
+        conclusion += " Holdings quality is primary driver; performance is secondary."
     else:
         conclusion = f"Portfolio score {overall_score}/100 requires attention."
-        conclusion += " Reduce lowest-scoring exposure and hold cash until quality opportunities emerge."
+        conclusion += " Reduce lowest-scoring exposure and prioritize holdings quality over past returns."
 
     lines.append(conclusion)
 
