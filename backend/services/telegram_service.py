@@ -1752,10 +1752,9 @@ def _compute_dimension_scores(r: dict) -> dict:
     dc = 18 if dd < 10 else (15 if dd < 15 else (12 if dd < 20 else (8 if dd < 25 else 4)))
     drawdown_ctrl = min(20, max(4, dc))
 
-    # ── Total — Risk + Cons + DD ──
-    dims = [(risk_mgmt, 25), (consistency, 25), (drawdown_ctrl, 20)]
-    avail = [s for s, _ in dims if s is not None]
-    total_score = sum(avail) if avail else 20
+    # ── Total — rescale to /100 (max available is 70) ──
+    raw = risk_mgmt + consistency + drawdown_ctrl
+    total_score = int(round(raw / 70 * 100))
 
     # ── Confidence: based on signal quality, not data completeness ──
     has_dd = bool(abs(r.get("real_dd") or 0))
@@ -1784,21 +1783,27 @@ def _compute_health_score(r: dict) -> int:
 
 
 def _derive_market_context(trader_return: float, md: dict) -> str:
-    """Derive market context label from trader return vs SPY/QQQ/BTC."""
-    if not md:
-        return "Unknown"
+    """Derive market context label from trader return vs SPY/QQQ/BTC.
+    Never returns 'N/A' or 'Unknown' — always a specific reason.
+    """
+    if trader_return is None:
+        return "trader return unavailable"
+    if not md or not any(v is not None for v in md.values()):
+        return "benchmark data unavailable"
     spy = md.get("SPY")
     qqq = md.get("QQQ")
     btc = md.get("BTC-USD")
-    spy_up = spy is not None and spy > 0
-    qqq_up = qqq is not None and qqq > 0
-    btc_up = btc is not None and btc > 0
-    if (spy_up or qqq_up) and trader_return > 0:
+    spy_or_qqq_up = (spy is not None and spy > 0) or (qqq is not None and qqq > 0)
+    if spy_or_qqq_up and trader_return > 0:
         return "Aligned"
-    if (spy_up or qqq_up) and trader_return <= 0:
+    if spy_or_qqq_up and trader_return <= 0:
         return "Lagging"
-    if btc_up and trader_return > 0:
-        return "Crypto-correlated"
+    # Check if trader tracks BTC more than equities
+    if btc is not None:
+        btc_up = btc > 0
+        trader_up = trader_return > 0
+        if btc_up == trader_up:
+            return "Crypto-correlated"
     return "Uncorrelated"
 
 
@@ -1942,7 +1947,7 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
         name = r.get("trader") or r.get("name", "?")
         alloc = r.get("allocation_pct") or 0
         sig = _classify(r)
-        ret = r.get("total_return_pct") or 0
+        ret = r.get("total_return_pct")  # keep None for mkt ctx fallback
         dd = abs(r.get("real_dd") or 0)
         rs = r.get("real_risk") or r.get("risk_score") or 0
         pm = r.get("profitable_months_pct")
@@ -1951,10 +1956,8 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
         lines.append(f"\n<b>{name}</b> \u2014 {sig}")
         lines.append(f"Score: {sc}/100 | Alloc: {alloc:.0f}%")
         lines.append(f"Risk:{ds['risk_mgmt']}/25  Cons:{ds['consistency']}/25  DD:{ds['drawdown_ctrl']}/20 | Mkt: {mkt_ctx}")
-        if not ds["has_holdings"]:
-            lines.append("\u26a0\ufe0f Holdings data unavailable \u2014 analysis based on performance metrics only.")
         perf_parts = []
-        if abs(ret) >= 1:
+        if ret is not None and abs(ret) >= 1:
             perf_parts.append(f"Ret: {ret:+.1f}%")
         if dd > 0:
             perf_parts.append(f"DD: {dd:.0f}%")
@@ -1966,8 +1969,20 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
             lines.append(" | ".join(perf_parts))
         assessed = r.get("_assessed_reason") or ""
         if assessed:
-            brief = assessed[:100] if len(assessed) > 100 else assessed
-            lines.append(f"\U0001f4ac {brief}")
+            # Strip internal tracking labels (Rule 6)
+            clean = assessed
+            for token in ("Watch scan", "cycle", "iteration"):
+                idx = clean.lower().find(token.lower())
+                if idx >= 0:
+                    end = clean.find("\u2022", idx)
+                    if end >= 0:
+                        clean = clean[:idx] + clean[end + 1:]
+                    else:
+                        clean = clean[:idx].rstrip()
+            clean = clean.strip(" \u2022")
+            if clean:
+                brief = clean[:100] if len(clean) > 100 else clean
+                lines.append(f"\U0001f4ac {brief}")
 
     # ── Market Intelligence ──
     lines.append("\n" + "\u2500" * 35)
