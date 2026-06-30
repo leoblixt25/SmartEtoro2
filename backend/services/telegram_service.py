@@ -81,22 +81,24 @@ def _score_trend(username: str, current_score: int) -> str:
 
 # ── Market context helper ───────────────────────────────────────────
 async def _fetch_market_data() -> dict:
-    """Fetch 1-day % change for SPY, QQQ, BTC-USD via yfinance. Returns {symbol: pct_change}."""
+    """Fetch 1-day % change for SPY, QQQ, BTC-USD via Yahoo Finance chart API. Returns {symbol: pct_change}."""
+    import httpx
+    symbols = {"SPY": "SPY", "QQQ": "QQQ", "BTC-USD": "BTC-USD"}
     result = {}
-    try:
-        import yfinance as yf
-        for sym in ("SPY", "QQQ", "BTC-USD"):
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        for sym, ticker in symbols.items():
             try:
-                ticker = yf.Ticker(sym)
-                hist = ticker.history(period="2d")
-                if len(hist) >= 2:
-                    ct = hist["Close"].iloc[-1]
-                    cy = hist["Close"].iloc[-2]
+                url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?range=2d&interval=1d"
+                resp = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+                if resp.status_code != 200:
+                    continue
+                data = resp.json()
+                closes = data["chart"]["result"][0]["indicators"]["quote"][0]["close"]
+                if len(closes) >= 2 and closes[-1] is not None and closes[-2] is not None:
+                    ct, cy = closes[-1], closes[-2]
                     result[sym] = round((ct - cy) / cy * 100, 1)
             except Exception:
                 pass
-    except Exception:
-        pass
     return result
 
 def _format_market_line(market_data: dict) -> str:
