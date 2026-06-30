@@ -1350,21 +1350,19 @@ class TelegramBot:
 
             summary = _build_health_summary(results, live=freshness, source_label=label, ts=ts, ai_used=bool(ai_results), realloc_suggestions=realloc_suggestions, market_data=market_data)
 
-            # Build portfolio preamble
+            # Build compact header
             val = portfolio_summary["total_value"]
             inv = portfolio_summary["invested"]
             cash = portfolio_summary["cash"]
             pnl = portfolio_summary["pnl"]
-            pnl_icon = "\u2705" if pnl >= 0 else "\u274c"
             pnl_sign = "+" if pnl >= 0 else ""
-            tc = portfolio_summary["traders"]
-            preamble = (
-                f"Value: ${val:,.2f} | Invested: ${inv:,.2f}\n"
-                f"P&L: {pnl_sign}${pnl:,.2f} {pnl_icon} | Cash: ${cash:,.2f} | {tc} Traders"
-            )
-            summary = preamble + "\n\n" + summary
+            pnl_pct = (pnl / inv * 100) if inv else 0
+            header_parts = []
+            header_parts.append(f"\U0001f4ca <b>HEALTH REPORT</b> \u2014 {ts}" if ts else "\U0001f4ca <b>HEALTH REPORT</b>")
+            header_parts.append(f"Value: ${val:,.2f} | P&L: {pnl_sign}${pnl:,.2f} ({pnl_sign}{pnl_pct:.1f}%) | Cash: ${cash:,.2f}")
             if market_line:
-                summary = market_line + "\n\n" + summary
+                header_parts.append(market_line)
+            summary = "\n".join(header_parts) + "\n" + summary
             # Save each trader's health score to rolling history
             try:
                 scores = {}
@@ -1864,210 +1862,116 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
 
     has_any_holdings = any(r["_dim_scores"]["has_holdings"] for r in results)
 
-    lines = [f"\U0001f4ca <b>PORTFOLIO HEALTH REPORT</b>"]
-    lines.append(f"\n<b>Overall Health Score: {overall_score}/100</b>")
-    lines.append(f"Status: {status}  |  Confidence: {overall_confidence}")
-    # One-line data limitation note at the top (not repeated per trader)
+    lines = []
+    lines.append(f"Score: {overall_score}/100 {status} | Confidence: {overall_confidence}")
     if not has_any_holdings:
-        lines.append("\U0001f6a7 Holdings data unavailable \u2014 analysis based on performance metrics only.")
+        lines.append("\u26a0\ufe0f Holdings unavailable \u2014 performance-based scoring only")
 
-    # ── Portfolio Summary ──
-    core_count = sum(1 for r in results if _assess_trader(r, r.get("watch_consecutive", 0))[0] == "keep")
-    exit_count = sum(1 for r in results if _assess_trader(r, r.get("watch_consecutive", 0))[0] == "uncopy")
-    avg_dd = sum(abs(r.get("real_dd") or 0) for r in results) / max(total, 1)
-    avg_ret = sum(r.get("total_return_pct") or 0 for r in results) / max(total, 1)
-    declining_count = sum(1 for r in results if _is_declining(r))
+    lines.append("")
 
-    sector_map = {}
-    all_symbols = set()
-    for r in results:
-        for h in (r.get("_holdings") or []):
-            t = h.get("type", "other")
-            sector_map[t] = sector_map.get(t, 0) + h.get("weight", 0)
-            all_symbols.add(h.get("symbol", "").upper())
-    top_sector = max(sector_map.items(), key=lambda x: x[1]) if sector_map else ("unknown", 0)
-
-    spts = []
-    lpts = []
-    if avg_ret > 0:
-        spts.append("Portfolio profitable")
-    if avg_dd < 15:
-        spts.append(f"Drawdown controlled ({avg_dd:.1f}%)")
-    if declining_count == 0:
-        spts.append("No traders in decline")
-    if exit_count == 0:
-        spts.append("No EXIT candidates")
-    if core_count >= total * 0.5 and has_any_holdings:
-        spts.append(f"{core_count}/{total} CORE HOLD")
-
-    if not has_any_holdings:
-        lpts.append("Holdings transparency unavailable")
-        lpts.append("Sector exposure unknown")
-    else:
-        if len(all_symbols) >= 8:
-            spts.append(f"{len(all_symbols)} unique holdings")
-        if top_sector[1] > 50:
-            lpts.append(f"Concentrated in {top_sector[0]} ({top_sector[1]:.0f}%)")
-        if len(all_symbols) < 5:
-            lpts.append("Highly concentrated holdings")
-    if exit_count > 0:
-        lpts.append(f"{exit_count} trader(s) flagged for EXIT")
-    if avg_dd > 20:
-        lpts.append(f"Elevated drawdown {avg_dd:.1f}%")
-    if total < 5:
-        lpts.append(f"Only {total} traders \u2014 limited diversification")
-
-    lines.append(f"\n<b>Portfolio Summary</b>")
-    if spts:
-        lines.append("\U0001f7e2 " + " | ".join(spts))
-    if lpts:
-        lines.append("\U0001f7e1 " + " | ".join(lpts))
-    if not spts and not lpts:
-        lines.append("Neutral \u2014 no strong directional signals")
-
-    # ── Trader Analysis ──
-    lines.append("\n" + "\u2500" * 35)
-    lines.append("<b>TRADER ANALYSIS</b>")
-
-    def _classify(r: dict) -> str:
+    # ── Trader Analysis — one line per trader (two for WATCH/EXIT) ──
+    def _classify(r: dict) -> tuple:
         ds, sc, bucket = r["_dim_scores"], r["_health_score"], _assess_trader(r, r.get("watch_consecutive", 0))[0]
         if not ds["has_holdings"]:
-            return "\U0001f534 EXIT" if bucket == "uncopy" else "\U0001f7e1 MONITOR"
-        if bucket == "keep" and sc >= 75:
-            return "\U0001f7e2 CORE HOLD"
-        if bucket == "keep":
-            return "\U0001f7e1 MONITOR"
-        if bucket == "uncopy":
-            return "\U0001f534 EXIT"
-        return "\U0001f7e1 MONITOR" if sc >= 45 else "\U0001f7e0 REDUCE"
+            emoji, label = ("\U0001f534", "EXIT") if bucket == "uncopy" else ("\U0001f7e1", "MONITOR")
+        elif bucket == "keep" and sc >= 75:
+            emoji, label = ("\U0001f7e2", "HOLD")
+        elif bucket == "keep":
+            emoji, label = ("\U0001f7e1", "MONITOR")
+        elif bucket == "uncopy":
+            emoji, label = ("\U0001f534", "EXIT")
+        elif sc >= 45:
+            emoji, label = ("\U0001f7e1", "MONITOR")
+        else:
+            emoji, label = ("\U0001f7e0", "REDUCE")
+        return emoji, label, bucket
 
     for r in results:
         ds = r["_dim_scores"]
         sc = r["_health_score"]
         name = r.get("trader") or r.get("name", "?")
         alloc = r.get("allocation_pct") or 0
-        sig = _classify(r)
-        ret = r.get("total_return_pct")  # keep None for mkt ctx fallback
-        dd = abs(r.get("real_dd") or 0)
-        rs = r.get("real_risk") or r.get("risk_score") or 0
-        pm = r.get("profitable_months_pct")
-        mkt_ctx = _derive_market_context(ret, market_data or {})
-
-        lines.append(f"\n<b>{name}</b> \u2014 {sig}")
-        lines.append(f"Score: {sc}/100 | Alloc: {alloc:.0f}%")
-        lines.append(f"Risk:{ds['risk_mgmt']}/25  Cons:{ds['consistency']}/25  DD:{ds['drawdown_ctrl']}/20 | Mkt: {mkt_ctx}")
-        perf_parts = []
-        if ret is not None and abs(ret) >= 1:
-            perf_parts.append(f"Ret: {ret:+.1f}%")
-        if dd > 0:
-            perf_parts.append(f"DD: {dd:.0f}%")
-        if rs:
-            perf_parts.append(f"Risk: {rs:.0f}/10")
-        if pm is not None:
-            perf_parts.append(f"Profitable: {pm:.0f}% months")
-        if perf_parts:
-            lines.append(" | ".join(perf_parts))
-        assessed = r.get("_assessed_reason") or ""
-        if assessed:
-            # Strip internal tracking labels (Rule 6)
-            clean = assessed
-            for token in ("Watch scan", "cycle", "iteration"):
-                idx = clean.lower().find(token.lower())
-                if idx >= 0:
-                    end = clean.find("\u2022", idx)
-                    if end >= 0:
-                        clean = clean[:idx] + clean[end + 1:]
-                    else:
-                        clean = clean[:idx].rstrip()
-            clean = clean.strip(" \u2022")
-            if clean:
-                brief = clean[:100] if len(clean) > 100 else clean
-                lines.append(f"\U0001f4ac {brief}")
-
-    # ── Market Intelligence ──
-    lines.append("\n" + "\u2500" * 35)
-    lines.append("\U0001f30d <b>MARKET INTELLIGENCE</b>")
-
-    if not has_any_holdings:
-        lines.append("Market intelligence limited because underlying holdings are unavailable.")
-        lines.append("Cannot evaluate sector exposure, company risks, or valuation concerns.")
-    else:
-        pos_syms, neg_syms = set(), set()
-        for r in results:
-            for sym, articles in (r.get("_news_by_symbol") or {}).items():
-                for a in articles:
-                    sent = a.get("sentiment", "neutral")
-                    if sent == "positive":
-                        pos_syms.add(sym)
-                    elif sent == "negative":
-                        neg_syms.add(sym)
-
-        news_parts = []
-        if pos_syms:
-            news_parts.append(f"Positive: {', '.join(sorted(pos_syms)[:5])}")
-        if neg_syms:
-            news_parts.append(f"Negative: {', '.join(sorted(neg_syms)[:5])}")
-        if news_parts:
-            lines.append(" | ".join(news_parts))
-        else:
-            lines.append("No significant news signals across holdings")
-
-        if sector_map:
-            top_sectors = sorted(sector_map.items(), key=lambda x: -x[1])[:3]
-            lines.append("Sector: " + " | ".join(f"{k} {v:.0f}%" for k, v in top_sectors))
-        else:
-            lines.append("Holdings data: UNAVAILABLE \u2014 cannot evaluate sector exposure or concentration risk")
-
-    # ── Rebalancing Decision ──
-    lines.append("\n" + "\u2500" * 35)
-    lines.append("\U0001f504 <b>REBALANCING DECISION</b>")
-
-    # Conditional recommendations based on available metrics
-    rebal_lines = []
-    for r in results:
+        emoji, sig_label, bucket = _classify(r)
         ret = r.get("total_return_pct") or 0
         dd = abs(r.get("real_dd") or 0)
-        pm = r.get("profitable_months_pct")
-        name = r.get("trader") or r.get("name", "?")
+
+        # Extract first decision-relevant reason (≤6 words)
+        reason = ""
+        assessed = r.get("_assessed_reason") or ""
+        if assessed:
+            for token in ("Watch scan", "cycle", "iteration"):
+                idx = assessed.lower().find(token.lower())
+                if idx >= 0:
+                    end = assessed.find("\u2022", idx)
+                    assessed = (assessed[:idx] + assessed[end + 1:]) if end >= 0 else assessed[:idx]
+            first = assessed.split("\u2022")[0].strip().rstrip(",")
+            if not first.startswith("Score") and not first.startswith("CORE HOLD"):
+                words = first.split()
+                if len(words) > 6:
+                    first = " ".join(words[:6])
+                reason = first
+
+        # Line 1: compact trader line
+        ret_str = f"Ret {ret:+.1f}%" if ret != 0 else ""
+        dd_str = f"DD {dd:.0f}%" if dd > 0 else ""
+        stats = " | ".join(s for s in (ret_str, dd_str) if s)
+        reason_str = f" | {reason}" if reason else ""
+        lines.append(f"{name} {alloc:.0f}% \u2014 {emoji}{sig_label} {sc}/100{f' | {stats}' if stats else ''}{reason_str}")
+
+        # Line 2 (WATCH/EXIT only): sub-scores + trigger
+        if bucket in ("uncopy",) or (bucket == "watch" and _is_declining(r)):
+            lines.append(f"  Risk:{ds['risk_mgmt']}/25 Cons:{ds['consistency']}/25 DD:{ds['drawdown_ctrl']}/20 \u2014 {first if first else 'monitoring'}")
+
+    lines.append("")
+
+    # ── Market Intelligence (only when holdings available) ──
+    if has_any_holdings:
+        sectors = {}
+        for r in results:
+            for h in (r.get("_holdings") or []):
+                t = h.get("type", "other")
+                sectors[t] = sectors.get(t, 0) + h.get("weight", 0)
+        if sectors:
+            top_sects = sorted(sectors.items(), key=lambda x: -x[1])[:2]
+            lines.append("Sector: " + " | ".join(f"{k} {v:.0f}%" for k, v in top_sects))
+
+    # ── Rebalance — single compact line ──
+    rebal_parts = []
+    for r in results:
+        rret = r.get("total_return_pct") or 0
+        rdd = abs(r.get("real_dd") or 0)
+        rpm = r.get("profitable_months_pct")
+        nm = r.get("trader") or r.get("name", "?")
         declining = _is_declining(r)
-        if ret < 0 and declining:
-            rebal_lines.append(f"\u2b07\ufe0f <b>Reduce {name}</b> \u2014 negative return, declining trend")
-        elif dd >= 18 and ret < 2:
-            rebal_lines.append(f"\u26a0\ufe0f <b>Trim {name}</b> \u2014 drawdown {dd:.0f}%, consider if worsens")
-        elif dd < 10 and ret > 0 and pm is not None and pm > 70:
-            rebal_lines.append(f"\u2b06\ufe0f <b>Increase {name}</b> \u2014 low DD, profitable >70% months")
-    if rebal_lines:
-        lines.extend(rebal_lines)
-    else:
-        lines.append("\U0001f7e1 <b>MAINTAIN CURRENT ALLOCATION</b> \u2014 no strong directional signals from available data")
+        if rret < 0 and declining:
+            rebal_parts.append(f"Reduce {nm} (negative return)")
+        elif rdd >= 18 and rret < 2:
+            rebal_parts.append(f"Trim {nm} if DD worsens")
+        elif rdd < 10 and rret > 0 and rpm is not None and rpm > 70:
+            rebal_parts.append(f"Increase {nm} (low risk)")
 
-    # ── Bottom Summary — 3 bullets: risk, opportunity, action ──
-    lines.append("\n" + "\u2500" * 35)
-    lines.append("\U0001f4dc <b>SUMMARY</b>")
-
+    # ── Summary — single line ──
     improving_ct = sum(1 for r in results if _score_trend(r.get("trader", "?"), r["_health_score"]) == "\u2191")
     declining_ct = sum(1 for r in results if _is_declining(r))
     total_pl = sum(r.get("total_return_pct") or 0 for r in results)
+    watch_or_exit = any(
+        _assess_trader(rt, rt.get("watch_consecutive", 0))[0] in ("uncopy", "watch")
+        for rt in results
+    )
+    has_actionable = bool(rebal_parts) or watch_or_exit
 
-    risk_bullet = f"\U0001f6a9 <b>Risk:</b> Drawdown avg {avg_dd:.1f}%" if avg_dd > 0 else ""
-    if declining_ct > improving_ct:
-        risk_bullet += f", {declining_ct}/{total} traders declining"
-    if not risk_bullet:
-        risk_bullet = "\U0001f6a9 <b>Risk:</b> No material deterioration detected"
+    if rebal_parts:
+        lines.append(f"\U0001f504 {' | '.join(rebal_parts)}")
 
-    if total_pl > 0:
-        opp_bullet = f"\U0001f7e2 <b>Opportunity:</b> Portfolio profitable; {'increase' if avg_dd < 15 else 'maintain'} allocation"
-    else:
-        opp_bullet = f"\U0001f7e2 <b>Opportunity:</b> Market conditions may present entry points"
-
-    action_bullet = f"\U0001f4a1 <b>Action:</b> Maintain allocation, monitor {declining_ct} declining trader(s)" if declining_ct > 0 else "\U0001f4a1 <b>Action:</b> Maintain current allocation"
-
-    lines.append(risk_bullet)
-    lines.append(opp_bullet)
-    lines.append(action_bullet)
-
-    if ts:
-        lines.append(f"\n\U0001f4c5 {ts} ({source_tag})")
+    if has_actionable:
+        net_read = f"profitable" if total_pl > 0 else "net negative"
+        if declining_ct > 0:
+            net_read += f", {declining_ct}/{total} declining"
+        if improving_ct > 0:
+            net_read += f", {improving_ct}/{total} improving"
+        declining_names = [r.get("trader") or r.get("name", "?") for r in results if _is_declining(r)]
+        action = f"watch {declining_names[0]}" if declining_names else "hold allocation"
+        lines.append(f"\U0001f4a1 Portfolio {net_read} \u2014 {action}")
 
     return "\n".join(lines)
 
