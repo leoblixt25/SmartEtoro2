@@ -1339,7 +1339,11 @@ class TelegramBot:
             except Exception:
                 logger.exception("Failed to persist scraped stats")
 
-            # Get AI reallocation suggestions first (used in Rebalancing Decision)
+            # Fetch market data first (used in both health summary and market line)
+            market_data = await _fetch_market_data()
+            market_line = _format_market_line(market_data) if market_data else ""
+
+            # Get AI reallocation suggestions (used in Rebalancing Decision)
             realloc_suggestions = []
             if show_reallocation:
                 _, realloc_suggestions = await self._ai_reallocate(results, portfolio_summary.get("total_value", 0))
@@ -1359,10 +1363,6 @@ class TelegramBot:
                 f"P&L: {pnl_sign}${pnl:,.2f} {pnl_icon} | Cash: ${cash:,.2f} | {tc} Traders"
             )
             summary = preamble + "\n\n" + summary
-
-            # Fetch market data for context derivation
-            market_data = await _fetch_market_data()
-            market_line = _format_market_line(market_data) if market_data else ""
             if market_line:
                 summary = market_line + "\n\n" + summary
             # Save each trader's health score to rolling history
