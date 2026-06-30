@@ -155,12 +155,12 @@ async def root():
 
 
 @app.get("/health")
-def health_check():
+async def health_check():
     return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
 
 
 @app.head("/health")
-def health_check_head():
+async def health_check_head():
     return Response(status_code=status.HTTP_200_OK)
 
 

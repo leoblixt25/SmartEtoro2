@@ -193,9 +193,16 @@ class Alert(Base):
 
 def get_engine(database_url: str = "sqlite:///./etoro_platform.db"):
     """Create SQLAlchemy engine. Use DATABASE_URL for PostgreSQL in production."""
-    connect_args = {"check_same_thread": False, "timeout": 15} if database_url.startswith(
-        "sqlite") else {}
-    return create_engine(database_url, connect_args=connect_args)
+    if database_url.startswith("sqlite"):
+        connect_args = {"check_same_thread": False, "timeout": 15}
+        return create_engine(database_url, connect_args=connect_args)
+    return create_engine(
+        database_url,
+        pool_size=2,
+        max_overflow=3,
+        pool_pre_ping=True,
+        pool_recycle=300,
+    )
 
 
 def create_tables(engine):
