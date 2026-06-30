@@ -1862,14 +1862,93 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
 
     has_any_holdings = any(r["_dim_scores"]["has_holdings"] for r in results)
 
+    # ── VERDICT: market regime + news sentiment + decline persistence ──
+    spy = market_data.get("SPY") if market_data else None
+    qqq = market_data.get("QQQ") if market_data else None
+    has_spy_qqq = spy is not None or qqq is not None
+    market_regime = None
+    if has_spy_qqq:
+        spy_off = spy is not None and spy <= -1
+        qqq_off = qqq is not None and qqq <= -1
+        if (spy_off and qqq_off) or (spy is not None and spy <= -1.5) or (qqq is not None and qqq <= -1.5):
+            market_regime = "RISK-OFF"
+        elif (spy is not None and spy >= 0) and (qqq is not None and qqq >= 0):
+            market_regime = "RISK-ON"
+        else:
+            market_regime = "NEUTRAL"
+
+    news_sentiment = "NEUTRAL"
+    neg_headlines = []
+    all_pos = False
+    for r in results:
+        for articles in (r.get("_news_by_symbol") or {}).values():
+            for a in articles:
+                s = a.get("sentiment", "neutral")
+                if s == "negative":
+                    neg_headlines.append(a.get("title", ""))
+                elif s == "positive":
+                    all_pos = True
+    if neg_headlines and not all_pos:
+        news_sentiment = "NEGATIVE"
+    elif all_pos and not neg_headlines:
+        news_sentiment = "POSITIVE"
+
+    # Verdict decision
+    portfolio_profitable = sum(r.get("total_return_pct") or 0 for r in results) > 0
+    if not has_spy_qqq or (not neg_headlines and not all_pos):
+        verdict_emoji = "\U0001f518"
+        verdict_label = "NO VERDICT"
+        verdict_reason = "market/news data missing this cycle"
+        stop_copying = False
+    elif not portfolio_profitable:
+        verdict_emoji = "\U0001f7e2"
+        verdict_label = "HOLD"
+        verdict_reason = "nothing to protect yet"
+        stop_copying = False
+    else:
+        risk_flags = 0
+        if market_regime == "RISK-OFF":
+            risk_flags += 1
+        if news_sentiment == "NEGATIVE":
+            risk_flags += 1
+        qualifiers = [r.get("trader") or r.get("name", "?") for r in results if r.get("watch_consecutive", 0) >= 2]
+        catalyst = neg_headlines[0][:80] if neg_headlines else ""
+        if risk_flags == 2 and qualifiers:
+            verdict_emoji = "\U0001f534"
+            verdict_label = "TAKE PROFIT"
+            reason_parts = [market_regime.lower().replace("risk-", "") + " market"]
+            if catalyst:
+                reason_parts.append(catalyst)
+            verdict_reason = f"{'. '.join(reason_parts)}. Stop copying: {', '.join(qualifiers)}"
+            stop_copying = True
+        elif risk_flags >= 1:
+            verdict_emoji = "\U0001f7e1"
+            verdict_label = "REDUCE"
+            flags = []
+            if market_regime == "RISK-OFF":
+                flags.append("risk-off")
+            if news_sentiment == "NEGATIVE":
+                flags.append("negative sentiment")
+            verdict_reason = " + ".join(flags)
+            if catalyst:
+                verdict_reason += f" ({catalyst[:60]})"
+            stop_copying = True
+        else:
+            verdict_emoji = "\U0001f7e2"
+            verdict_label = "HOLD"
+            regime_str = market_regime.lower() if market_regime else "neutral"
+            verdict_reason = f"{regime_str}, sentiment not negative. Stay copying."
+            stop_copying = False
+
     lines = []
     lines.append(f"Score: {overall_score}/100 {status} | Confidence: {overall_confidence}")
+    lines.append(f"VERDICT: {verdict_emoji} {verdict_label} \u2014 {verdict_reason}")
     if not has_any_holdings:
         lines.append("\u26a0\ufe0f Holdings unavailable \u2014 performance-based scoring only")
 
     lines.append("")
 
-    # ── Trader Analysis — one line per trader (two for WATCH/EXIT) ──
+    # ── Trader Analysis — one line per trader (two for WATCH/EXIT or STOP COPYING) ──
     def _classify(r: dict) -> tuple:
         ds, sc, bucket = r["_dim_scores"], r["_health_score"], _assess_trader(r, r.get("watch_consecutive", 0))[0]
         if not ds["has_holdings"]:
@@ -1892,11 +1971,15 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
         name = r.get("trader") or r.get("name", "?")
         alloc = r.get("allocation_pct") or 0
         emoji, sig_label, bucket = _classify(r)
+        # Verdict-driven label escalation
+        if stop_copying and r.get("watch_consecutive", 0) >= 2:
+            emoji, sig_label = "\U0001f534", "STOP COPYING"
         ret = r.get("total_return_pct") or 0
         dd = abs(r.get("real_dd") or 0)
 
         # Extract first decision-relevant reason (≤6 words)
         reason = ""
+        first = ""
         assessed = r.get("_assessed_reason") or ""
         if assessed:
             for token in ("Watch scan", "cycle", "iteration"):
@@ -1918,8 +2001,9 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
         reason_str = f" | {reason}" if reason else ""
         lines.append(f"{name} {alloc:.0f}% \u2014 {emoji}{sig_label} {sc}/100{f' | {stats}' if stats else ''}{reason_str}")
 
-        # Line 2 (WATCH/EXIT only): sub-scores + trigger
-        if bucket in ("uncopy",) or (bucket == "watch" and _is_declining(r)):
+        # Line 2 (WATCH/EXIT/STOP COPYING only): sub-scores + trigger
+        show_sub = bucket in ("uncopy",) or (bucket == "watch" and _is_declining(r)) or (stop_copying and r.get("watch_consecutive", 0) >= 2)
+        if show_sub:
             lines.append(f"  Risk:{ds['risk_mgmt']}/25 Cons:{ds['consistency']}/25 DD:{ds['drawdown_ctrl']}/20 \u2014 {first if first else 'monitoring'}")
 
     lines.append("")
