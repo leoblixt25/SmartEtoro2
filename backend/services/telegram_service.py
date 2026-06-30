@@ -1897,7 +1897,7 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
 
     # Verdict decision
     portfolio_profitable = sum(r.get("total_return_pct") or 0 for r in results) > 0
-    if not has_spy_qqq or (not neg_headlines and not all_pos):
+    if not has_spy_qqq and not neg_headlines and not all_pos:
         verdict_emoji = "\U0001f518"
         verdict_label = "NO VERDICT"
         verdict_reason = "market/news data missing this cycle"
