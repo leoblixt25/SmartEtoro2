@@ -165,6 +165,8 @@ class TelegramBot:
         BotCommand("alerts", "Recent important alerts"),
         BotCommand("watchlist", "Monitored traders"),
         BotCommand("settings", "Current limits and preferences"),
+        BotCommand("chart", "Equity curve and P&L chart"),
+        BotCommand("stop", "Pause the bot"),
         BotCommand("help", "Show all commands"),
     ]
 
@@ -173,7 +175,8 @@ class TelegramBot:
         ["/overview", "/active"],
         ["/health", "/discovery"],
         ["/alerts", "/watchlist"],
-        ["/settings", "/help"],
+        ["/chart", "/settings"],
+        ["/stop", "/help"],
     ]
 
     async def setup_commands(self) -> None:
@@ -281,6 +284,7 @@ class TelegramBot:
             "/news": self._cmd_news,
             "/allocate": self._cmd_allocate,
             "/chart": self._cmd_chart,
+            "/stop": self._cmd_stop,
             "/help": self._cmd_help,
         }
         handler = handlers.get(command)
@@ -518,9 +522,15 @@ class TelegramBot:
             "/news \u2013 Latest market news\n"
             "/chart [days] \u2013 Equity curve & P&L chart (default 30d)\n"
             "/allocate &lt;name&gt; &lt;amount&gt; \u2013 Change copy amount\n"
+            "/stop \u2013 Pause the bot (sends /start to resume)\n"
             "/help \u2013 Show this message"
         )
         await self._reply(update, text)
+
+    async def _cmd_stop(self, update: Update, args: list[str]) -> None:
+        self.enabled = False
+        logger.info("Bot disabled via /stop command")
+        await self._reply(update, "\U0001f534 Bot paused. Send /start to resume.")
 
     async def _cmd_sync(self, update: Update, args: list[str]) -> None:
         from backend.database.connection import db_session
@@ -1061,10 +1071,6 @@ class TelegramBot:
         """Equity curve + daily P&L chart."""
         from backend.database.connection import db_session
         from backend.database.models import Portfolio, PortfolioSnapshot
-        import matplotlib
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-        import matplotlib.dates as mdates
         from io import BytesIO
 
         try:
@@ -1100,43 +1106,50 @@ class TelegramBot:
                     pnl.append(values[i] - values[i - 1])
                 currency = p.currency or "USD"
 
-            plt.style.use("dark_background")
-            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 6), gridspec_kw={"height_ratios": [3, 1]})
-            fig.patch.set_facecolor("#1a1a2e")
+            def _render():
+                import matplotlib
+                matplotlib.use("Agg")
+                import matplotlib.pyplot as plt
+                import matplotlib.dates as mdates
 
-            for ax in (ax1, ax2):
-                ax.set_facecolor("#1a1a2e")
-                ax.tick_params(colors="#888888")
-                ax.spines["bottom"].set_color("#333333")
-                ax.spines["left"].set_color("#333333")
-                ax.spines["top"].set_visible(False)
-                ax.spines["right"].set_visible(False)
+                plt.style.use("dark_background")
+                fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(6, 4.5), gridspec_kw={"height_ratios": [3, 1]})
+                fig.patch.set_facecolor("#1a1a2e")
 
-            ax1.plot(dates, values, color="#00d4aa", linewidth=2, label="Equity")
-            ax1.fill_between(dates, values[0], values, alpha=0.1, color="#00d4aa")
-            start_val = values[0] if values else 0
-            end_val = values[-1] if values else 0
-            pnl_total = end_val - start_val
-            color = "#00d4aa" if pnl_total >= 0 else "#ff6b6b"
-            s = self._sym(currency)
-            ax1.set_title(f"Portfolio ({days}d)", color="#ffffff", fontsize=14, fontweight="bold")
-            ax1.set_ylabel(f"Value ({s})", color="#888888")
-            ax1.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{s}{x:,.0f}"))
-            ax1.xaxis.set_major_formatter(mdates.DateFormatter("%b %d"))
-            ax1.legend([f"Equity  ({pnl_total:+.2f}{s})"], loc="upper left", facecolor="#1a1a2e", labelcolor="#cccccc")
+                for ax in (ax1, ax2):
+                    ax.set_facecolor("#1a1a2e")
+                    ax.tick_params(colors="#888888")
+                    ax.spines["bottom"].set_color("#333333")
+                    ax.spines["left"].set_color("#333333")
+                    ax.spines["top"].set_visible(False)
+                    ax.spines["right"].set_visible(False)
 
-            colors = ["#00d4aa" if v >= 0 else "#ff6b6b" for v in pnl]
-            ax2.bar(dates, pnl, color=colors, width=max(0.5, days * 0.02))
-            ax2.axhline(y=0, color="#555555", linewidth=0.5)
-            ax2.set_ylabel(f"Daily P&L ({s})", color="#888888")
-            ax2.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{s}{x:+,.0f}"))
-            ax2.xaxis.set_major_formatter(mdates.DateFormatter("%b %d"))
+                ax1.plot(dates, values, color="#00d4aa", linewidth=2)
+                ax1.fill_between(dates, values[0], values, alpha=0.1, color="#00d4aa")
+                start_val = values[0] if values else 0
+                end_val = values[-1] if values else 0
+                pnl_total = end_val - start_val
+                s = self._sym(currency)
+                ax1.set_title(f"Portfolio ({days}d)", color="#ffffff", fontsize=13, fontweight="bold")
+                ax1.set_ylabel(f"Value ({s})", color="#888888")
+                ax1.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{s}{x:,.0f}"))
+                ax1.xaxis.set_major_formatter(mdates.DateFormatter("%b %d"))
 
-            plt.tight_layout()
-            buf = BytesIO()
-            fig.savefig(buf, format="png", dpi=120, bbox_inches="tight")
-            plt.close(fig)
-            buf.seek(0)
+                colors = ["#00d4aa" if v >= 0 else "#ff6b6b" for v in pnl]
+                ax2.bar(dates, pnl, color=colors, width=max(0.5, days * 0.02))
+                ax2.axhline(y=0, color="#555555", linewidth=0.5)
+                ax2.set_ylabel(f"Daily P&L ({s})", color="#888888")
+                ax2.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{s}{x:+,.0f}"))
+                ax2.xaxis.set_major_formatter(mdates.DateFormatter("%b %d"))
+
+                plt.tight_layout()
+                buf = BytesIO()
+                fig.savefig(buf, format="png", dpi=100, bbox_inches="tight")
+                plt.close(fig)
+                buf.seek(0)
+                return buf, start_val, end_val, pnl_total, s
+
+            buf, start_val, end_val, pnl_total, s = await asyncio.to_thread(_render)
 
             caption = (
                 f"\U0001f4c8 <b>Portfolio Equity</b>  |  {days}d\n"
