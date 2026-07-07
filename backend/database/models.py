@@ -123,6 +123,8 @@ class CopiedTrader(Base):
     last_analyzed = Column(DateTime, nullable=True)
     health_status = Column(String, nullable=True)         # AI verdict: Strong/Good/Watch/Weak/Avoid
     watch_consecutive = Column(Integer, default=0)        # scans flagged WATCH before escalation
+    take_profit_target_pct = Column(Float, nullable=True) # AI-evaluated profit target (null = use default)
+    take_profit_triggered = Column(Boolean, default=False) # true once AI says take profit
     copy_started = Column(DateTime, default=datetime.utcnow)
     last_updated = Column(DateTime, default=datetime.utcnow)
 
