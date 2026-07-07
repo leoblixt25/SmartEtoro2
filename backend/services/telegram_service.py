@@ -1873,8 +1873,6 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
     else:
         overall_confidence = "High"
 
-    has_any_holdings = any(r["_dim_scores"]["has_holdings"] for r in results)
-
     # ── VERDICT: market regime + news sentiment + decline persistence ──
     spy = market_data.get("SPY") if market_data else None
     qqq = market_data.get("QQQ") if market_data else None
@@ -1956,8 +1954,6 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
     lines = []
     lines.append(f"Score: {overall_score}/100 {status} | Confidence: {overall_confidence}")
     lines.append(f"VERDICT: {verdict_emoji} {verdict_label} \u2014 {verdict_reason}")
-    if not has_any_holdings:
-        lines.append("\u26a0\ufe0f Holdings unavailable \u2014 performance-based scoring only")
     lines.append("")
 
     # ── Traders ──
