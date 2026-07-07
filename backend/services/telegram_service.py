@@ -1822,7 +1822,6 @@ def _derive_market_context(trader_return: float, md: dict) -> str:
 
 def _build_health_summary(results: list[dict], live: bool = False, source_label: str = "Cached", ts: str = "", ai_used: bool = False, realloc_suggestions: list | None = None, market_data: dict | None = None) -> str:
     total = len(results)
-    source_tag = source_label if source_label else ("Live" if live else "Cached")
 
     # Compute and cache dimension scores + health score per trader
     for r in results:
@@ -1836,6 +1835,7 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
         r["_assessed_reason"] = reason
         r["_assessed_confidence"] = confidence
 
+    source_tag = source_label if source_label else ("Live" if live else "Cached")
     logger.info(
         f"HEALTH REPORT: {total} traders ({source_tag}), "
         f"{sum(1 for r in results if _assess_trader(r, r.get('watch_consecutive', 0))[0]=='keep')} core, "
@@ -1843,7 +1843,6 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
     )
 
     def _is_declining(r: dict) -> bool:
-        """Trader is declining if assess reason says 'declining' OR score trend is down."""
         if r.get("_assessed_reason", "").find("declining") >= 0:
             return True
         if _score_trend(r.get("trader", "?"), r["_health_score"]) == "\u2193":
@@ -1866,7 +1865,6 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
     else:
         status = "\U0001f534 Review Required"
 
-    # Overall confidence based on signal quality, not data completeness
     confs = [r["_dim_scores"]["confidence"] for r in results]
     if "Low" in confs:
         overall_confidence = "Low"
@@ -1908,7 +1906,6 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
     elif all_pos and not neg_headlines:
         news_sentiment = "POSITIVE"
 
-    # Verdict decision
     portfolio_profitable = sum(r.get("total_return_pct") or 0 for r in results) > 0
     if not has_spy_qqq and not neg_headlines and not all_pos:
         verdict_emoji = "\U0001f518"
@@ -1955,15 +1952,15 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
             verdict_reason = f"{regime_str}, sentiment not negative. Stay copying."
             stop_copying = False
 
+    # ── Build lines ──
     lines = []
     lines.append(f"Score: {overall_score}/100 {status} | Confidence: {overall_confidence}")
     lines.append(f"VERDICT: {verdict_emoji} {verdict_label} \u2014 {verdict_reason}")
     if not has_any_holdings:
         lines.append("\u26a0\ufe0f Holdings unavailable \u2014 performance-based scoring only")
-
     lines.append("")
 
-    # ── Trader Analysis — one line per trader (two for WATCH/EXIT or STOP COPYING) ──
+    # ── Traders ──
     def _classify(r: dict) -> tuple:
         ds, sc, bucket = r["_dim_scores"], r["_health_score"], _assess_trader(r, r.get("watch_consecutive", 0))[0]
         if not ds["has_holdings"]:
@@ -1981,60 +1978,48 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
         return emoji, label, bucket
 
     for r in results:
-        ds = r["_dim_scores"]
         sc = r["_health_score"]
         name = r.get("trader") or r.get("name", "?")
         alloc = r.get("allocation_pct") or 0
         emoji, sig_label, bucket = _classify(r)
-        # Verdict-driven label escalation
         if stop_copying and r.get("watch_consecutive", 0) >= 2:
             emoji, sig_label = "\U0001f534", "STOP COPYING"
         ret = r.get("total_return_pct") or 0
         dd = abs(r.get("real_dd") or 0)
+        trend = _score_trend(name, sc)
 
-        # Extract first decision-relevant reason (≤6 words)
-        reason = ""
-        first = ""
-        assessed = r.get("_assessed_reason") or ""
-        if assessed:
+        # AI recommendation and reason
+        ai_action = r.get("recommendation") or r.get("action")
+        ai_reason = (r.get("reason") or "").strip()
+        # If AI provided action+reason, prefer it; fall back to assessed reason
+        if ai_action and ai_reason and ai_used:
+            callout = f"{ai_action}: {ai_reason[:60]}"
+        else:
+            assessed = r.get("_assessed_reason") or ""
             for token in ("Watch scan", "cycle", "iteration"):
                 idx = assessed.lower().find(token.lower())
                 if idx >= 0:
                     end = assessed.find("\u2022", idx)
                     assessed = (assessed[:idx] + assessed[end + 1:]) if end >= 0 else assessed[:idx]
-            first = assessed.split("\u2022")[0].strip().rstrip(",")
-            if not first.startswith("Score") and not first.startswith("CORE HOLD"):
-                words = first.split()
-                if len(words) > 6:
-                    first = " ".join(words[:6])
-                reason = first
+            callout = assessed.split("\u2022")[0].strip().rstrip(",")[:60]
 
-        # Line 1: compact trader line
-        ret_str = f"Ret {ret:+.1f}%" if ret != 0 else ""
-        dd_str = f"DD {dd:.0f}%" if dd > 0 else ""
-        stats = " | ".join(s for s in (ret_str, dd_str) if s)
-        reason_str = f" | {reason}" if reason else ""
-        lines.append(f"{name} {alloc:.0f}% \u2014 {emoji}{sig_label} {sc}/100{f' | {stats}' if stats else ''}{reason_str}")
-
-        # Line 2 (WATCH/EXIT/STOP COPYING only): sub-scores + trigger
-        show_sub = bucket in ("uncopy",) or (bucket == "watch" and _is_declining(r)) or (stop_copying and r.get("watch_consecutive", 0) >= 2)
-        if show_sub:
-            lines.append(f"  Risk:{ds['risk_mgmt']}/25 Cons:{ds['consistency']}/25 DD:{ds['drawdown_ctrl']}/20 \u2014 {first if first else 'monitoring'}")
+        # Build trader line
+        flags = []
+        if dd >= 18:
+            flags.append("DD high")
+        if ret < -3:
+            flags.append("loss")
+        flag_str = f" \u26a0 {' '.join(flags)}" if flags else ""
+        lines.append(
+            f"{emoji} {name} {alloc:.0f}%  {sc}/100 {trend}  "
+            f"{ret:+.1f}%  DD {dd:.0f}%{flag_str}"
+        )
+        if callout:
+            lines.append(f"   {callout}")
 
     lines.append("")
 
-    # ── Market Intelligence (only when holdings available) ──
-    if has_any_holdings:
-        sectors = {}
-        for r in results:
-            for h in (r.get("_holdings") or []):
-                t = h.get("type", "other")
-                sectors[t] = sectors.get(t, 0) + h.get("weight", 0)
-        if sectors:
-            top_sects = sorted(sectors.items(), key=lambda x: -x[1])[:2]
-            lines.append("Sector: " + " | ".join(f"{k} {v:.0f}%" for k, v in top_sects))
-
-    # ── Rebalance — single compact line ──
+    # ── Rebalancing ──
     rebal_parts = []
     for r in results:
         rret = r.get("total_return_pct") or 0
@@ -2042,14 +2027,35 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
         rpm = r.get("profitable_months_pct")
         nm = r.get("trader") or r.get("name", "?")
         declining = _is_declining(r)
-        if rret < 0 and declining:
-            rebal_parts.append(f"Reduce {nm} (negative return)")
-        elif rdd >= 18 and rret < 2:
-            rebal_parts.append(f"Trim {nm} if DD worsens")
+        if rret < -3 and declining:
+            rebal_parts.append(f"Exit {nm} (loss {rret:.1f}%)")
+        elif rret < 0 and declining:
+            rebal_parts.append(f"Reduce {nm} ({rret:+.1f}%)")
+        elif rdd >= 18:
+            rebal_parts.append(f"Trim {nm} (DD {rdd:.0f}%)")
         elif rdd < 10 and rret > 0 and rpm is not None and rpm > 70:
-            rebal_parts.append(f"Increase {nm} (low risk)")
+            rebal_parts.append(f"Add {nm} (low risk)")
 
-    # ── Summary — single line ──
+    # ── AI Reallocation (when available) ──
+    ai_realloc_added = False
+    if realloc_suggestions:
+        changes = [s for s in realloc_suggestions if abs((s.get("to") or 0) - (s.get("from") or 0)) > 1]
+        if changes:
+            realloc_lines = []
+            for s in changes:
+                nm = s.get("name", "?")
+                f = s.get("from", 0)
+                t = s.get("to", 0)
+                delta = t - f
+                realloc_lines.append(f"{nm} {f:.0f}\u2192{t:.0f}% ({delta:+.0f})")
+            if realloc_lines:
+                lines.append(f"\U0001f9e9 AI Realloc: {' | '.join(realloc_lines)}")
+                ai_realloc_added = True
+
+    if rebal_parts:
+        lines.append(f"\U0001f504 {' | '.join(rebal_parts)}")
+
+    # ── Summary ──
     improving_ct = sum(1 for r in results if _score_trend(r.get("trader", "?"), r["_health_score"]) == "\u2191")
     declining_ct = sum(1 for r in results if _is_declining(r))
     total_pl = sum(r.get("total_return_pct") or 0 for r in results)
@@ -2057,20 +2063,16 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
         _assess_trader(rt, rt.get("watch_consecutive", 0))[0] in ("uncopy", "watch")
         for rt in results
     )
-    has_actionable = bool(rebal_parts) or watch_or_exit
-
-    if rebal_parts:
-        lines.append(f"\U0001f504 {' | '.join(rebal_parts)}")
-
-    if has_actionable:
-        net_read = f"profitable" if total_pl > 0 else "net negative"
-        if declining_ct > 0:
-            net_read += f", {declining_ct}/{total} declining"
-        if improving_ct > 0:
-            net_read += f", {improving_ct}/{total} improving"
+    if watch_or_exit or rebal_parts or ai_realloc_added:
+        net_read = "profitable" if total_pl > 0 else "net negative"
+        parts = [net_read]
+        if declining_ct:
+            parts.append(f"{declining_ct}/{total} declining")
+        if improving_ct:
+            parts.append(f"{improving_ct}/{total} improving")
         declining_names = [r.get("trader") or r.get("name", "?") for r in results if _is_declining(r)]
-        action = f"watch {declining_names[0]}" if declining_names else "hold allocation"
-        lines.append(f"\U0001f4a1 Portfolio {net_read} \u2014 {action}")
+        action = f"watch {declining_names[0]}" if declining_names else "hold"
+        lines.append(f"\U0001f4a1 {', '.join(parts)} \u2014 {action}")
 
     return "\n".join(lines)
 
