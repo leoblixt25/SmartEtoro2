@@ -112,7 +112,7 @@ class SchedulerService:
         from backend.database.connection import db_session
         from backend.database.models import Portfolio
         from backend.services.etoro_service import EToroSyncService
-        from backend.services.alert_service import check_return_thresholds, check_take_profit
+        from backend.services.alert_service import check_return_thresholds, check_take_profit, check_reentry
         from backend.services.telegram_service import TelegramBot, _fetch_market_data
 
         sync_service = EToroSyncService()
@@ -133,6 +133,11 @@ class SchedulerService:
                             tp_alerts = await check_take_profit(db, portfolio.id, bot=bot, market_data=market_data)
                             if tp_alerts:
                                 logger.info(f"Take-profit alerts triggered: {[a['title'] for a in tp_alerts]}")
+                            # Check re-entry for traders we previously exited
+                            etoro_client = sync_service.client if sync_service.client.enabled else None
+                            re_alerts = await check_reentry(db, portfolio.id, etoro_client, bot=bot, market_data=market_data)
+                            if re_alerts:
+                                logger.info(f"Re-entry alerts triggered: {[a['title'] for a in re_alerts]}")
                     else:
                         logger.debug(f"eToro sync skipped for portfolio {portfolio.id}")
         except Exception as e:

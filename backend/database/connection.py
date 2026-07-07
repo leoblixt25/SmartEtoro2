@@ -90,6 +90,15 @@ def init_db():
                 conn.execute(text(
                     "ALTER TABLE copied_traders ADD COLUMN IF NOT EXISTS take_profit_triggered BOOLEAN DEFAULT FALSE"
                 ))
+                conn.execute(text(
+                    "ALTER TABLE copied_traders ADD COLUMN IF NOT EXISTS exit_return_pct FLOAT"
+                ))
+                conn.execute(text(
+                    "ALTER TABLE copied_traders ADD COLUMN IF NOT EXISTS watch_for_reentry BOOLEAN DEFAULT FALSE"
+                ))
+                conn.execute(text(
+                    "ALTER TABLE copied_traders ADD COLUMN IF NOT EXISTS reentry_triggered BOOLEAN DEFAULT FALSE"
+                ))
         logger.info("PostgreSQL schemas & enums migrated")
 
     # Enable WAL mode for SQLite (PostgreSQL handles this natively)

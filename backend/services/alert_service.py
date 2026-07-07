@@ -23,6 +23,8 @@ DEDUP_HOURS = 24
 
 DEFAULT_PROFIT_TARGET_PCT = float(os.getenv("DEFAULT_PROFIT_TARGET_PCT", "25"))
 TAKEPROFIT_DEDUP_HOURS = 48  # don't re-check same trader within 48h
+REENTRY_PULLBACK_PCT = float(os.getenv("REENTRY_PULLBACK_PCT", "10"))  # min drop from exit to consider re-entry
+REENTRY_DEDUP_HOURS = 48    # don't re-alert re-entry within 48h
 
 
 async def _ai_should_take_profit(
@@ -176,6 +178,8 @@ async def check_take_profit(db: Session, portfolio_id: int, bot=None, market_dat
 
         if decision["take_profit"]:
             t.take_profit_triggered = True
+            t.exit_return_pct = ret
+            t.watch_for_reentry = True
             reason = decision["reason"]
             confidence = decision["confidence"]
             title = f"\U0001f534 Take Profit: {t.trader_username}"
@@ -193,6 +197,202 @@ async def check_take_profit(db: Session, portfolio_id: int, bot=None, market_dat
             logger.info(f"Take-profit: AI says hold {t.trader_username} — {decision['reason']}")
             # Still mark so we don't re-ask every 5 min; can revisit after health report
             t.take_profit_triggered = True
+
+    for a in new_alerts:
+        db.add(Alert(
+            portfolio_id=portfolio_id,
+            alert_type=a["alert_type"],
+            title=a["title"],
+            message=a["message"],
+            severity=a["severity"],
+        ))
+    if new_alerts:
+        db.commit()
+        if bot and bot.enabled:
+            for a in new_alerts:
+                await bot.send_message(
+                    f"{a['title']}\n{a['message']}\n\nUse /health for full analysis.",
+                    show_keyboard=False,
+                )
+
+    return new_alerts
+
+
+async def _ai_should_reenter(
+    username: str,
+    exit_return: float,
+    current_return: float,
+    pullback: float,
+    allocation_pct: float,
+    drawdown: float,
+    risk_score,
+    market_data: dict,
+) -> dict:
+    """Ask AI whether to re-enter a trader that pulled back after take-profit exit."""
+    api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("GROQ_API_KEY") or ""
+    if not api_key:
+        return {"reenter": True, "confidence": "LOW", "reason": "AI unavailable, defaulting to re-enter"}
+
+    from backend.monitoring.ai_health_engine import PROVIDERS
+    provider = "openai"
+    for name, cfg in PROVIDERS.items():
+        if api_key.startswith(cfg["key_prefix"]):
+            provider = name
+            break
+
+    extra_headers = {}
+    if provider == "groq":
+        base_url = PROVIDERS["groq"]["base_url"]
+        model = "llama-3.3-70b-versatile"
+    elif provider == "openrouter":
+        base_url = PROVIDERS["openrouter"]["base_url"]
+        model = "openai/gpt-4o-mini"
+        extra_headers = {"HTTP-Referer": "https://github.com/leoblixt25/SmartEtoro2", "X-Title": "SmartEtoro2"}
+    else:
+        base_url = None
+        model = "gpt-4o-mini"
+
+    from openai import OpenAI
+    client = OpenAI(api_key=api_key, **(base_url and {"base_url": base_url}))
+
+    spy = market_data.get("SPY")
+    qqq = market_data.get("QQQ")
+    mkt = f"SPY {spy:+.1f}%, QQQ {qqq:+.1f}%" if spy is not None and qqq is not None else "mixed/missing"
+
+    prompt = (
+        f"Trader: {username}\n"
+        f"Exited at: {exit_return:+.1f}% profit\n"
+        f"Current return: {current_return:+.1f}%\n"
+        f"Pullback from exit: {pullback:.1f}%\n"
+        f"Allocation: {allocation_pct:.0f}%\n"
+        f"Drawdown: {drawdown:.1f}%\n"
+        f"Risk: {risk_score or 'N/A'}\n"
+        f"Market: {mkt}\n\n"
+        f"We took profit on {username} at {exit_return:+.1f}%. They've since pulled back {pullback:.1f}%.\n"
+        f"Should we re-enter? Consider:\n"
+        f"- Market conditions (risk-on or risk-off?)\n"
+        f"- Is this a healthy pullback or a crash?\n"
+        f"- Trader's risk profile — re-entering a high-risk trader needs more caution\n\n"
+        f"Answer ONLY valid JSON: {{\"reenter\": true/false, \"confidence\": \"high/medium/low\", \"reason\": \"10 words max\"}}"
+    )
+
+    kwargs = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": "You are a cautious portfolio manager. Prefer re-entering quality traders on pullbacks when markets are stable. Answer ONLY valid JSON."},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0.1,
+        "max_tokens": 300,
+    }
+    if extra_headers:
+        kwargs["extra_headers"] = extra_headers
+    if provider == "groq":
+        kwargs["response_format"] = {"type": "json_object"}
+
+    try:
+        response = await asyncio.to_thread(client.chat.completions.create, **kwargs)
+        raw = response.choices[0].message.content.strip()
+        if raw.startswith("```"):
+            raw = raw.split("```")[0] if "```" in raw else raw
+        data = json.loads(raw)
+        return {
+            "reenter": bool(data.get("reenter", True)),
+            "confidence": str(data.get("confidence", "LOW")),
+            "reason": str(data.get("reason", "AI analysis"))[:80],
+        }
+    except Exception as e:
+        logger.warning(f"Re-entry AI call failed for {username}: {e}")
+        return {"reenter": True, "confidence": "LOW", "reason": "AI error, defaulting to re-enter"}
+
+
+async def check_reentry(db: Session, portfolio_id: int, etoro_client, bot=None, market_data: dict = None) -> List[Dict]:
+    """Check traders we previously took profit on for a pullback re-entry opportunity.
+
+    Queries the eToro API for current returns, calculates pullback from exit level,
+    and asks AI whether to re-enter. Sends alert if AI recommends re-entry.
+    """
+    from backend.database.models import CopiedTrader
+
+    candidates = (
+        db.query(CopiedTrader)
+        .filter(
+            CopiedTrader.portfolio_id == portfolio_id,
+            CopiedTrader.watch_for_reentry.is_(True),
+            CopiedTrader.reentry_triggered.is_(False),
+            CopiedTrader.exit_return_pct.isnot(None),
+        )
+        .all()
+    )
+
+    if not candidates:
+        return []
+
+    cutoff = datetime.utcnow() - timedelta(hours=REENTRY_DEDUP_HOURS)
+    new_alerts = []
+
+    for t in candidates:
+        # Skip if already alerted for re-entry recently
+        title_exists = db.query(Alert).filter(
+            Alert.portfolio_id == portfolio_id,
+            Alert.title.like(f"%Re-entry: {t.trader_username}%"),
+            Alert.created_at > cutoff,
+        ).first()
+        if title_exists:
+            continue
+
+        # Fetch current metrics via eToro API
+        if not etoro_client or not etoro_client.enabled:
+            logger.debug(f"Re-entry: no eToro client, skipping {t.trader_username}")
+            continue
+        try:
+            metrics = await etoro_client.get_trader_metrics(t.trader_username)
+            if not metrics.get("available"):
+                logger.debug(f"Re-entry: metrics unavailable for {t.trader_username}")
+                continue
+            current_return = metrics.get("total_return_pct") or metrics.get("gain")
+            if current_return is None:
+                continue
+        except Exception as e:
+            logger.warning(f"Re-entry: failed to fetch metrics for {t.trader_username}: {e}")
+            continue
+
+        exit_ret = t.exit_return_pct
+        pullback = exit_ret - current_return
+
+        if pullback < REENTRY_PULLBACK_PCT:
+            logger.debug(f"Re-entry: {t.trader_username} pullback {pullback:.1f}% < {REENTRY_PULLBACK_PCT:.0f}% threshold — skipping")
+            continue
+
+        logger.info(f"Re-entry candidate: {t.trader_username} exited at {exit_ret:+.1f}%, now {current_return:+.1f}% (pullback {pullback:.1f}%)")
+
+        decision = await _ai_should_reenter(
+            username=t.trader_username,
+            exit_return=exit_ret,
+            current_return=current_return,
+            pullback=pullback,
+            allocation_pct=t.allocation_pct or 0,
+            drawdown=t.max_drawdown or 0,
+            risk_score=t.risk_score,
+            market_data=market_data or {},
+        )
+
+        if decision["reenter"]:
+            t.reentry_triggered = True
+            reason = decision["reason"]
+            title = f"\U0001f7e2 Re-entry: {t.trader_username}"
+            message = (
+                f"{t.trader_username} pulled back {pullback:.1f}% from your exit at {exit_ret:+.1f}% "
+                f"(now {current_return:+.1f}%) — AI says good re-entry. {reason}"
+            )
+            new_alerts.append({
+                "title": title,
+                "message": message,
+                "severity": "info",
+                "alert_type": AlertType.MONITORING,
+            })
+        else:
+            logger.info(f"Re-entry: AI says skip {t.trader_username} — {decision['reason']}")
 
     for a in new_alerts:
         db.add(Alert(

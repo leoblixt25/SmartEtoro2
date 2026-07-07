@@ -125,6 +125,9 @@ class CopiedTrader(Base):
     watch_consecutive = Column(Integer, default=0)        # scans flagged WATCH before escalation
     take_profit_target_pct = Column(Float, nullable=True) # AI-evaluated profit target (null = use default)
     take_profit_triggered = Column(Boolean, default=False) # true once AI says take profit
+    exit_return_pct = Column(Float, nullable=True)        # return % at take-profit exit (for re-entry tracking)
+    watch_for_reentry = Column(Boolean, default=False)     # monitor this trader for pullback re-entry
+    reentry_triggered = Column(Boolean, default=False)     # true once re-entry alert sent
     copy_started = Column(DateTime, default=datetime.utcnow)
     last_updated = Column(DateTime, default=datetime.utcnow)
 
