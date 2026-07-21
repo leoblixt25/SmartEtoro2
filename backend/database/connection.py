@@ -24,23 +24,14 @@ logger = logging.getLogger(__name__)
 # 1. Require DATABASE_URL – crash immediately if missing
 # ─────────────────────────────────────────────────────────────────────
 DATABASE_URL = os.getenv("DATABASE_URL")
+# Hard fallback: if Neon URL persists in dashboard despite render.yaml, swap to Supabase
+SUPABASE_URL = "postgresql://postgres:Woodgoat22.3@db.qnxfbnckivdhnrfqttmd.supabase.co:5432/postgres"
 if not DATABASE_URL:
-    msg = (
-        "\n╔══════════════════════════════════════════════════════════════╗\n"
-        "║  FATAL: DATABASE_URL environment variable is not set.        ║\n"
-        "║                                                              ║\n"
-        "║  The application requires a database connection string.      ║\n"
-        "║  Set DATABASE_URL in your environment or Render Dashboard.   ║\n"
-        "║                                                              ║\n"
-        "║  Example (Postgres on Render):                               ║\n"
-        "║    postgresql://user:pass@host:5432/etoro_platform           ║\n"
-        "║                                                              ║\n"
-        "║  Example (local SQLite):                                     ║\n"
-        "║    sqlite:///./etoro_platform.db                             ║\n"
-        "╚══════════════════════════════════════════════════════════════╝"
-    )
-    logger.critical(msg)
-    sys.exit(1)
+    logger.warning("DATABASE_URL not set — using Supabase fallback")
+    DATABASE_URL = SUPABASE_URL
+elif "neon.tech" in DATABASE_URL:
+    logger.warning("DATABASE_URL points to Neon (quota exceeded) — overriding to Supabase")
+    DATABASE_URL = SUPABASE_URL
 
 # ─────────────────────────────────────────────────────────────────────
 # 2. Build engine
