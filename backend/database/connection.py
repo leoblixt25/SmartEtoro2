@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 # ─────────────────────────────────────────────────────────────────────
 DATABASE_URL = os.getenv("DATABASE_URL")
 # Hard override on Render — dashboard env var keeps reverting to Neon
-SUPABASE_URL = "postgresql://postgres:Woodgoat22.3@aws-0-us-east-2.pooler.supabase.com:5432/postgres"
+SUPABASE_URL = "postgresql://postgres.qnxfbnckivdhnrfqttmd:Woodgoat22.3@aws-1-us-east-2.pooler.supabase.com:6543/postgres"
 if os.getenv("RENDER") == "true":
     logger.warning("Render detected — forcing Supabase URL (ignoring dashboard DATABASE_URL)")
     DATABASE_URL = SUPABASE_URL
