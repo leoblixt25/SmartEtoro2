@@ -45,6 +45,9 @@ if not DATABASE_URL:
 # ─────────────────────────────────────────────────────────────────────
 # 2. Build engine
 # ─────────────────────────────────────────────────────────────────────
+# Log the database host (without credentials) for debugging
+db_host = DATABASE_URL.split("@")[1].split("?")[0] if DATABASE_URL.startswith("postgresql") else DATABASE_URL
+logger.info(f"Database: {db_host}")
 logger.info(f"Database backend: {'PostgreSQL' if DATABASE_URL.startswith('postgresql') else 'SQLite' if DATABASE_URL.startswith('sqlite') else 'other'}")
 
 engine = get_engine(DATABASE_URL)

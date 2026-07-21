@@ -19,5 +19,7 @@ services:
         sync: false
       - key: ALLOWED_ORIGINS
         value: https://smart-etoro2.vercel.app
+      - key: DATABASE_URL
+        value: postgresql://postgres:qr7x1tXyckTETURZ@db.qnxfbnckivdhnrfqttmd.supabase.co:5432/postgres
       - key: APP_ENV
         value: production
