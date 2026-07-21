@@ -24,9 +24,12 @@ logger = logging.getLogger(__name__)
 # 1. Require DATABASE_URL – crash immediately if missing
 # ─────────────────────────────────────────────────────────────────────
 DATABASE_URL = os.getenv("DATABASE_URL")
-# Hard fallback: if Neon URL persists in dashboard despite render.yaml, swap to Supabase
+# Hard override on Render — dashboard env var keeps reverting to Neon
 SUPABASE_URL = "postgresql://postgres:Woodgoat22.3@aws-0-us-east-2.pooler.supabase.com:5432/postgres"
-if not DATABASE_URL:
+if os.getenv("RENDER") == "true":
+    logger.warning("Render detected — forcing Supabase URL (ignoring dashboard DATABASE_URL)")
+    DATABASE_URL = SUPABASE_URL
+elif not DATABASE_URL:
     logger.warning("DATABASE_URL not set — using Supabase fallback")
     DATABASE_URL = SUPABASE_URL
 elif "neon.tech" in DATABASE_URL:
