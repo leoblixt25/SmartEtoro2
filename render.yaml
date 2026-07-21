@@ -21,5 +21,6 @@ services:
         value: https://smart-etoro2.vercel.app
       - key: DATABASE_URL
         sync: false
+        value: postgresql://postgres.qnxfbnckivdhnrfqttmd:Woodgoat22.3@aws-1-us-east-2.pooler.supabase.com:6543/postgres
       - key: APP_ENV
         value: production
