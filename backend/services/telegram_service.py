@@ -1113,7 +1113,7 @@ class TelegramBot:
                 import matplotlib.dates as mdates
 
                 plt.style.use("dark_background")
-                fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(6, 4.5), gridspec_kw={"height_ratios": [3, 1]})
+                fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 5.5), gridspec_kw={"height_ratios": [3, 1]})
                 fig.patch.set_facecolor("#1a1a2e")
 
                 for ax in (ax1, ax2):
@@ -1124,16 +1124,17 @@ class TelegramBot:
                     ax.spines["top"].set_visible(False)
                     ax.spines["right"].set_visible(False)
 
-                ax1.plot(dates, values, color="#00d4aa", linewidth=2)
+                ax1.plot(dates, values, color="#00d4aa", linewidth=2, label="Equity")
                 ax1.fill_between(dates, values[0], values, alpha=0.1, color="#00d4aa")
                 start_val = values[0] if values else 0
                 end_val = values[-1] if values else 0
                 pnl_total = end_val - start_val
                 s = self._sym(currency)
-                ax1.set_title(f"Portfolio ({days}d)", color="#ffffff", fontsize=13, fontweight="bold")
+                ax1.set_title(f"Portfolio ({days}d)", color="#ffffff", fontsize=14, fontweight="bold")
                 ax1.set_ylabel(f"Value ({s})", color="#888888")
                 ax1.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{s}{x:,.0f}"))
                 ax1.xaxis.set_major_formatter(mdates.DateFormatter("%b %d"))
+                ax1.legend([f"Equity  ({pnl_total:+.2f}{s})"], loc="upper left", facecolor="#1a1a2e", labelcolor="#cccccc")
 
                 colors = ["#00d4aa" if v >= 0 else "#ff6b6b" for v in pnl]
                 ax2.bar(dates, pnl, color=colors, width=max(0.5, days * 0.02))
@@ -1144,7 +1145,7 @@ class TelegramBot:
 
                 plt.tight_layout()
                 buf = BytesIO()
-                fig.savefig(buf, format="png", dpi=100, bbox_inches="tight")
+                fig.savefig(buf, format="png", dpi=120, bbox_inches="tight")
                 plt.close(fig)
                 buf.seek(0)
                 return buf, start_val, end_val, pnl_total, s
