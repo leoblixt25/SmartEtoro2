@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 # ─────────────────────────────────────────────────────────────────────
 DATABASE_URL = os.getenv("DATABASE_URL")
 # Hard fallback: if Neon URL persists in dashboard despite render.yaml, swap to Supabase
-SUPABASE_URL = "postgresql://postgres:Woodgoat22.3@db.qnxfbnckivdhnrfqttmd.supabase.co:5432/postgres"
+SUPABASE_URL = "postgresql://postgres:Woodgoat22.3@aws-0-us-east-2.pooler.supabase.com:5432/postgres"
 if not DATABASE_URL:
     logger.warning("DATABASE_URL not set — using Supabase fallback")
     DATABASE_URL = SUPABASE_URL
@@ -36,6 +36,10 @@ elif "neon.tech" in DATABASE_URL:
 # ─────────────────────────────────────────────────────────────────────
 # 2. Build engine
 # ─────────────────────────────────────────────────────────────────────
+# Append SSL requirement for Supabase
+if DATABASE_URL.startswith("postgresql"):
+    DATABASE_URL += "&sslmode=require" if "?" in DATABASE_URL else "?sslmode=require"
+
 # Log the database host (without credentials) for debugging
 db_host = DATABASE_URL.split("@")[1].split("?")[0] if DATABASE_URL.startswith("postgresql") else DATABASE_URL
 logger.info(f"Database: {db_host}")
