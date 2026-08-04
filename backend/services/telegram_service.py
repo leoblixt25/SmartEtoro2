@@ -1732,42 +1732,98 @@ def _assess_trader(r: dict, watch_consecutive: int = 0) -> tuple:
     return bucket, " \u2022 ".join(reasons), confidence
 
 
+def _get_live_return(r: dict, horizon: str) -> float | None:
+    """Extract a live return (day/week/month) from a result dict, trying all known field layouts."""
+    key = {"day": "return_1d", "week": "return_1w", "month": "return_1m"}[horizon]
+    perf = r.get("performance")
+    if isinstance(perf, dict):
+        v = perf.get(horizon)
+        if v is not None:
+            return float(v)
+    ps = r.get("performance_summary")
+    if isinstance(ps, dict) and isinstance(ps.get(horizon), dict):
+        v = ps[horizon].get("return_pct")
+        if v is not None:
+            return float(v)
+    if key == "week":
+        v = r.get("this_week_gain")
+        if v is not None:
+            return float(v)
+    v = r.get(key)
+    if v is not None:
+        return float(v)
+    return None
+
+
+def _score_momentum(ret_1w: float | None, ret_1d: float | None, ret_1m: float | None, total_ret: float) -> int:
+    """Live momentum 0-15. Prefers weekly, then daily, then monthly, then total return."""
+    live = None
+    for v in (ret_1w, ret_1d, ret_1m, total_ret):
+        if v is not None:
+            live = v
+            break
+    if live is None:
+        return 5
+    if live >= 3:
+        return 15
+    if live >= 1.5:
+        return 13
+    if live >= 0.5:
+        return 11
+    if live >= 0:
+        return 10
+    if live >= -1:
+        return 7
+    if live >= -2.5:
+        return 4
+    if live >= -5:
+        return 2
+    return 0
+
+
 def _compute_dimension_scores(r: dict) -> dict:
-    """Three-dimension score: Risk Management (25), Consistency (25), Drawdown Control (20).
+    """Four-dimension score: Risk Management (20), Consistency (20), Drawdown Control (15), Momentum (15).
 
     Transparency is a data-access limitation, not a trader quality — excluded from score.
     Market Alignment is derived as a text label, not a numeric sub-score.
-    Returns {risk_mgmt, consistency, drawdown_ctrl, total, has_holdings, has_news, confidence}.
+    Momentum uses live returns so the score reacts to current conditions.
+    Returns {risk_mgmt, consistency, drawdown_ctrl, momentum, total, has_holdings, has_news, confidence}.
     """
     holdings = r.get("_holdings") or []
     dd = abs(r.get("real_dd") or 0)
     rs = r.get("real_risk") or r.get("risk_score") or 0
     pm = r.get("profitable_months_pct")
     ret = r.get("total_return_pct") or 0
+    ret_1w = _get_live_return(r, "week")
+    ret_1d = _get_live_return(r, "day")
+    ret_1m = _get_live_return(r, "month")
     has_holdings = bool(holdings)
     news = r.get("_news_by_symbol") or {}
     has_news = bool(news)
 
-    # ── Risk Management (25) — drawdown magnitude + risk score ──
-    dd_p = 14 if dd < 10 else (12 if dd < 15 else (10 if dd < 20 else (8 if dd < 25 else 5)))
-    rs_p = 11 if 4 <= rs <= 5 else (9 if 3 <= rs <= 6 else (7 if 2 <= rs <= 7 else 4))
-    risk_mgmt = min(25, max(5, dd_p + rs_p))
+    # ── Risk Management (20) — drawdown magnitude + risk score ──
+    dd_p = 12 if dd < 10 else (10 if dd < 15 else (8 if dd < 20 else (6 if dd < 25 else 4)))
+    rs_p = 8 if 4 <= rs <= 5 else (7 if 3 <= rs <= 6 else (5 if 2 <= rs <= 7 else 3))
+    risk_mgmt = min(20, max(4, dd_p + rs_p))
 
-    # ── Consistency (25) — profitable months + return behavior ──
-    cs = 10
+    # ── Consistency (20) — profitable months + return behavior ──
+    cs = 8
     if pm is not None:
-        cs += (10 if pm >= 70 else (7 if pm >= 55 else (5 if pm >= 40 else 2)))
+        cs += (8 if pm >= 70 else (6 if pm >= 55 else (4 if pm >= 40 else 2)))
     else:
-        cs += 5
-    cs += 3 if -3 < ret < 3 else (5 if ret >= 3 else 0)
-    consistency = min(25, max(5, cs))
+        cs += 4
+    cs += 2 if -3 < ret < 3 else (4 if ret >= 3 else 0)
+    consistency = min(20, max(4, cs))
 
-    # ── Drawdown Control (20) — peak-to-trough magnitude ──
-    dc = 18 if dd < 10 else (15 if dd < 15 else (12 if dd < 20 else (8 if dd < 25 else 4)))
-    drawdown_ctrl = min(20, max(4, dc))
+    # ── Drawdown Control (15) — peak-to-trough magnitude ──
+    dc = 13 if dd < 10 else (11 if dd < 15 else (9 if dd < 20 else (6 if dd < 25 else 3)))
+    drawdown_ctrl = min(15, max(3, dc))
+
+    # ── Momentum (15) — live recent returns ──
+    momentum = _score_momentum(ret_1w, ret_1d, ret_1m, ret)
 
     # ── Total — rescale to /100 (max available is 70) ──
-    raw = risk_mgmt + consistency + drawdown_ctrl
+    raw = risk_mgmt + consistency + drawdown_ctrl + momentum
     total_score = int(round(raw / 70 * 100))
 
     # ── Confidence: based on signal quality, not data completeness ──
@@ -1784,6 +1840,7 @@ def _compute_dimension_scores(r: dict) -> dict:
         "risk_mgmt": risk_mgmt,
         "consistency": consistency,
         "drawdown_ctrl": drawdown_ctrl,
+        "momentum": momentum,
         "total": min(100, max(0, int(round(total_score)))),
         "has_holdings": has_holdings,
         "has_news": has_news,
@@ -2007,9 +2064,13 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
         if ret < -3:
             flags.append("loss")
         flag_str = f" \u26a0 {' '.join(flags)}" if flags else ""
+        mom = r["_dim_scores"].get("momentum", 0)
+        mom_arrow = "\u2191" if mom >= 11 else ("\u2192" if mom >= 7 else "\u2193")
+        w_ret = _get_live_return(r, "week")
+        wk_str = f"  1w {w_ret:+.1f}%" if w_ret is not None else ""
         lines.append(
             f"{emoji} {name} {alloc:.0f}%  {sc}/100 {trend}  "
-            f"{ret:+.1f}%  DD {dd:.0f}%{flag_str}"
+            f"{ret:+.1f}%  DD {dd:.0f}%{wk_str}  mom {mom_arrow}{flag_str}"
         )
         if callout:
             lines.append(f"   {callout}")
