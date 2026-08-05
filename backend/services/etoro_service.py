@@ -623,7 +623,27 @@ class EToroAPIClient:
             positions_raw = tradeinfo.get("NumberOfOpenPositions", tradeinfo.get("numOfOpenPositions"))
 
             gain_raw = tradeinfo.get("gainPerc") or tradeinfo.get("gain")
-            weekly_gain_raw = tradeinfo.get("thisWeekGain")
+            weekly_gain_raw = None
+            for wk_field in ("thisWeekGain", "weekGain", "gainWeek", "weeklyGain", "GainLastWeek", "GainLast7Days"):
+                v = tradeinfo.get(wk_field)
+                if v is not None:
+                    weekly_gain_raw = v
+                    logger.info("Weekly gain for %s: field='%s' value=%s", username, wk_field, v)
+                    break
+            daily_gain_raw = None
+            for d_field in ("thisDayGain", "dayGain", "gainDay", "dailyGain", "GainLastDay"):
+                v = tradeinfo.get(d_field)
+                if v is not None:
+                    daily_gain_raw = v
+                    logger.info("Daily gain for %s: field='%s' value=%s", username, d_field, v)
+                    break
+            monthly_gain_raw = None
+            for m_field in ("thisMonthGain", "monthGain", "gainMonth", "monthlyGain", "GainLastMonth"):
+                v = tradeinfo.get(m_field)
+                if v is not None:
+                    monthly_gain_raw = v
+                    logger.info("Monthly gain for %s: field='%s' value=%s", username, m_field, v)
+                    break
             risk_raw = tradeinfo.get("riskScore")
             # Drawdown fields from eToro tradeinfo API:
             #   yearlyDd           — rolling 12-month max drawdown (primary)
@@ -707,6 +727,8 @@ class EToroAPIClient:
                 "volatility": float(vol_raw) if vol_raw is not None else None,
                 "total_return_pct": float(gain_raw) if gain_raw is not None else None,
                 "this_week_gain": float(weekly_gain_raw) if weekly_gain_raw is not None else None,
+                "this_day_gain": float(daily_gain_raw) if daily_gain_raw is not None else None,
+                "this_month_gain": float(monthly_gain_raw) if monthly_gain_raw is not None else None,
                 "is_copyable": bool(is_copyable),
                 "min_copy_amount": min_copy,
                 "available": True,

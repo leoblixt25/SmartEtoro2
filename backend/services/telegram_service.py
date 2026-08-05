@@ -1340,6 +1340,10 @@ class TelegramBot:
                             r["trades_count"] = m.get("trades_count")
                             r["weeks_since_registration"] = m.get("weeks_since_registration")
                             r["this_week_gain"] = m.get("this_week_gain")  # CHANGED: populate weekly return from tradeinfo API
+                            if m.get("this_day_gain") is not None:
+                                r.setdefault("performance", {})["day"] = m.get("this_day_gain")
+                            if m.get("this_month_gain") is not None:
+                                r.setdefault("performance", {})["month"] = m.get("this_month_gain")
                     except Exception:
                         pass
             await asyncio.gather(*[_enrich_trader(r) for r in results])
