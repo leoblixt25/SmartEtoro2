@@ -975,10 +975,23 @@ class TelegramBot:
             risk = r.get("real_risk") or r.get("risk_score") or "N/A"
             dd = r.get("real_dd")
             consistency = r.get("profitable_months_pct") or "N/A"
-            lines.append(f"- {name}: alloc={alloc:.0f}% return={ret:+.1f}% risk={risk} dd={dd if dd else 'N/A'}% consistency={consistency}")
+            score = r.get("_health_score")
+            mom = r["_dim_scores"].get("momentum", 0) if "_dim_scores" in r else None
+            mom_str = "\u2191" if (mom or 0) >= 11 else ("\u2192" if (mom or 0) >= 7 else "\u2193")
+            score_str = f"{score}/100" if score is not None else "N/A"
+            lines.append(
+                f"- {name}: alloc={alloc:.0f}% return={ret:+.1f}% risk={risk} "
+                f"dd={dd if dd else 'N/A'}% consistency={consistency} score={score_str} momentum={mom_str}"
+            )
         lines.append("")
         lines.append(f"Total allocation currently: {total_alloc:.0f}%. Keep total at {total_alloc:.0f}% after reallocation.")
         lines.append("Base decisions on multi-month return trends, consistency, drawdown history, and risk score. Ignore single-day movements.")
+        lines.append("CONSISTENCY RULES (must follow):")
+        lines.append("  1. NEVER increase a manager whose score is below the portfolio average or whose drawdown is above average.")
+        lines.append("  2. NEVER decrease the highest-scoring, lowest-drawdown manager without a strong specific reason.")
+        lines.append("  3. Higher score + lower drawdown + positive momentum = reason to increase; the inverse = reason to decrease.")
+        lines.append("  4. Every changed manager must have a reason consistent with its score, drawdown, and momentum.")
+        lines.append("  5. If the portfolio is profitable and no manager breaches risk limits, prefer to HOLD (to=from).")
         lines.append("Return ONLY valid JSON object: {\"reallocations\": [{\"name\":\"...\",\"from\":N,\"to\":N,\"reason\":\"...\"}]}")
         lines.append("Set to=from for no change, to>from to increase, to<from to decrease. Max 80 chars per reason.")
 
@@ -1364,6 +1377,12 @@ class TelegramBot:
             market_line = _format_market_line(market_data) if market_data else ""
 
             # Get AI reallocation suggestions (used in Rebalancing Decision)
+            # Pre-compute dimension scores so the realloc prompt sees score/momentum
+            for r in results:
+                if "_dim_scores" not in r:
+                    r["_dim_scores"] = _compute_dimension_scores(r)
+                if "_health_score" not in r:
+                    r["_health_score"] = r["_dim_scores"]["total"]
             realloc_suggestions = []
             if show_reallocation:
                 _, realloc_suggestions = await self._ai_reallocate(results, portfolio_summary.get("total_value", 0))
@@ -1882,6 +1901,141 @@ def _derive_market_context(trader_return: float, md: dict) -> str:
     return "Uncorrelated"
 
 
+def _validate_reallocations(results: list[dict], suggestions: list[dict], verdict_label: str, stop_copying: bool, market_regime: str | None = None) -> tuple:
+    """Cross-check AI reallocations against scores, DD, momentum, and verdict.
+
+    Rules:
+      - Increase is justified only if manager is >= portfolio average on score
+        AND <= average on DD AND momentum not down, unless AI gave a specific reason.
+      - Reduce of the highest-scoring manager is blocked without a specific reason.
+      - Any manager both increased by AI and trimmed by rule logic -> NO ACTION.
+      - If verdict is HOLD and no risk breach, avoid major reallocation (total move > 20%).
+
+    Returns (validated_suggestions, contradictions, confidence, confidence_reason).
+    """
+    if not suggestions or not results:
+        return [], [], "Medium", "No reallocation data available."
+
+    total_alloc = sum(r.get("allocation_pct") or 0 for r in results) or 1
+    avg_score = sum(r.get("_health_score", 0) for r in results) / len(results)
+    avg_dd = sum(abs(r.get("real_dd") or 0) for r in results) / len(results)
+
+    by_name = {}
+    for r in results:
+        nm = (r.get("trader") or r.get("name") or "").strip().lower()
+        by_name[nm] = r
+    best_name = max(by_name.values(), key=lambda r: r.get("_health_score", 0))
+    best_key = (best_name.get("trader") or best_name.get("name") or "").strip().lower()
+
+    # Rule-logic actions (mirrors the 🔄 rebalancing section) for cross-check
+    rule_actions = {}
+    for r in results:
+        nm = (r.get("trader") or r.get("name") or "").strip().lower()
+        rret = r.get("total_return_pct") or 0
+        rdd = abs(r.get("real_dd") or 0)
+        rpm = r.get("profitable_months_pct")
+        declining = (r.get("_assessed_reason", "").find("declining") >= 0
+                     or _score_trend(r.get("trader", "?"), r["_health_score"]) == "\u2193")
+        if rret < -3 and declining:
+            rule_actions[nm] = "Exit"
+        elif rret < 0 and declining:
+            rule_actions[nm] = "Reduce"
+        elif rdd >= 18:
+            rule_actions[nm] = "Trim"
+        elif rdd < 10 and rret > 0 and rpm is not None and rpm > 70:
+            rule_actions[nm] = "Add"
+
+    contradictions = []
+    validated = []
+    for s in suggestions:
+        nm_raw = s.get("name", "")
+        nm = nm_raw.strip().lower()
+        r = by_name.get(nm)
+        fr = s.get("from", 0)
+        to = s.get("to", 0)
+        reason = (s.get("reason") or "").strip()
+        if r is None:
+            continue
+        # Align 'from' with the real current allocation if it drifted
+        real_alloc = r.get("allocation_pct") or 0
+        if abs(fr - real_alloc) > 5:
+            fr = real_alloc
+        delta = to - fr
+        score = r.get("_health_score", 0)
+        dd = abs(r.get("real_dd") or 0)
+        mom = r["_dim_scores"].get("momentum", 0)
+        mom_down = mom < 7
+        deltas = 1
+        justified = True
+        note = reason
+
+        if delta > 1:  # increase
+            below_avg = score < avg_score - 2 or dd > avg_dd or mom_down
+            if below_avg and not reason:
+                contradictions.append(
+                    f"Increase {nm_raw} (+{delta:.0f}%): score {score:.0f} / DD {dd:.0f}% below average "
+                    f"({avg_score:.0f}/{avg_dd:.0f}%) with no justification"
+                )
+                justified = False
+        elif delta < -1:  # decrease
+            if nm == best_key and not reason:
+                contradictions.append(
+                    f"Reduce {nm_raw} ({delta:.0f}%): highest-scoring manager ({score:.0f}/100) "
+                    f"reduced without justification"
+                )
+                justified = False
+            elif score >= avg_score and dd <= avg_dd and not mom_down and not reason:
+                contradictions.append(
+                    f"Reduce {nm_raw} ({delta:.0f}%): manager is above-average on all metrics with no justification"
+                )
+                justified = False
+
+        # Cross-check with rule logic: never increase + trim same manager
+        rule = rule_actions.get(nm)
+        if delta > 1 and rule in ("Trim", "Reduce", "Exit"):
+            contradictions.append(
+                f"Contradiction: increase {nm_raw} (+{delta:.0f}%) while rule logic says {rule}"
+            )
+            justified = False
+
+        if not justified:
+            to = fr  # neutralize
+            note = "NO ACTION (contradiction with scoring/rule logic)"
+        elif not note:
+            note = f"score {score:.0f}/100, DD {dd:.0f}%, momentum {'up' if not mom_down else 'neutral/down'}"
+
+        validated.append({
+            "name": nm_raw, "from": fr, "to": to, "reason": note,
+            "score": score, "dd": dd, "mom": "↑" if mom >= 11 else ("→" if mom >= 7 else "↓"),
+        })
+
+    total_move = sum(abs(v["to"] - v["from"]) for v in validated)
+    changes = [v for v in validated if abs(v["to"] - v["from"]) > 1]
+
+    # HOLD gate: if verdict is HOLD and no risk breach, cap major reallocation
+    risk_breach = stop_copying or any(abs(r.get("real_dd") or 0) >= 25 or (r.get("_health_score") or 0) < 45 for r in results)
+    if verdict_label in ("HOLD", "NO VERDICT") and not risk_breach and total_move > 20:
+        contradictions.append(
+            f"Verdict is {verdict_label} with no risk breach — neutralizing major reallocation (total move {total_move:.0f}%)"
+        )
+        for v in validated:
+            v["to"] = v["from"]
+            v["reason"] = "NO ACTION (HOLD verdict, no risk breach)"
+        changes = []
+
+    if contradictions:
+        confidence = "Low"
+        conf_reason = "Contradictions detected — conflicting recommendations neutralized. Prefer NO ACTION / HOLD."
+    elif changes:
+        confidence = "High"
+        conf_reason = f"Reallocations align with scoring (avg {avg_score:.0f}/100, avg DD {avg_dd:.0f}%), verdict {verdict_label}."
+    else:
+        confidence = "High"
+        conf_reason = "No changes recommended — current allocation is consistent with analysis."
+
+    return validated, contradictions, confidence, conf_reason
+
+
 def _build_health_summary(results: list[dict], live: bool = False, source_label: str = "Cached", ts: str = "", ai_used: bool = False, realloc_suggestions: list | None = None, market_data: dict | None = None, portfolio_pnl_pct: float = 0.0) -> str:
     total = len(results)
 
@@ -2100,21 +2254,50 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
         elif rdd < 10 and rret > 0 and rpm is not None and rpm > 70:
             rebal_parts.append(f"Add {nm} (low risk)")
 
-    # ── AI Reallocation (when available) ──
+    # ── Validate AI reallocations against scoring/DD/momentum/verdict ──
+    validated_realloc, contradictions, realloc_conf, realloc_conf_reason = _validate_reallocations(
+        results, realloc_suggestions or [], verdict_label, stop_copying, market_regime,
+    )
+
+    # ── AI Reallocation (validated — only kept changes shown) ──
     ai_realloc_added = False
-    if realloc_suggestions:
-        changes = [s for s in realloc_suggestions if abs((s.get("to") or 0) - (s.get("from") or 0)) > 1]
-        if changes:
-            realloc_lines = []
-            for s in changes:
-                nm = s.get("name", "?")
-                f = s.get("from", 0)
-                t = s.get("to", 0)
-                delta = t - f
-                realloc_lines.append(f"{nm} {f:.0f}\u2192{t:.0f}% ({delta:+.0f})")
-            if realloc_lines:
-                lines.append(f"\U0001f9e9 AI Realloc: {' | '.join(realloc_lines)}")
-                ai_realloc_added = True
+    kept_changes = [s for s in validated_realloc if abs((s.get("to") or 0) - (s.get("from") or 0)) > 1]
+    if kept_changes:
+        realloc_lines = []
+        for s in kept_changes:
+            nm = s.get("name", "?")
+            f = s.get("from", 0)
+            t = s.get("to", 0)
+            delta = t - f
+            realloc_lines.append(f"{nm} {f:.0f}\u2192{t:.0f}% ({delta:+.0f})")
+        if realloc_lines:
+            lines.append(f"\U0001f9e9 AI Realloc: {' | '.join(realloc_lines)}")
+            ai_realloc_added = True
+
+    if contradictions:
+        lines.append(f"\u26a0\ufe0f Contradictions flagged: {'; '.join(contradictions[:3])}")
+        if len(contradictions) > 3:
+            lines.append(f"   +{len(contradictions) - 3} more")
+        lines.append("\U0001f501 Prefer NO ACTION / HOLD over conflicting recommendations.")
+
+    # ── Recommendation Confidence ──
+    lines.append(f"\U0001f4ad <b>Recommendation Confidence:</b> {realloc_conf} \u2014 {realloc_conf_reason}")
+
+    # ── Allocation summary table ──
+    lines.append("")
+    lines.append(f"\U0001f4cb <b>Allocation Recommendation</b>")
+    lines.append(f"{'Manager':<14} {'Cur':>4} {'Sug':>4}  {'Score':>5}  {'DD':>4}  {'Mom':>3}  Reason")
+    lines.append("\u2500" * 72)
+    for s in validated_realloc:
+        nm = s.get("name", "?")[:13]
+        cur = s.get("from", 0)
+        sug = s.get("to", 0)
+        change_flag = "\u2705" if abs(sug - cur) > 1 else "\u2796"
+        reason = (s.get("reason") or "")[:48]
+        lines.append(
+            f"{nm:<14} {cur:>4.0f} {sug:>4.0f}  {s.get('score', 0):>5.0f}  "
+            f"{s.get('dd', 0):>4.0f}%  {s.get('mom', '?'):>3}  {change_flag} {reason}"
+        )
 
     if rebal_parts:
         lines.append(f"\U0001f504 {' | '.join(rebal_parts)}")
