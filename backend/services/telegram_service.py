@@ -1364,7 +1364,7 @@ class TelegramBot:
             if show_reallocation:
                 _, realloc_suggestions = await self._ai_reallocate(results, portfolio_summary.get("total_value", 0))
 
-            summary = _build_health_summary(results, live=freshness, source_label=label, ts=ts, ai_used=bool(ai_results), realloc_suggestions=realloc_suggestions, market_data=market_data)
+            summary = _build_health_summary(results, live=freshness, source_label=label, ts=ts, ai_used=bool(ai_results), realloc_suggestions=realloc_suggestions, market_data=market_data, portfolio_pnl_pct=(portfolio_summary["pnl"] / inv * 100) if inv else 0)
 
             # Build compact header
             val = portfolio_summary["total_value"]
@@ -1878,7 +1878,7 @@ def _derive_market_context(trader_return: float, md: dict) -> str:
     return "Uncorrelated"
 
 
-def _build_health_summary(results: list[dict], live: bool = False, source_label: str = "Cached", ts: str = "", ai_used: bool = False, realloc_suggestions: list | None = None, market_data: dict | None = None) -> str:
+def _build_health_summary(results: list[dict], live: bool = False, source_label: str = "Cached", ts: str = "", ai_used: bool = False, realloc_suggestions: list | None = None, market_data: dict | None = None, portfolio_pnl_pct: float = 0.0) -> str:
     total = len(results)
 
     # Compute and cache dimension scores + health score per trader
@@ -1912,7 +1912,9 @@ def _build_health_summary(results: list[dict], live: bool = False, source_label:
     weighted_score = sum(
         r["_health_score"] * (r.get("allocation_pct") or 0) / total_alloc for r in results
     )
-    overall_score = int(round(weighted_score))
+    # Blend live portfolio P&L into the overall score (30% weight) so it moves with conditions
+    pnl_component = max(0, min(100, 50 + portfolio_pnl_pct * 5))
+    overall_score = int(round(weighted_score * 0.70 + pnl_component * 0.30))
 
     if overall_score >= 75:
         status = "\U0001f7e2 Strong"
